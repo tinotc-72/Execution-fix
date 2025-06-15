@@ -18,6 +18,7 @@ import websockets
 from websockets.client import connect
 from websockets.legacy.client import connect
 import aiohttp
+from base64 import b64decode
 
 # Solana imports
 from solders.pubkey import Pubkey
@@ -208,17 +209,6 @@ class CopyTradingBot:
         self.client = AsyncClient(self.rpc_url)
         print("✅ Initialized Solana RPC client")
 
-    def _load_keypair() -> Optional[Keypair]:
-        """Load keypair from private key"""
-        try:
-            keypair = Keypair.from_bytes(DECODED_PRIVATE_KEY)
-            print(f"✅ Wallet loaded successfully: {keypair.pubkey()}")
-            return keypair
-            
-        except Exception as e:
-            print(f"❌ Failed to load wallet: {e}")
-            return None
-
     async def execute_trade(self, trade_type: str, amount: float, price: Optional[float] = None):
         """Execute a trade"""
         current_time = get_formatted_datetime()
@@ -231,30 +221,6 @@ class CopyTradingBot:
         try:
             # Add your actual trading logic here
             await asyncio.sleep(2)  # Simulate processing time
-            print(f"Trade executed successfully!")
-            return True
-        except Exception as e:
-            print(f"Trade failed: {str(e)}")
-            return False
-
-    def execute_trade(trade_type, amount, price=None):
-        """
-        Execute a trade
-        trade_type: 'buy' or 'sell'
-        amount: amount to trade
-        price: optional limit price
-        """
-        current_time = get_formatted_datetime()  # Use our helper function
-        
-        # Log the trade attempt
-        print(f"\nAttempting {trade_type} trade at {current_time}")
-        print(f"Amount: {amount}")
-        if price:
-            print(f"Price: {price}")
-        
-        try:
-            # Simulate trade execution (replace with actual trading logic)
-            time.sleep(2)  # Simulate processing time
             print(f"Trade executed successfully!")
             return True
         except Exception as e:
@@ -970,6 +936,18 @@ class CopyTradingBot:
 
     async def start(self):
         """Start the trading bot with automatic reconnection"""
+        # Initialize and display system info
+        print("\n🚀 Copy Trading Bot Initialization")
+        print("="*50)
+        print(f"Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): {get_formatted_datetime()}")
+        print(f"Current User's Login: {get_current_user()}")
+        print(f"👤 User: {self.CURRENT_USER}")
+        print(f"🎯 Target: Wallet A ({self.target_wallet})")
+        print(f"💰 Your Wallet: {self.keypair.pubkey()}")
+        print(f"⏰ Start time (UTC): {self.CURRENT_TIME}")
+        print("="*50 + "\n")
+        
+        # Start WebSocket connection with reconnection
         while True:
             try:
                 await self._start_websocket()
