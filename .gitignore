@@ -15,3 +15,12 @@ venv_test/
 # Other
 *.csv
 install_certificates.command
+
+# Additional files to ignore
+main3.py
+minimal_test.py
+python check_tokens.py
+replicatorRR.py
+tx_builder_old.py
+wallet_tx_parserOG.py
+wallet_tx_parserRR.py
