@@ -1,4 +1,4 @@
-# main.py2 - uses CopyTradingBot 
+# main.py3 - uses Replicator.py 
 
 import os
 import asyncio
@@ -8,7 +8,6 @@ import statistics
 import time
 from typing import List, Dict, Union, Optional
 from dataclasses import dataclass
-import pytz
 from datetime import datetime, UTC
 from statistics import mean
 import websockets
@@ -56,30 +55,29 @@ from config import (
     HELIUS_WS_URL as WS_URL
 )
 
-from wallet_tx_parser import (
-    WalletATxParser,
-    KNOWN_PROGRAMS,
-    BUY_KEYWORDS,
-    SELL_KEYWORDS
-)
-
 WALLET_A_ADDRESS = "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK"  # Your target wallet
+# main.py
 
-def get_current_datetime_utc():
-    """Get current UTC datetime in YYYY-MM-DD HH:MM:SS format"""
-    utc_now = datetime.now(pytz.UTC)
-    return utc_now.strftime('%Y-%m-%d %H:%M:%S')
+import asyncio
+import base58
+from solders.keypair import Keypair
+from replicator import Replicator
+from datetime import datetime, timezone
 
-def get_user_login():
-    """Get the current user's login"""
-    return "tinotc-72"  # For now hardcoded, we can make this dynamic later
+# Configuration
+PRIVATE_KEY = kz.BULLX_NEO_PRIVATE_KEY_QM
 
-# Add these to your main menu function or where you need to display this information
-def display_system_info():
-    current_time = get_current_datetime_utc()
-    user_login = get_user_login()
-    print(f"\nCurrent Date and Time (UTC): {current_time}")
-    print(f"Current User's Login: {user_login}\n")
+
+def get_current_user() -> str:
+    """Get current user's login name"""
+    return os.getlogin()
+
+def get_formatted_datetime() -> str:
+    """Get current UTC datetime formatted as YYYY-MM-DD HH:MM:SS"""
+    return datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')
+
+def get_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
 @dataclass
 class PerformanceStats:
@@ -169,53 +167,13 @@ class CopyTradingBot:
         self.client = AsyncClient(self.rpc_url)
         self.stats = PerformanceStats()
         self.executor = FastExecutor(keypair)
-        self.tx_parser = WalletATxParser(keypair)  # Initialize the parser
         self.client = AsyncClient(self.rpc_url)
         print("✅ Initialized Solana RPC client")
-
-    def _analyze_transaction_logs(self, logs: List[str]) -> bool:
-        try:
-            # Use the class instance's parser
-            parsed_result = self.tx_parser.parse_transaction_logs(logs)
-            if not parsed_result:
-                return False
-
-            # Check if Wallet A is involved
-            if not any(self.target_wallet in log for log in logs):
-                return False
-
-            # Print useful info
-            print("\n🔍 Wallet A Trade Detected:")
-            print(f"DEX: {parsed_result['dex']}")
-            print(f"Instruction: {parsed_result['instruction']}")
-            print(f"Type: {parsed_result['type']}")
-            print(f"Program ID: {parsed_result['program_id']}")
-
-            return True
-
-        except Exception as e:
-            print(f"❌ Error analyzing transaction logs: {str(e)}")
-            traceback.print_exc()
-            return False
-
-    def _determine_transaction_type(self, logs: List[str]) -> str:
-        """Determine if trade is BUY or SELL"""
-        try:
-            # Use the class instance's parser
-            parsed_result = self.tx_parser.parse_transaction_logs(logs)
-            if parsed_result:
-                if parsed_result["instruction"] == "Buy":
-                    print("✅ Detected Wallet A BUY")
-                    return "BUY"
-                elif parsed_result["instruction"] == "Sell":
-                    print("✅ Detected Wallet A SELL")
-                    return "SELL"
-
-        except Exception as e:
-            print(f"❌ Error determining transaction type: {str(e)}")
-            traceback.print_exc()
-
-        return "UNKNOWN"
+        self.RELEVANT_PROGRAMS = {
+            "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW",  # Pump program
+            "BXxgGt3akAghZviYHLh8KUh6vhXBht5wf86De6huTp95",  # Trading program
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"    # Core trading program
+        }
 
     async def initialize(self):
         """Initialize bot components"""
@@ -226,26 +184,8 @@ class CopyTradingBot:
             await self.executor.initialize()
             print("✅ FastExecutor initialized")
             
-            # Initialize JitoClient with proper error handling
+            # Initialize JitoClient
             self.jito_client = JitoClient()
-            try:
-                # Test Jito connection
-                print("\n🔍 Testing connection to London Block Engine...")
-                async with aiohttp.ClientSession(headers=self.jito_client.headers) as session:
-                    async with session.get(self.jito_client.url) as response:
-                        if response.status == 404:
-                            print("⚠️ Warning: London Block Engine returned status 404")
-                            print("ℹ️ Will use RPC fallback for transactions")
-                        elif response.status != 200:
-                            print(f"⚠️ Warning: London Block Engine returned status {response.status}")
-                        else:
-                            print("✅ Jito connection test successful")
-            except Exception as e:
-                print(f"⚠️ Warning: Could not connect to Jito: {str(e)}")
-                print("ℹ️ Will use RPC fallback for transactions")
-            
-            print("✅ FastExecutor session initialized")
-            print("✅ FastExecutor initialized")
             print("✅ JitoClient initialized")
             
             # Print configuration
@@ -260,6 +200,63 @@ class CopyTradingBot:
             
         except Exception as e:
             print(f"❌ Bot initialization failed: {str(e)}")
+            traceback.print_exc()
+            return False
+    
+    def _analyze_transaction_logs(self, logs: List[str]) -> bool:
+        """
+        Analyze transaction logs to determine if they're relevant for our trading strategy.
+        
+        Args:
+            logs (List[str]): Transaction logs to analyze
+            
+        Returns:
+            bool: True if transaction is relevant, False otherwise
+        """
+        try:
+            # Define programs we're interested in
+            RELEVANT_PROGRAMS = {
+                "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW",  # Pump program
+                "BXxgGt3akAghZviYHLh8KUh6vhXBht5wf86De6huTp95",  # Trading program
+                "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"    # Core trading program
+            }
+            
+            # Check if any of our target programs are involved
+            program_found = False
+            for log in logs:
+                for program in RELEVANT_PROGRAMS:
+                    if f"Program {program} invoke" in log:
+                        program_found = True
+                        break
+                if program_found:
+                    break
+                    
+            if not program_found:
+                print("ℹ️ No relevant programs found in transaction")
+                return False
+
+            # Look for specific instructions
+            for log in logs:
+                # Check for Buy/Sell instructions
+                if "Instruction: Buy" in log or "Instruction: Sell" in log:
+                    print("✅ Found Buy/Sell instruction")
+                    return True
+                    
+                # Check for Pump instructions
+                if "Instruction: PumpBuy" in log or "Instruction: PumpSell" in log:
+                    print("✅ Found Pump Buy/Sell instruction")
+                    return True
+                    
+                # Check for AMM instructions
+                if "Instruction: PumpAmmSwap" in log:
+                    print("✅ Found AMM Swap instruction")
+                    return True
+
+            print("ℹ️ No relevant instructions found")
+            return False
+
+        except Exception as e:
+            print(f"❌ Error analyzing transaction logs: {str(e)}")
             traceback.print_exc()
             return False
     
@@ -451,49 +448,75 @@ class CopyTradingBot:
             print(f"❌ Unexpected error fetching transaction: {str(e)}")
             traceback.print_exc()
             return None
+
+    def _determine_transaction_type(self, logs: List[str]) -> str:
+        """Determine transaction type from logs."""
+        for log in logs:
+            if "Instruction: Buy" in log or "Instruction: PumpBuy" in log:
+                print("✅ Detected BUY transaction")
+                return "BUY"
+            elif "Instruction: Sell" in log or "Instruction: PumpSell" in log:
+                print("✅ Detected SELL transaction")
+                return "SELL"
+        print("⚠️ Unknown transaction type")
+        return "UNKNOWN"
         
     async def process_transaction_data(self, versioned_tx: VersionedTransaction, tx_type: str, blockhash: str) -> None:
+        """
+        Process and submit a transaction copy.
+        
+        Args:
+            versioned_tx (VersionedTransaction): The transaction to process
+            tx_type (str): Type of transaction ("BUY" or "SELL")
+            blockhash (str): Recent blockhash to use
+        """
         try:
             start_time = time.time()
             print(f"\n📥 Processing {tx_type} transaction at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
-            
-            # Get message for better readability
-            msg = versioned_tx.message
-            
-            # First, initialize any needed token accounts
-            print("\n🔍 Checking for token accounts...")
-            for ix in msg.instructions:
-                if ix.program_id_index < len(msg.account_keys):
-                    program_id = msg.account_keys[ix.program_id_index]
-                    if str(program_id) == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA":
-                        for acc_idx in ix.accounts:
-                            if acc_idx < len(msg.account_keys):
-                                account = msg.account_keys[acc_idx]
-                                # If this is a token mint, create ATA if needed
-                                try:
-                                    ata = await get_associated_token_address(
-                                        self.keypair.pubkey(),
-                                        account
-                                    )
-                                    # Check if ATA exists
-                                    account_info = await self.client.get_account_info(ata)
-                                    if not account_info.value:
-                                        print(f"Creating ATA for mint: {account}")
-                                        create_ata_ix = create_associated_token_account(
-                                            payer=self.keypair.pubkey(),
-                                            owner=self.keypair.pubkey(),
-                                            mint=account
-                                        )
-                                        # Send ATA creation transaction
-                                        tx = Transaction().add(create_ata_ix)
-                                        await self.client.send_transaction(tx, [self.keypair])
-                                        print(f"✅ Created ATA for mint: {account}")
-                                except Exception as e:
-                                    print(f"⚠️ Error checking/creating ATA: {str(e)}")
-                                    continue
+            print(f"🔑 Your wallet: {self.keypair.pubkey()}")
+            print(f"🎯 Following wallet: {WALLET_A_ADDRESS}")
 
-            # Now proceed with the original transaction processing
+            # Get current balance
             try:
+                balance = await self.get_sol_balance()  # Make this async
+                print(f"\n💰 Current balance: {balance:.9f} SOL")
+                
+                # Add balance check
+                if balance < 0.1:  # Adjust minimum balance as needed
+                    print("⚠️ Warning: Low balance")
+            except Exception as e:
+                print(f"⚠️ Could not fetch balance: {str(e)}")
+
+            # Log transaction info
+            print(f"✅ Decoded VersionedTransaction ({len(bytes(versioned_tx))} bytes)")
+            print(f"📦 Using blockhash: {blockhash}")
+
+            try:
+                # Get message for better readability
+                msg = versioned_tx.message
+                
+                # Enhanced validation
+                if not msg:
+                    print("❌ Invalid message: Message is None")
+                    return
+                if not msg.instructions:
+                    print("❌ Invalid message: No instructions")
+                    return
+                if not msg.account_keys:
+                    print("❌ Invalid message: No account keys")
+                    return
+
+                print("\n🔍 Pre-processing Analysis:")
+                print(f"Instructions count: {len(msg.instructions)}")
+                print(f"Account keys count: {len(msg.account_keys)}")
+                print(f"Required signatures: {msg.header.num_required_signatures}")
+                
+                # Log programs
+                print("\nPrograms involved:")
+                for idx, ix in enumerate(msg.instructions):
+                    program_id = msg.account_keys[ix.program_id_index]
+                    print(f"{idx+1}. {program_id}")
+
                 # Create and sign transaction
                 print("\n📝 Creating transaction...")
                 tx = create_and_sign_transaction(
@@ -510,31 +533,56 @@ class CopyTradingBot:
                     print("❌ Failed to create transaction")
                     return
 
-                # First try Jito bundle
-                print("\n🚀 Attempting Jito bundle submission...")
+                # Verify transaction
+                print("\n🔍 Post-creation verification:")
+                print(f"Transaction size: {len(bytes(tx))} bytes")
+                if not tx.signatures:
+                    print("❌ Error: No signature present")
+                    return
+                print(f"Signature: {tx.signatures[0]}")
+
+                # Simulate transaction
+                print("\n🧪 Simulating transaction...")
+                sim_result = await self.simulate_transaction(tx)  # Make this async
+                if not sim_result:
+                    print("❌ Transaction simulation failed")
+                    return
+
+                print("✅ Simulation successful")
+
+                # Create and verify bundle
+                print("\n📦 Creating bundle...")
                 bundle = Bundle(tx)
-                bundle_result = await self.jito_client.send_bundle(bundle)
                 
-                if bundle_result:
-                    print("✅ Jito bundle submitted successfully")
-                    self.stats.successful_mirrors += 1
-                else:
-                    print("⚠️ Jito bundle failed, falling back to RPC...")
-                    # RPC fallback
-                    sim_result = await self.simulate_transaction(tx)
-                    if not sim_result:
-                        print("❌ Transaction simulation failed")
-                        return
+                if not isinstance(bundle, Bundle):
+                    print("❌ Error: Invalid bundle type")
+                    return
+                    
+                if not bundle.transactions:
+                    print("❌ Error: Empty bundle")
+                    return
 
-                    print("🚀 Sending via RPC fallback...")
-                    sig = await self.client.send_transaction(tx)
-                    print(f"✅ RPC transaction submitted: {sig}")
-                    self.stats.successful_mirrors += 1
+                print("✅ Bundle created successfully")
+                print(f"Bundle transaction count: {len(bundle.transactions)}")
 
+                # Submit transaction
+                print("\n🚀 Submitting transaction...")
+                print(f"💰 Fee payer: {self.keypair.pubkey()}")
+                print(f"📝 Transaction size: {len(bytes(tx))} bytes")
+
+                result = await self.fast_executor.send_bundle(bundle)  # Make this async
+                
+                if not result:
+                    print("❌ Transaction submission failed")
+                    self.stats.failed_mirrors += 1
+                    return
+
+                # Update stats on success
+                self.stats.successful_mirrors += 1
                 end_time = time.time()
                 latency = (end_time - start_time) * 1000
-                print(f"\n⏱️ Processing time: {latency:.2f}ms")
-                self.stats.update_latency(latency)
+                print(f"\n✅ Transaction submitted successfully")
+                print(f"⏱️ Processing time: {latency:.2f}ms")
 
             except Exception as e:
                 print(f"❌ Error processing transaction data: {str(e)}")
@@ -545,7 +593,7 @@ class CopyTradingBot:
             print(f"❌ Error in process_transaction_data: {str(e)}")
             traceback.print_exc()
             self.stats.failed_mirrors += 1
-            
+
     async def clone_transaction_from_wallet_a(raw_tx, your_wallet):
         try:
             print(f"\n📅 Starting clone at {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}")
@@ -942,39 +990,31 @@ def _load_keypair() -> Optional[Keypair]:
         return None
 
 async def main():
-    """Main entry point"""
-    print("\n🚀 Starting Copy Trading Bot")
-    print("=" * 50)
-    print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
-    print(f"Current User's Login: {get_current_user()}")
-    print("=" * 50)
-    
     try:
-        # Load wallet
-        keypair = _load_keypair()
-        if not keypair:
-            return
+        print("\n=== Copy Trading Bot ===")
+        print(f"Start Time (UTC): {get_timestamp()}")
+        print(f"User: tinotc-72")
+        
+        # Initialize wallet
+        private_key_bytes = base58.b58decode(PRIVATE_KEY)
+        wallet = Keypair.from_bytes(private_key_bytes)
+        print(f"Wallet: {wallet.pubkey()}")
+        
+        # Create and initialize replicator
+        replicator = Replicator(wallet)
+        
+        if await replicator.initialize():
+            print("\n🚀 Starting copy trading...")
+            await replicator.run()
+        else:
+            print("❌ Failed to initialize replicator")
             
-        # Create bot
-        target_wallet = "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK"  # Wallet A address
-        bot = CopyTradingBot(keypair, target_wallet)
-        
-        # Initialize bot
-        if not await bot.initialize():
-            print("❌ Bot initialization failed")
-            return
-        
-        # Start bot
-        await bot.start()
-        
     except KeyboardInterrupt:
-        print("\n🛑 Received stop signal")
+        print("\n👋 Stopping bot...")
     except Exception as e:
         print(f"❌ Fatal error: {str(e)}")
+        import traceback
         traceback.print_exc()
-    finally:
-        if 'bot' in locals():
-            await bot.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
