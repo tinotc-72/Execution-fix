@@ -19,6 +19,7 @@ from websockets.client import connect
 from websockets.legacy.client import connect
 import aiohttp
 from base64 import b64decode
+from solders.instruction import AccountMeta, Instruction
 
 # Solana imports
 from solders.pubkey import Pubkey
@@ -46,7 +47,9 @@ from tx_builder import (
     RPC_ENDPOINTS,
     create_jito_tip_instruction,
     START_TIME,
-    CURRENT_USER
+    CURRENT_USER,
+    create_jito_bundle,  # Add this
+    submit_to_jito_block_engine  # Add this
 )
 from config import (
     DECODED_PRIVATE_KEY,
@@ -63,6 +66,10 @@ from wallet_tx_parser import (
 
 # Constants
 WALLET_A_ADDRESS = "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK"
+# Constants
+COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
+COMPUTE_UNIT_LIMIT = 1_400_000
+COMPUTE_UNIT_PRICE = 100
 
 # Utility Functions
 def get_formatted_datetime():
@@ -119,6 +126,94 @@ def display_trading_menu():
         else:
             print("❌ Invalid choice. Please try again.")
 
+def create_compute_budget_instructions():
+    """Create compute budget instructions that MUST come first"""
+    try:
+        # Unit limit instruction (opcode 0x02)
+        unit_limit_ix = Instruction(
+            program_id=COMPUTE_BUDGET_PROGRAM_ID,
+            accounts=[],
+            data=bytes([0x02]) + COMPUTE_UNIT_LIMIT.to_bytes(4, "little")
+        )
+
+        # Unit price instruction (opcode 0x03)
+        unit_price_ix = Instruction(
+            program_id=COMPUTE_BUDGET_PROGRAM_ID,
+            accounts=[],
+            data=bytes([0x03]) + COMPUTE_UNIT_PRICE.to_bytes(4, "little")
+        )
+
+        return [unit_limit_ix, unit_price_ix]
+
+    except Exception as e:
+        print(f"❌ Failed to create compute budget instructions: {str(e)}")
+        traceback.print_exc()
+        return []
+    
+async def clone_transaction_from_wallet_a(raw_tx, your_wallet: Keypair) -> Optional[VersionedTransaction]:
+    """Clone a transaction from Wallet A and prepare it for your wallet"""
+    try:
+        print(f"\n📅 Starting clone at {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Decode base64 transaction
+        encoded = raw_tx["transaction"][0] if isinstance(raw_tx["transaction"], list) else raw_tx["transaction"]
+        tx_bytes = b64decode(encoded)
+        
+        tx = VersionedTransaction.from_bytes(tx_bytes)
+        msg: VersionedMessage = tx.message
+        
+        print(f"✅ Decoded base64 transaction")
+        print(f"💰 Using payer: {your_wallet.pubkey()}")
+        
+        # Get blockhash from original transaction
+        blockhash = raw_tx["transaction"][1]["recentBlockhash"]
+        print(f"📦 Using blockhash: {blockhash}")
+        
+        # Create instructions with proper account replacements
+        new_ixs = []
+        
+        # Add compute budget and tip instructions first
+        compute_ixs = create_compute_budget_instructions()
+        new_ixs.extend(compute_ixs)
+        
+        tip_ix = create_jito_tip_instruction(your_wallet.pubkey())
+        if tip_ix:
+            new_ixs.append(tip_ix)
+        
+        # Clone and modify the original instructions
+        for ix in msg.instructions:
+            new_accounts = []
+            for idx in ix.accounts:
+                if idx < len(msg.account_keys):
+                    key = msg.account_keys[idx]
+                    if str(key) == "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK":
+                        key = your_wallet.pubkey()
+                    
+                    is_signer = idx < msg.header.num_required_signatures
+                    is_writable = idx < msg.header.num_required_write_locks
+                    new_accounts.append(AccountMeta(key, is_signer, is_writable))
+            
+            new_ixs.append(Instruction(
+                program_id=msg.account_keys[ix.program_id_index],
+                accounts=new_accounts,
+                data=bytes(ix.data)
+            ))
+        
+        # Create and return the new transaction
+        new_msg = MessageV0.try_compile(
+            payer=your_wallet.pubkey(),
+            instructions=new_ixs,
+            recent_blockhash=blockhash,
+            address_lookup_table_accounts=[]
+        )
+        
+        return VersionedTransaction(new_msg, [your_wallet])
+        
+    except Exception as e:
+        print(f"❌ Error cloning transaction: {str(e)}")
+        traceback.print_exc()
+        return None
+    
 def display_system_info():
     """Display current system information"""
     print("\n📅 System Information")
@@ -137,7 +232,6 @@ def _load_keypair() -> Optional[Keypair]:
     except Exception as e:
         print(f"❌ Failed to load wallet: {e}")
         return None
-
 
 # Data Classes
 @dataclass
@@ -165,6 +259,8 @@ class PerformanceStats:
         print(f"  Trades mirrored        : {self.trades_mirrored}")
         print(f"  Successful mirrors     : {self.successful_mirrors}")
         print(f"  Avg Mirror Latency (ms): {self.avg_latency:.2f}")
+
+
 
 class JitoClient:
     def __init__(self):
@@ -248,6 +344,27 @@ class CopyTradingBot:
             return True
         except Exception as e:
             print(f"Trade failed: {str(e)}")
+            return False
+
+    async def check_balances(self) -> bool:
+        """Check if wallet has sufficient SOL balance"""
+        try:
+            # Get SOL balance
+            sol_balance = await self.get_sol_balance()
+            print(f"\n💰 Current SOL balance: {sol_balance:.4f} SOL")
+            
+            # Minimum SOL needed for rent exemption and fees
+            MIN_SOL_BALANCE = 0.05
+            
+            if sol_balance < MIN_SOL_BALANCE:
+                print(f"❌ Insufficient SOL balance. Need at least {MIN_SOL_BALANCE} SOL")
+                return False
+                
+            print("✅ Sufficient SOL balance")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error checking balances: {str(e)}")
             return False
 
     def _analyze_transaction_logs(self, logs: List[str]) -> bool:
@@ -534,285 +651,75 @@ class CopyTradingBot:
             start_time = time.time()
             print(f"\n📥 Processing {tx_type} transaction at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
             
-            # Get message for better readability
-            msg = versioned_tx.message
-            
-            # First, initialize any needed token accounts
-            print("\n🔍 Checking for token accounts...")
-            for ix in msg.instructions:
-                if ix.program_id_index < len(msg.account_keys):
-                    program_id = msg.account_keys[ix.program_id_index]
-                    if str(program_id) == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA":
-                        for acc_idx in ix.accounts:
-                            if acc_idx < len(msg.account_keys):
-                                account = msg.account_keys[acc_idx]
-                                # If this is a token mint, create ATA if needed
-                                try:
-                                    ata = await get_associated_token_address(
-                                        self.keypair.pubkey(),
-                                        account
-                                    )
-                                    # Check if ATA exists
-                                    account_info = await self.client.get_account_info(ata)
-                                    if not account_info.value:
-                                        print(f"Creating ATA for mint: {account}")
-                                        create_ata_ix = create_associated_token_account(
-                                            payer=self.keypair.pubkey(),
-                                            owner=self.keypair.pubkey(),
-                                            mint=account
-                                        )
-                                        # Send ATA creation transaction
-                                        tx = Transaction().add(create_ata_ix)
-                                        await self.client.send_transaction(tx, [self.keypair])
-                                        print(f"✅ Created ATA for mint: {account}")
-                                except Exception as e:
-                                    print(f"⚠️ Error checking/creating ATA: {str(e)}")
-                                    continue
+            # Check balances first
+            if not await self.check_balances():
+                print("❌ Insufficient balance to execute trade")
+                return
 
-            # Now proceed with the original transaction processing
+            # Create and sign transaction
             try:
-                # Create and sign transaction
-                print("\n📝 Creating transaction...")
+                # Create and sign transaction using the existing function from tx_builder
                 tx = create_and_sign_transaction(
                     keypair=self.keypair,
-                    instructions=msg.instructions,
+                    instructions=versioned_tx.message.instructions,
                     recent_blockhash=blockhash,
-                    account_keys=msg.account_keys,
-                    num_required_signatures=msg.header.num_required_signatures,
-                    num_readonly_signed_accounts=msg.header.num_readonly_signed_accounts,
-                    num_readonly_unsigned_accounts=msg.header.num_readonly_unsigned_accounts
+                    account_keys=versioned_tx.message.static_account_keys,
+                    num_required_signatures=versioned_tx.message.header.num_required_signatures,
+                    num_readonly_signed_accounts=versioned_tx.message.header.num_readonly_signed_accounts,
+                    num_readonly_unsigned_accounts=versioned_tx.message.header.num_readonly_unsigned_accounts
                 )
-
+                
                 if not tx:
                     print("❌ Failed to create transaction")
                     return
 
                 # First try Jito bundle
                 print("\n🚀 Attempting Jito bundle submission...")
-                bundle = Bundle(tx)
-                bundle_result = await self.jito_client.send_bundle(bundle)
+                bundle = create_jito_bundle(tx)
                 
-                if bundle_result:
-                    print("✅ Jito bundle submitted successfully")
-                    self.stats.successful_mirrors += 1
-                else:
-                    print("⚠️ Jito bundle failed, falling back to RPC...")
-                    # RPC fallback
-                    sim_result = await self.simulate_transaction(tx)
-                    if not sim_result:
-                        print("❌ Transaction simulation failed")
+                if bundle:
+                    # Use the proper Jito submission function
+                    jito_success = await submit_to_jito_block_engine(
+                        bundle=bundle,
+                        auth_token=kz.JITO_AUTH_TOKEN
+                    )
+                    
+                    if jito_success:
+                        print("✅ Jito bundle submitted successfully")
+                        self.stats.successful_mirrors += 1
                         return
+                        
+                # RPC fallback if Jito fails
+                print("⚠️ Jito bundle failed, falling back to RPC...")
+                sim_result = await self.simulate_transaction(tx)
+                if not sim_result:
+                    print("❌ Transaction simulation failed")
+                    return
 
-                    print("🚀 Sending via RPC fallback...")
-                    sig = await self.client.send_transaction(tx)
-                    print(f"✅ RPC transaction submitted: {sig}")
-                    self.stats.successful_mirrors += 1
-
-                end_time = time.time()
-                latency = (end_time - start_time) * 1000
-                print(f"\n⏱️ Processing time: {latency:.2f}ms")
-                self.stats.update_latency(latency)
+                print("🚀 Sending via RPC fallback...")
+                opts = TxOpts(
+                    skip_preflight=True,
+                    preflight_commitment=Processed,
+                    max_retries=3
+                )
+                sig = await self.client.send_transaction(tx, opts=opts)
+                print(f"✅ RPC transaction submitted: {sig}")
+                self.stats.successful_mirrors += 1
 
             except Exception as e:
-                print(f"❌ Error processing transaction data: {str(e)}")
+                print(f"❌ Error processing transaction: {str(e)}")
                 traceback.print_exc()
-                self.stats.failed_mirrors += 1
+                return
+
+            end_time = time.time()
+            latency = (end_time - start_time) * 1000
+            print(f"\n⏱️ Processing time: {latency:.2f}ms")
+            self.stats.update_latency(latency)
 
         except Exception as e:
             print(f"❌ Error in process_transaction_data: {str(e)}")
             traceback.print_exc()
-            self.stats.failed_mirrors += 1
             
-    async def clone_transaction_from_wallet_a(raw_tx, your_wallet):
-        try:
-            print(f"\n📅 Starting clone at {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}")
-            print("🧪 clone_transaction_from_wallet_a STARTED")
-
-            # Decode base64 transaction
-            encoded = raw_tx["transaction"][0] if isinstance(raw_tx["transaction"], list) else raw_tx["transaction"]
-            tx_bytes = b64decode(encoded)
-
-            from solders.transaction import VersionedTransaction
-            from solders.message import VersionedMessage, MessageV0, AddressLookupTableAccount
-            from solders.instruction import AccountMeta, Instruction
-            from solders.pubkey import Pubkey
-            from spl.token.instructions import get_associated_token_address, create_associated_token_account
-
-            tx = VersionedTransaction.from_bytes(tx_bytes)
-            msg: VersionedMessage = tx.message
-
-            print(f"✅ Decoded base64 transaction")
-            print(f"💰 Using payer: {your_wallet.pubkey()}")
-
-            # Reuse blockhash from Wallet A transaction
-            blockhash = raw_tx["transaction"][1]["recentBlockhash"]
-            print(f"📦 Using blockhash: {blockhash}")
-
-            # === STEP 1: Collect all token mints and ATAs ===
-            print("\n🔍 Step 1: Analyzing token accounts...")
-            token_mints = set()
-            wallet_a_atas = set()
-
-            # First pass: find all SPL Token program calls
-            for ix in msg.instructions:
-                if ix.program_id_index < len(msg.account_keys):
-                    program_id = msg.account_keys[ix.program_id_index]
-                    if str(program_id) == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA":
-                        for acc_idx in ix.accounts:
-                            if acc_idx < len(msg.account_keys):
-                                acc = msg.account_keys[acc_idx]
-                                if str(acc) == "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK":
-                                    wallet_a_atas.add(str(acc))
-                                token_mints.add(str(acc))
-
-            print(f"Found {len(token_mints)} potential token mints")
-            print(f"Found {len(wallet_a_atas)} Wallet A ATAs")
-
-            # === STEP 2: Get corresponding ATAs for your wallet ===
-            print("\n🔍 Step 2: Processing ATAs...")
-            ata_instructions = []
-            ata_mappings = {}
-
-            for ata in wallet_a_atas:
-                try:
-                    ata_info = await fetch_json_rpc(
-                        "getAccountInfo", 
-                        [ata, {"encoding": "jsonParsed", "commitment": "processed"}]
-                    )
-                    if ata_info.get("result", {}).get("value"):
-                        mint = ata_info["result"]["value"]["data"]["parsed"]["info"]["mint"]
-
-                        your_ata = get_associated_token_address(your_wallet.pubkey(), Pubkey.from_string(mint))
-                        ata_mappings[ata] = str(your_ata)
-
-                        your_ata_info = await fetch_json_rpc(
-                            "getAccountInfo", 
-                            [str(your_ata), {"encoding": "base64"}]
-                        )
-                        if not your_ata_info.get("result", {}).get("value"):
-                            print(f"🔧 Creating your ATA for mint {mint[:8]}...")
-                            create_ix = create_associated_token_account(
-                                payer=your_wallet.pubkey(),
-                                wallet_address=your_wallet.pubkey(),
-                                token_mint=Pubkey.from_string(mint)
-                            )
-                            ata_instructions.append(create_ix)
-                        else:
-                            print(f"✅ Your ATA exists for mint {mint[:8]}")
-                except Exception as e:
-                    print(f"⚠️ Error processing ATA {ata}: {str(e)}")
-
-            # === STEP 3: Reconstruct instructions with proper account replacements ===
-            print("\n🔍 Step 3: Building instructions...")
-            from tx_builder import get_jito_fee_instructions
-            jito_ixs = get_jito_fee_instructions(your_wallet.pubkey())
-
-            new_ixs = []
-            for ix in msg.instructions:
-                program_id = msg.account_keys[ix.program_id_index]
-                new_accounts = []
-                for idx in ix.accounts:
-                    if idx < len(msg.account_keys):
-                        key = msg.account_keys[idx]
-                        key_str = str(key)
-                        if key_str == "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK":
-                            key = your_wallet.pubkey()
-                        elif key_str in ata_mappings:
-                            key = Pubkey.from_string(ata_mappings[key_str])
-
-                        is_signer = idx < msg.header.num_required_signatures
-                        is_writable = idx < msg.header.num_required_write_locks
-                        new_accounts.append(AccountMeta(key, is_signer, is_writable))
-
-                new_ixs.append(Instruction(program_id, bytes(ix.data), new_accounts))
-
-            # === STEP 3.5: Validate instructions before compilation ===
-            print("\n🔍 Validating instructions...")
-            
-            if not ata_instructions:
-                print("✅ No ATA creation needed")
-            else:
-                print(f"✅ ATA instructions prepared: {len(ata_instructions)}")
-            
-            print(f"✅ Jito fee instructions prepared: {len(jito_ixs)}")
-            print(f"✅ Main instructions prepared: {len(new_ixs)}")
-            
-            # Validate account replacements
-            replaced_count = 0
-            for ix in new_ixs:
-                for acc in ix.accounts:
-                    if str(acc.pubkey) == str(your_wallet.pubkey()):
-                        replaced_count += 1
-            print(f"✅ Replaced {replaced_count} account references")
-
-            # Check for token program instructions
-            token_ix_count = 0
-            for ix in new_ixs:
-                if str(ix.program_id) == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA":
-                    token_ix_count += 1
-            print(f"✅ Found {token_ix_count} token instructions")
-
-            all_instructions = ata_instructions + jito_ixs + new_ixs
-
-            # === STEP 4: Compile with lookup tables ===
-            print("\n🔍 Step 4: Compiling transaction...")
-            lookup_tables = []
-            if msg.address_table_lookups:
-                for lookup in msg.address_table_lookups:
-                    try:
-                        writable = [msg.loaded_addresses.writable[i] for i in lookup.writable_indexes]
-                        readonly = [msg.loaded_addresses.readonly[i] for i in lookup.readonly_indexes]
-                        lookup_tables.append(
-                            AddressLookupTableAccount(
-                                key=lookup.account_key,
-                                writable_addresses=writable,
-                                readonly_addresses=readonly,
-                            )
-                        )
-                        print(f"✅ Added lookup table: {lookup.account_key}")
-                    except Exception as e:
-                        print(f"⚠️ Error adding lookup table: {str(e)}")
-
-            try:
-                message = MessageV0.try_compile(
-                    payer=your_wallet.pubkey(),
-                    instructions=all_instructions,
-                    address_lookup_table_accounts=lookup_tables,
-                    recent_blockhash=blockhash
-                )
-                print("✅ Message compiled successfully")
-            except Exception as e:
-                print(f"❌ Message compilation failed: {str(e)}")
-                raise e
-
-            # Sign transaction
-            tx = VersionedTransaction(message, [your_wallet])
-            
-            # Verify final transaction
-            print("\n🔍 Final Transaction Verification:")
-            print(f"• Fee payer: {tx.message.account_keys[0]}")
-            print(f"• Total accounts: {len(tx.message.account_keys)}")
-            print(f"• Required signatures: {tx.message.header.num_required_signatures}")
-            print(f"• Readonly signers: {tx.message.header.num_readonly_signed_accounts}")
-            print(f"• Readonly non-signers: {tx.message.header.num_readonly_unsigned_accounts}")
-            print(f"• Transaction size: {len(tx.to_bytes_versioned())} bytes")
-            print(f"• Instructions: {len(all_instructions)}")
-            print(f"• Lookup tables: {len(lookup_tables)}")
-
-            print(f"\n✅ Transaction cloned successfully!")
-            print(f"📏 Size: {len(tx.to_bytes_versioned())} bytes")
-            print(f"🔑 Signature: {tx.signatures[0]}")
-            print(f"⏱️ Clone completed at {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}")
-
-            return tx
-
-        except Exception as e:
-            print(f"\n❌ Error in clone_transaction_from_wallet_a:")
-            print(f"Error type: {type(e).__name__}")
-            print(f"Error message: {str(e)}")
-            traceback.print_exc()
-            return None
-    
     async def _get_recent_blockhash(self) -> Optional[str]:
         """Get a recent blockhash from the network using RPC."""
         try:
