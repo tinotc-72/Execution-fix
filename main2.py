@@ -74,7 +74,7 @@ def get_current_user():
 
 def display_system_info():
     """Display current system information"""
-    print(f"\nCurrent Date and Time (UTC): {get_formatted_datetime()}")
+    print(f"\nCurrent Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): {get_formatted_datetime()}")
     print(f"Current User's Login: {get_current_user()}\n")
 
 def _load_keypair() -> Optional[Keypair]:
@@ -86,6 +86,34 @@ def _load_keypair() -> Optional[Keypair]:
     except Exception as e:
         print(f"❌ Failed to load wallet: {e}")
         return None
+
+async def trade_menu(bot):
+    """Trading menu for manual trades"""
+    while True:
+        print("\n📈 Trading Menu")
+        print("="*50)
+        print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
+        print(f"Current User's Login: {get_current_user()}\n")
+        print("1. Buy")
+        print("2. Sell")
+        print("3. Return to main menu")
+        
+        choice = input("\nEnter your choice (1-3): ")
+        
+        if choice == "3":
+            break
+            
+        try:
+            amount = float(input("Enter amount to trade: "))
+            price = input("Enter price (or press Enter for market price): ")
+            price = float(price) if price else None
+            
+            if choice == "1":
+                await bot.execute_trade("buy", amount, price)
+            elif choice == "2":
+                await bot.execute_trade("sell", amount, price)
+        except ValueError:
+            print("Invalid input. Please enter valid numbers.")
 
 # Data Classes
 @dataclass
@@ -191,32 +219,23 @@ class CopyTradingBot:
             print(f"❌ Failed to load wallet: {e}")
             return None
 
-    async def trade_menu(bot):  # Added bot parameter
-        while True:
-            print("\n📈 Trading Menu")
-            print("="*50)
-            print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
-            print(f"Current User's Login: {get_current_user()}\n")
-            print("1. Buy")
-            print("2. Sell")
-            print("3. Return to main menu")
-            
-            choice = input("\nEnter your choice (1-3): ")
-            
-            if choice == "3":
-                break
-                
-            try:
-                amount = float(input("Enter amount to trade: "))
-                price = input("Enter price (or press Enter for market price): ")
-                price = float(price) if price else None
-                
-                if choice == "1":
-                    execute_trade("buy", amount, price)
-                elif choice == "2":
-                    execute_trade("sell", amount, price)
-            except ValueError:
-                print("Invalid input. Please enter valid numbers.")
+    async def execute_trade(self, trade_type: str, amount: float, price: Optional[float] = None):
+        """Execute a trade"""
+        current_time = get_formatted_datetime()
+        
+        print(f"\nAttempting {trade_type} trade at {current_time}")
+        print(f"Amount: {amount}")
+        if price:
+            print(f"Price: {price}")
+        
+        try:
+            # Add your actual trading logic here
+            await asyncio.sleep(2)  # Simulate processing time
+            print(f"Trade executed successfully!")
+            return True
+        except Exception as e:
+            print(f"Trade failed: {str(e)}")
+            return False
 
     def execute_trade(trade_type, amount, price=None):
         """
@@ -833,13 +852,6 @@ class CopyTradingBot:
             print(f"❌ Error getting recent blockhash: {str(e)}")
             traceback.print_exc()
             return None
-
-    async def start(self):
-        print("\n🚀 Copy Trading Bot Initialization")
-        print(f"👤 User: {self.CURRENT_USER}")
-        print(f"🎯 Target: Wallet A ({self.target_wallet})")
-        print(f"💰 Your Wallet: {self.keypair.pubkey()}")
-        print(f"⏰ Start time (UTC): {self.CURRENT_TIME}")
 
     async def _start_websocket(self):
         """Internal method to handle WebSocket connection and message processing"""
