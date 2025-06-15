@@ -3,6 +3,7 @@
 # Standard library imports
 import os
 import asyncio
+import nest_asyncio
 import json
 import base64
 import statistics
@@ -79,6 +80,36 @@ def get_formatted_datetime():
 def get_current_user():
     """Get the current user's login name"""
     return "tinotc-72"
+
+async def display_trading_menu():
+    while True:
+        print("\n📈 Trading Menu")
+        print("=" * 50)
+        print(f"Current Date and Time (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Current User's Login: {os.getlogin()}")
+        print("\n1. Manual Buy")
+        print("2. Manual Sell")
+        print("3. 🤖 Start Copy Trading Bot")
+        print("4. Return to Main Menu")
+
+        choice = input("\nEnter your choice (1-4): ")
+
+        if choice == "3":
+            print("\n🚀 Starting Copy Trading Bot")
+            print("=" * 50)
+            bot = CopyTradingBot()
+            try:
+                # Initialize the bot
+                if await bot.initialize():
+                    # Start the monitoring process
+                    await bot.start_monitoring()
+            except Exception as e:
+                print(f"❌ Error: {str(e)}")
+                traceback.print_exc()
+            finally:
+                await bot.cleanup()
+        elif choice == "4":
+            break
 
 def display_trading_menu():
     """Display trading options and handle user input"""
@@ -919,32 +950,6 @@ class CopyTradingBot:
         except Exception as e:
             print(f"❌ Error during cleanup: {str(e)}")
 
-def main_menu():
-    """Main menu of the application"""
-    while True:
-        print("\n🏦 Main Menu")
-        print("=" * 50)
-        display_system_info()  # Show current time and user
-        print("\n1. 👛 View Wallet Balance")
-        print("2. 📈 Trading Menu (Manual & Copy Trading)")
-        print("3. ❌ Exit")
-        
-        choice = input("\nEnter your choice (1-3): ")
-        
-        if choice == "1":
-            keypair = _load_keypair()
-            if keypair:
-                bot = CopyTradingBot(keypair, WALLET_A_ADDRESS)
-                balance = asyncio.run(bot.get_sol_balance())
-                print(f"\n💰 Current SOL Balance: {balance:.4f} SOL")
-        elif choice == "2":
-            display_trading_menu()
-        elif choice == "3":
-            print("\n👋 Goodbye!")
-            break
-        else:
-            print("❌ Invalid choice. Please try again.")
-
 async def main():
     print("\n🚀 Welcome to Solana Trading Bot")
     print("="*50)
@@ -1003,4 +1008,5 @@ async def main():
             await bot.stop()
 
 if __name__ == "__main__":
+    nest_asyncio.apply()  # Add this line
     asyncio.run(main())
