@@ -1,0 +1,17 @@
+# Environment files
+.env
+.env_config
+env.example
+keyZ.py
+keyZII.py
+
+# Python
+__pycache__/
+*.pyc
+venv_clean/
+venv_test/
+*.log
+
+# Other
+*.csv
+install_certificates.command
