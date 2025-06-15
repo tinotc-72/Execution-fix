@@ -1,47 +1,43 @@
 # main.py2 - uses CopyTradingBot 
 
+# Standard library imports
 import os
 import asyncio
 import json
 import base64
 import statistics
 import time
+import traceback
 from typing import List, Dict, Union, Optional
 from dataclasses import dataclass
+from datetime import datetime, UTC, timezone
+
+# Third-party imports
 import pytz
-from datetime import datetime, UTC
-from statistics import mean
 import websockets
 from websockets.client import connect
 import aiohttp
-import traceback
-from solders.pubkey import Pubkey
-from solders.instruction import Instruction, AccountMeta
-from spl.token.instructions import get_associated_token_address, create_associated_token_account
-from solana.rpc.async_api import AsyncClient
-from solana.rpc.types import TokenAccountOpts
-from base64 import b64decode
-from utils import fetch_json_rpc
-from simulate_clone import clone_transaction_from_wallet_a
-from logger import log_mirrored_trade
 
 # Solana imports
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
-from solders.message import MessageV0
+from solders.message import MessageV0, VersionedMessage, AddressLookupTableAccount
 from solders.instruction import Instruction, AccountMeta
-
-# Jito imports
-from models import Bundle   # Only import Bundle once
-from jito_service import JitoClient  # From our local file
-from datetime import datetime, timezone
 from solders.signature import Signature
-from replicator import Replicator
+from solana.rpc.async_api import AsyncClient
+from solana.rpc.types import TokenAccountOpts
+from spl.token.instructions import get_associated_token_address, create_associated_token_account
 
 # Local imports
 import keyZ as kz
+from models import Bundle
+from jito_service import JitoClient
 from fast_executor import FastExecutor
+from utils import fetch_json_rpc
+from simulate_clone import clone_transaction_from_wallet_a
+from logger import log_mirrored_trade
+from replicator import Replicator
 from tx_builder import (
     create_and_sign_transaction,
     RPC_ENDPOINTS,
@@ -55,7 +51,6 @@ from config import (
     HELIUS_RPC_URL as RPC_URL,
     HELIUS_WS_URL as WS_URL
 )
-
 from wallet_tx_parser import (
     WalletATxParser,
     KNOWN_PROGRAMS,
@@ -63,24 +58,34 @@ from wallet_tx_parser import (
     SELL_KEYWORDS
 )
 
-WALLET_A_ADDRESS = "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK"  # Your target wallet
+# Constants
+WALLET_A_ADDRESS = "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK"
 
-def get_current_datetime_utc():
-    """Get current UTC datetime in YYYY-MM-DD HH:MM:SS format"""
-    utc_now = datetime.now(pytz.UTC)
-    return utc_now.strftime('%Y-%m-%d %H:%M:%S')
+# Utility Functions
+def get_formatted_datetime():
+    """Get current UTC datetime formatted as YYYY-MM-DD HH:MM:SS"""
+    return datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S')
 
-def get_user_login():
-    """Get the current user's login"""
-    return "tinotc-72"  # For now hardcoded, we can make this dynamic later
+def get_current_user():
+    """Get the current user's login name"""
+    return "tinotc-72"
 
-# Add these to your main menu function or where you need to display this information
 def display_system_info():
-    current_time = get_current_datetime_utc()
-    user_login = get_user_login()
-    print(f"\nCurrent Date and Time (UTC): {current_time}")
-    print(f"Current User's Login: {user_login}\n")
+    """Display current system information"""
+    print(f"\nCurrent Date and Time (UTC): {get_formatted_datetime()}")
+    print(f"Current User's Login: {get_current_user()}\n")
 
+def _load_keypair() -> Optional[Keypair]:
+    """Load keypair from private key"""
+    try:
+        keypair = Keypair.from_bytes(DECODED_PRIVATE_KEY)
+        print(f"✅ Wallet loaded successfully: {keypair.pubkey()}")
+        return keypair
+    except Exception as e:
+        print(f"❌ Failed to load wallet: {e}")
+        return None
+
+# Data Classes
 @dataclass
 class PerformanceStats:
     def __init__(self):
@@ -88,7 +93,7 @@ class PerformanceStats:
         self.trades_mirrored = 0
         self.successful_mirrors = 0
         self._latencies = []
-        
+    
     def update_latency(self, latency_ms: float):
         """Update latency statistics."""
         self._latencies.append(latency_ms)
@@ -172,6 +177,68 @@ class CopyTradingBot:
         self.tx_parser = WalletATxParser(keypair)  # Initialize the parser
         self.client = AsyncClient(self.rpc_url)
         print("✅ Initialized Solana RPC client")
+
+    def _load_keypair() -> Optional[Keypair]:
+        """Load keypair from private key"""
+        try:
+            keypair = Keypair.from_bytes(DECODED_PRIVATE_KEY)
+            print(f"✅ Wallet loaded successfully: {keypair.pubkey()}")
+            return keypair
+            
+        except Exception as e:
+            print(f"❌ Failed to load wallet: {e}")
+            return None
+
+    async def trade_menu(bot):  # Added bot parameter
+        while True:
+            print("\n📈 Trading Menu")
+            print("="*50)
+            print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
+            print(f"Current User's Login: {get_current_user()}\n")
+            print("1. Buy")
+            print("2. Sell")
+            print("3. Return to main menu")
+            
+            choice = input("\nEnter your choice (1-3): ")
+            
+            if choice == "3":
+                break
+                
+            try:
+                amount = float(input("Enter amount to trade: "))
+                price = input("Enter price (or press Enter for market price): ")
+                price = float(price) if price else None
+                
+                if choice == "1":
+                    execute_trade("buy", amount, price)
+                elif choice == "2":
+                    execute_trade("sell", amount, price)
+            except ValueError:
+                print("Invalid input. Please enter valid numbers.")
+
+    def execute_trade(trade_type, amount, price=None):
+        """
+        Execute a trade
+        trade_type: 'buy' or 'sell'
+        amount: amount to trade
+        price: optional limit price
+        """
+        current_time = get_formatted_datetime()  # Use our helper function
+        
+        # Log the trade attempt
+        print(f"\nAttempting {trade_type} trade at {current_time}")
+        print(f"Amount: {amount}")
+        if price:
+            print(f"Price: {price}")
+        
+        try:
+            # Simulate trade execution (replace with actual trading logic)
+            time.sleep(2)  # Simulate processing time
+            print(f"Trade executed successfully!")
+            return True
+        except Exception as e:
+            print(f"Trade failed: {str(e)}")
+            return False
 
     def _analyze_transaction_logs(self, logs: List[str]) -> bool:
         try:
@@ -930,17 +997,6 @@ class CopyTradingBot:
         except Exception as e:
             print(f"❌ Error during cleanup: {str(e)}")
 
-def _load_keypair() -> Optional[Keypair]:
-    """Load keypair from private key"""
-    try:
-        keypair = Keypair.from_bytes(DECODED_PRIVATE_KEY)
-        print(f"✅ Wallet loaded successfully: {keypair.pubkey()}")
-        return keypair
-        
-    except Exception as e:
-        print(f"❌ Failed to load wallet: {e}")
-        return None
-
 def display_trading_menu():
     """Display trading options and handle user input"""
     while True:
@@ -1004,16 +1060,12 @@ def main_menu():
         else:
             print("❌ Invalid choice. Please try again.")
 
-# Modify your main() function to start with the menu
 async def main():
-    """Main entry point"""
     print("\n🚀 Welcome to Solana Trading Bot")
-    print("=" * 50)
+    print("="*50)
     print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
     print(f"Current User's Login: {get_current_user()}")
-    print("=" * 50)
-    
-    main_menu()  # Start with the main menu
+    print("="*50 + "\n")
     
     try:
         # Load wallet
@@ -1029,10 +1081,33 @@ async def main():
         if not await bot.initialize():
             print("❌ Bot initialization failed")
             return
-        
-        # Start bot
-        await bot.start()
-        
+            
+        # Main menu loop
+        while True:
+            print("\n🏦 Main Menu")
+            print("="*50 + "\n")
+            print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
+            print(f"Current User's Login: {get_current_user()}\n")
+            print("1. View Wallet")
+            print("2. Trade")
+            print("3. Exit")
+            
+            choice = input("\nEnter your choice (1-3): ")
+            
+            if choice == "1":
+                print(f"✅ Wallet loaded successfully: {bot.wallet.pubkey()}")
+                balance = await bot.get_sol_balance()
+                print(f"💰 Current SOL Balance: {balance:.9f} SOL")
+                
+            elif choice == "2":
+                await trade_menu(bot)  # Pass bot to trade_menu
+                
+            elif choice == "3":
+                print("Exiting...")
+                break
+            else:
+                print("Invalid choice. Please try again.")
+                
     except KeyboardInterrupt:
         print("\n🛑 Received stop signal")
     except Exception as e:
