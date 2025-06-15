@@ -16,13 +16,15 @@ from datetime import datetime, UTC, timezone
 import pytz
 import websockets
 from websockets.client import connect
+from websockets.legacy.client import connect
 import aiohttp
 
 # Solana imports
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
-from solders.message import MessageV0, VersionedMessage, AddressLookupTableAccount
+from solders.message import MessageV0, VersionedMessage
+from solders.address_lookup_table_account import AddressLookupTableAccount
 from solders.instruction import Instruction, AccountMeta
 from solders.signature import Signature
 from solana.rpc.async_api import AsyncClient
