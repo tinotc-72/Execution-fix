@@ -88,3 +88,18 @@ dmypy.json
 .pdm-build/
 .cursorignore
 .cursorindexingignore
+
+# Sensitive files
+keyZ.py
+*key*.py
+*.env
+.env*
+*secret*
+*private*
+
+# Additional files to ignore
+minimal_test.py
+replicatorRR.py
+tx_builder_old.py
+wallet_tx_parserOG.py
+wallet_tx_parserRR.py
