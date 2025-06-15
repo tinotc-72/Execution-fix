@@ -73,10 +73,60 @@ def get_current_user():
     """Get the current user's login name"""
     return "tinotc-72"
 
+def display_trading_menu():
+    """Display trading options and handle user input"""
+    while True:
+        print("\n📈 Trading Menu")
+        print("=" * 50)
+        print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
+        print(f"Current User's Login: {get_current_user()}\n")
+        print("1. Manual Buy")
+        print("2. Manual Sell")
+        print("3. 🤖 Start Copy Trading Bot")  # Added Copy Trading option
+        print("4. Return to Main Menu")
+        
+        choice = input("\nEnter your choice (1-4): ")
+        
+        if choice == "3":
+            # Start copy trading bot
+            print("\n🚀 Starting Copy Trading Bot")
+            print("=" * 50)
+            print(f"👀 Monitoring Wallet A: {WALLET_A_ADDRESS}")
+            bot = CopyTradingBot(_load_keypair(), WALLET_A_ADDRESS)
+            if asyncio.run(bot.initialize()):
+                print("\n✅ Bot initialized successfully")
+                print("🔄 Starting WebSocket connection...")
+                try:
+                    asyncio.run(bot.start())
+                except KeyboardInterrupt:
+                    print("\n🛑 Stopping bot...")
+                    asyncio.run(bot.stop())
+            return  # Return to main menu after bot stops
+            
+        elif choice == "1" or choice == "2":
+            try:
+                amount = float(input("Enter amount to trade: "))
+                price = input("Enter price (or press Enter for market price): ")
+                price = float(price) if price else None
+                
+                trade_type = "buy" if choice == "1" else "sell"
+                bot = CopyTradingBot(_load_keypair(), WALLET_A_ADDRESS)
+                asyncio.run(bot.execute_trade(trade_type, amount, price))
+            except ValueError:
+                print("❌ Invalid input. Please enter valid numbers.")
+        elif choice == "4":
+            break
+        else:
+            print("❌ Invalid choice. Please try again.")
+
 def display_system_info():
     """Display current system information"""
-    print(f"\nCurrent Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): {get_formatted_datetime()}")
-    print(f"Current User's Login: {get_current_user()}\n")
+    print("\n📅 System Information")
+    print("=" * 50)
+    print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
+    print(f"Current User: {get_current_user()}")
+    print(f"Wallet A Address: {WALLET_A_ADDRESS}")
+    print("=" * 50)
 
 def _load_keypair() -> Optional[Keypair]:
     """Load keypair from private key"""
@@ -88,33 +138,6 @@ def _load_keypair() -> Optional[Keypair]:
         print(f"❌ Failed to load wallet: {e}")
         return None
 
-async def trade_menu(bot):
-    """Trading menu for manual trades"""
-    while True:
-        print("\n📈 Trading Menu")
-        print("="*50)
-        print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
-        print(f"Current User's Login: {get_current_user()}\n")
-        print("1. Buy")
-        print("2. Sell")
-        print("3. Return to main menu")
-        
-        choice = input("\nEnter your choice (1-3): ")
-        
-        if choice == "3":
-            break
-            
-        try:
-            amount = float(input("Enter amount to trade: "))
-            price = input("Enter price (or press Enter for market price): ")
-            price = float(price) if price else None
-            
-            if choice == "1":
-                await bot.execute_trade("buy", amount, price)
-            elif choice == "2":
-                await bot.execute_trade("sell", amount, price)
-        except ValueError:
-            print("Invalid input. Please enter valid numbers.")
 
 # Data Classes
 @dataclass
@@ -937,28 +960,28 @@ class CopyTradingBot:
     async def start(self):
         """Start the trading bot with automatic reconnection"""
         # Initialize and display system info
-        print("\n🚀 Copy Trading Bot Initialization")
-        print("="*50)
-        print(f"Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): {get_formatted_datetime()}")
-        print(f"Current User's Login: {get_current_user()}")
+        print("\n🚀 Copy Trading Bot Active")
+        print("=" * 50)
+        print(f"⏰ Start Time (UTC): {get_formatted_datetime()}")
         print(f"👤 User: {self.CURRENT_USER}")
-        print(f"🎯 Target: Wallet A ({self.target_wallet})")
+        print(f"🎯 Target: {self.target_wallet}")
         print(f"💰 Your Wallet: {self.keypair.pubkey()}")
-        print(f"⏰ Start time (UTC): {self.CURRENT_TIME}")
-        print("="*50 + "\n")
+        print("=" * 50 + "\n")
         
-        # Start WebSocket connection with reconnection
+        print("📡 Starting WebSocket connection...")
         while True:
             try:
                 await self._start_websocket()
             except websockets.exceptions.ConnectionClosed:
-                print("📡 WebSocket disconnected, reconnecting...")
+                print("\n⚠️ WebSocket disconnected, reconnecting...")
                 await asyncio.sleep(1)
             except KeyboardInterrupt:
                 print("\n🛑 Received stop signal")
+                await self.stop()
                 break
             except Exception as e:
-                print(f"❌ Error: {str(e)}")
+                print(f"\n❌ Error: {str(e)}")
+                traceback.print_exc()
                 await asyncio.sleep(1)
 
     async def stop(self):
@@ -989,56 +1012,19 @@ class CopyTradingBot:
         except Exception as e:
             print(f"❌ Error during cleanup: {str(e)}")
 
-def display_trading_menu():
-    """Display trading options and handle user input"""
-    while True:
-        print("\n💹 Trading Menu")
-        print("=" * 50)
-        print("1. Execute Manual Buy")
-        print("2. Execute Manual Sell")
-        print("3. Start Automated Copy Trading")
-        print("4. Return to Main Menu")
-        
-        choice = input("\nEnter your choice (1-4): ")
-        
-        if choice == "1" or choice == "2":
-            try:
-                amount = float(input("Enter amount to trade: "))
-                price = input("Enter price (or press Enter for market price): ")
-                price = float(price) if price else None
-                
-                trade_type = "buy" if choice == "1" else "sell"
-                # Use the existing execute_trade function from your bot
-                bot = CopyTradingBot(_load_keypair(), WALLET_A_ADDRESS)
-                asyncio.run(bot.process_transaction_data(
-                    versioned_tx=None,  # We'll need to create a transaction
-                    tx_type=trade_type.upper(),
-                    blockhash=asyncio.run(bot._get_recent_blockhash())
-                ))
-            except ValueError:
-                print("❌ Invalid input. Please enter valid numbers.")
-        elif choice == "3":
-            print("\n🚀 Starting automated copy trading...")
-            asyncio.run(main())
-        elif choice == "4":
-            break
-        else:
-            print("❌ Invalid choice. Please try again.")
-
 def main_menu():
     """Main menu of the application"""
     while True:
         print("\n🏦 Main Menu")
         print("=" * 50)
         display_system_info()  # Show current time and user
-        print("1. View Wallet")
-        print("2. Trade")
-        print("3. Exit")
+        print("\n1. 👛 View Wallet Balance")
+        print("2. 📈 Trading Menu (Manual & Copy Trading)")
+        print("3. ❌ Exit")
         
         choice = input("\nEnter your choice (1-3): ")
         
         if choice == "1":
-            # We'll need to implement wallet view functionality
             keypair = _load_keypair()
             if keypair:
                 bot = CopyTradingBot(keypair, WALLET_A_ADDRESS)
@@ -1077,28 +1063,28 @@ async def main():
         # Main menu loop
         while True:
             print("\n🏦 Main Menu")
-            print("="*50 + "\n")
+            print("="*50)
             print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
             print(f"Current User's Login: {get_current_user()}\n")
-            print("1. View Wallet")
-            print("2. Trade")
+            print("1. View Wallet Balance")
+            print("2. Trading Menu (Manual & Copy Trading)")
             print("3. Exit")
             
             choice = input("\nEnter your choice (1-3): ")
             
             if choice == "1":
-                print(f"✅ Wallet loaded successfully: {bot.wallet.pubkey()}")
                 balance = await bot.get_sol_balance()
-                print(f"💰 Current SOL Balance: {balance:.9f} SOL")
+                print(f"\n💰 Current SOL Balance: {balance:.9f} SOL")
                 
             elif choice == "2":
-                await trade_menu(bot)  # Pass bot to trade_menu
+                # Replace trade_menu(bot) with display_trading_menu()
+                display_trading_menu()
                 
             elif choice == "3":
-                print("Exiting...")
+                print("\n👋 Goodbye!")
                 break
             else:
-                print("Invalid choice. Please try again.")
+                print("❌ Invalid choice. Please try again.")
                 
     except KeyboardInterrupt:
         print("\n🛑 Received stop signal")
