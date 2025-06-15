@@ -941,13 +941,79 @@ def _load_keypair() -> Optional[Keypair]:
         print(f"❌ Failed to load wallet: {e}")
         return None
 
+def display_trading_menu():
+    """Display trading options and handle user input"""
+    while True:
+        print("\n💹 Trading Menu")
+        print("=" * 50)
+        print("1. Execute Manual Buy")
+        print("2. Execute Manual Sell")
+        print("3. Start Automated Copy Trading")
+        print("4. Return to Main Menu")
+        
+        choice = input("\nEnter your choice (1-4): ")
+        
+        if choice == "1" or choice == "2":
+            try:
+                amount = float(input("Enter amount to trade: "))
+                price = input("Enter price (or press Enter for market price): ")
+                price = float(price) if price else None
+                
+                trade_type = "buy" if choice == "1" else "sell"
+                # Use the existing execute_trade function from your bot
+                bot = CopyTradingBot(_load_keypair(), WALLET_A_ADDRESS)
+                asyncio.run(bot.process_transaction_data(
+                    versioned_tx=None,  # We'll need to create a transaction
+                    tx_type=trade_type.upper(),
+                    blockhash=asyncio.run(bot._get_recent_blockhash())
+                ))
+            except ValueError:
+                print("❌ Invalid input. Please enter valid numbers.")
+        elif choice == "3":
+            print("\n🚀 Starting automated copy trading...")
+            asyncio.run(main())
+        elif choice == "4":
+            break
+        else:
+            print("❌ Invalid choice. Please try again.")
+
+def main_menu():
+    """Main menu of the application"""
+    while True:
+        print("\n🏦 Main Menu")
+        print("=" * 50)
+        display_system_info()  # Show current time and user
+        print("1. View Wallet")
+        print("2. Trade")
+        print("3. Exit")
+        
+        choice = input("\nEnter your choice (1-3): ")
+        
+        if choice == "1":
+            # We'll need to implement wallet view functionality
+            keypair = _load_keypair()
+            if keypair:
+                bot = CopyTradingBot(keypair, WALLET_A_ADDRESS)
+                balance = asyncio.run(bot.get_sol_balance())
+                print(f"\n💰 Current SOL Balance: {balance:.4f} SOL")
+        elif choice == "2":
+            display_trading_menu()
+        elif choice == "3":
+            print("\n👋 Goodbye!")
+            break
+        else:
+            print("❌ Invalid choice. Please try again.")
+
+# Modify your main() function to start with the menu
 async def main():
     """Main entry point"""
-    print("\n🚀 Starting Copy Trading Bot")
+    print("\n🚀 Welcome to Solana Trading Bot")
     print("=" * 50)
     print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
     print(f"Current User's Login: {get_current_user()}")
     print("=" * 50)
+    
+    main_menu()  # Start with the main menu
     
     try:
         # Load wallet
