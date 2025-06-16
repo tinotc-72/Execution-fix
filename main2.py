@@ -17,7 +17,6 @@ from datetime import datetime, UTC, timezone
 import pytz
 import websockets
 from websockets.client import connect
-from websockets.legacy.client import connect
 import aiohttp
 from base64 import b64decode
 from solders.instruction import AccountMeta, Instruction
@@ -80,36 +79,6 @@ def get_formatted_datetime():
 def get_current_user():
     """Get the current user's login name"""
     return "tinotc-72"
-
-async def display_trading_menu():
-    while True:
-        print("\n📈 Trading Menu")
-        print("=" * 50)
-        print(f"Current Date and Time (UTC): {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Current User's Login: {os.getlogin()}")
-        print("\n1. Manual Buy")
-        print("2. Manual Sell")
-        print("3. 🤖 Start Copy Trading Bot")
-        print("4. Return to Main Menu")
-
-        choice = input("\nEnter your choice (1-4): ")
-
-        if choice == "3":
-            print("\n🚀 Starting Copy Trading Bot")
-            print("=" * 50)
-            bot = CopyTradingBot()
-            try:
-                # Initialize the bot
-                if await bot.initialize():
-                    # Start the monitoring process
-                    await bot.start_monitoring()
-            except Exception as e:
-                print(f"❌ Error: {str(e)}")
-                traceback.print_exc()
-            finally:
-                await bot.cleanup()
-        elif choice == "4":
-            break
 
 def display_trading_menu():
     """Display trading options and handle user input"""
@@ -352,7 +321,6 @@ class CopyTradingBot:
         self.CURRENT_USER = get_current_user()
         self.rpc_url = RPC_URL
         self.ws_url = WS_URL
-        self.client = AsyncClient(self.rpc_url)
         self.stats = PerformanceStats()
         self.executor = FastExecutor(keypair)
         self.tx_parser = WalletATxParser(keypair)  # Initialize the parser
@@ -400,16 +368,24 @@ class CopyTradingBot:
 
     def _analyze_transaction_logs(self, logs: List[str]) -> bool:
         try:
-            # Use the class instance's parser
+            print("\n🔍 Analyzing logs with WalletATxParser...")
+            
+            # Use your existing parser
             parsed_result = self.tx_parser.parse_transaction_logs(logs)
+            print(f"Parser result: {parsed_result}")  # Add this debug line
+            
             if not parsed_result:
+                print("❌ Parser returned no result")  # Add this debug line
                 return False
 
-            # Check if Wallet A is involved
-            if not any(self.target_wallet in log for log in logs):
+            wallet_involved = any(self.target_wallet in log for log in logs)
+            print(f"Wallet A involved: {wallet_involved}")  # Add this debug line
+
+            if not wallet_involved:
+                print("❌ Transaction does not involve Wallet A")
                 return False
 
-            # Print useful info
+            # Your existing output
             print("\n🔍 Wallet A Trade Detected:")
             print(f"DEX: {parsed_result['dex']}")
             print(f"Instruction: {parsed_result['instruction']}")
@@ -679,76 +655,48 @@ class CopyTradingBot:
         
     async def process_transaction_data(self, versioned_tx: VersionedTransaction, tx_type: str, blockhash: str) -> None:
         try:
-            start_time = time.time()
-            print(f"\n📥 Processing {tx_type} transaction at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
+            # Add logging to track execution flow
+            print(f"\n🔄 Processing {tx_type} transaction...")
             
-            # Check balances first
+            # Check balances first with a more detailed error message
             if not await self.check_balances():
-                print("❌ Insufficient balance to execute trade")
+                print("❌ Trade skipped: Insufficient balance")
+                print("💡 Tip: Ensure you have enough SOL for transaction fees (~0.05 SOL)")
                 return
 
-            # Create and sign transaction
-            try:
-                # Create and sign transaction using the existing function from tx_builder
-                tx = create_and_sign_transaction(
-                    keypair=self.keypair,
-                    instructions=versioned_tx.message.instructions,
-                    recent_blockhash=blockhash,
-                    account_keys=versioned_tx.message.static_account_keys,
-                    num_required_signatures=versioned_tx.message.header.num_required_signatures,
-                    num_readonly_signed_accounts=versioned_tx.message.header.num_readonly_signed_accounts,
-                    num_readonly_unsigned_accounts=versioned_tx.message.header.num_readonly_unsigned_accounts
+            # Simulate the transaction first
+            sim_result = await self.simulate_transaction(versioned_tx)
+            if not sim_result:
+                print("❌ Trade skipped: Simulation failed")
+                return
+
+            # Create bundle for Jito submission
+            bundle = create_jito_bundle(versioned_tx)
+            if bundle:
+                jito_success = await submit_to_jito_block_engine(
+                    bundle=bundle,
+                    auth_token=kz.JITO_AUTH_TOKEN
                 )
-                
-                if not tx:
-                    print("❌ Failed to create transaction")
+                if jito_success:
+                    self.stats.successful_mirrors += 1
+                    print("✅ Trade executed via Jito")
                     return
 
-                # First try Jito bundle
-                print("\n🚀 Attempting Jito bundle submission...")
-                bundle = create_jito_bundle(tx)
-                
-                if bundle:
-                    # Use the proper Jito submission function
-                    jito_success = await submit_to_jito_block_engine(
-                        bundle=bundle,
-                        auth_token=kz.JITO_AUTH_TOKEN
-                    )
-                    
-                    if jito_success:
-                        print("✅ Jito bundle submitted successfully")
-                        self.stats.successful_mirrors += 1
-                        return
-                        
-                # RPC fallback if Jito fails
-                print("⚠️ Jito bundle failed, falling back to RPC...")
-                sim_result = await self.simulate_transaction(tx)
-                if not sim_result:
-                    print("❌ Transaction simulation failed")
-                    return
-
-                print("🚀 Sending via RPC fallback...")
-                opts = TxOpts(
+            # RPC fallback with proper error handling
+            print("⚠️ Jito submission failed, trying RPC fallback...")
+            sig = await self.client.send_transaction(
+                versioned_tx,
+                opts=TxOpts(
                     skip_preflight=True,
-                    preflight_commitment=Processed,
+                    preflight_commitment="confirmed",
                     max_retries=3
                 )
-                sig = await self.client.send_transaction(tx, opts=opts)
-                print(f"✅ RPC transaction submitted: {sig}")
-                self.stats.successful_mirrors += 1
-
-            except Exception as e:
-                print(f"❌ Error processing transaction: {str(e)}")
-                traceback.print_exc()
-                return
-
-            end_time = time.time()
-            latency = (end_time - start_time) * 1000
-            print(f"\n⏱️ Processing time: {latency:.2f}ms")
-            self.stats.update_latency(latency)
+            )
+            print(f"✅ Trade executed via RPC: {sig}")
+            self.stats.successful_mirrors += 1
 
         except Exception as e:
-            print(f"❌ Error in process_transaction_data: {str(e)}")
+            print(f"❌ Trade execution failed: {str(e)}")
             traceback.print_exc()
             
     async def _get_recent_blockhash(self) -> Optional[str]:
