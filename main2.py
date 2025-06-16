@@ -30,7 +30,7 @@ from solders.address_lookup_table_account import AddressLookupTableAccount
 from solders.instruction import Instruction, AccountMeta
 from solders.signature import Signature
 from solana.rpc.async_api import AsyncClient
-from solana.rpc.types import TokenAccountOpts
+from solana.rpc.types import TokenAccountOpts, TxOpts
 from spl.token.instructions import get_associated_token_address, create_associated_token_account
 
 # Local imports
@@ -70,7 +70,17 @@ WALLET_A_ADDRESS = "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK"
 COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
 COMPUTE_UNIT_LIMIT = 1_400_000
 COMPUTE_UNIT_PRICE = 100
+PUMP_FUN_PROGRAM_ID = Pubkey.from_string("PFcqD6d4DMEhSTnwYEpRDrhHVE6dpPHNGsFGjspx9Bow")
+SYS_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
 
+
+def is_valid_curve(curve_address: str) -> bool:
+    try:
+        Pubkey.from_string(curve_address)
+        return True
+    except:
+        return False
+    
 # Utility Functions
 def get_formatted_datetime():
     """Get current UTC datetime formatted as YYYY-MM-DD HH:MM:SS"""
@@ -326,7 +336,63 @@ class CopyTradingBot:
         self.tx_parser = WalletATxParser(keypair)  # Initialize the parser
         self.client = AsyncClient(self.rpc_url)
         print("✅ Initialized Solana RPC client")
+        self.active_positions = {}  # {mint: {'amount': int, 'buy_time': datetime}}
+        self.failed_sells = {}      # {mint: count_of_failed_sells}
+        self.last_sell_attempt = {} # {mint: last_attempt_time}
+        self.MAX_FAILED_SELLS = 3   # Maximum failed sells before blocking buys
+        self.SELL_COOLDOWN = 300    # 5 minutes cooldown between sell attempts
 
+    async def can_buy_token(self, mint: str) -> bool:
+        """Check if it's safe to buy a token based on sell history."""
+        try:
+            # Check if we already have a position
+            if mint in self.active_positions:
+                print(f"⚠️ Already holding position in {mint}")
+                return False
+
+            # Check failed sells count
+            failed_sells = self.failed_sells.get(mint, 0)
+            if failed_sells >= self.MAX_FAILED_SELLS:
+                print(f"🚫 Blocking buy: {failed_sells} failed sells for {mint}")
+                return False
+
+            # Check last sell attempt cooldown
+            if mint in self.last_sell_attempt:
+                time_since_last_sell = (datetime.now(UTC) - self.last_sell_attempt[mint]).total_seconds()
+                if time_since_last_sell < self.SELL_COOLDOWN:
+                    print(f"⏳ Sell cooldown active for {mint}. {self.SELL_COOLDOWN - time_since_last_sell:.0f}s remaining")
+                    return False
+
+            return True
+
+        except Exception as e:
+            print(f"❌ Error checking buy safety: {str(e)}")
+            return False
+
+    async def record_successful_buy(self, mint: str, amount: int):
+        """Record a successful buy."""
+        self.active_positions[mint] = {
+            'amount': amount,
+            'buy_time': datetime.now(UTC)
+        }
+        print(f"📝 Recorded buy position: {amount} of {mint}")
+
+    async def record_successful_sell(self, mint: str):
+        """Record a successful sell."""
+        if mint in self.active_positions:
+            del self.active_positions[mint]
+        if mint in self.failed_sells:
+            del self.failed_sells[mint]
+        if mint in self.last_sell_attempt:
+            del self.last_sell_attempt[mint]
+        print(f"📝 Cleared position data for {mint}")
+
+    async def record_failed_sell(self, mint: str):
+        """Record a failed sell attempt."""
+        self.failed_sells[mint] = self.failed_sells.get(mint, 0) + 1
+        self.last_sell_attempt[mint] = datetime.now(UTC)
+        print(f"⚠️ Recorded failed sell for {mint}. Total fails: {self.failed_sells[mint]}")
+        
     async def execute_trade(self, trade_type: str, amount: float, price: Optional[float] = None):
         """Execute a trade"""
         current_time = get_formatted_datetime()
@@ -365,40 +431,132 @@ class CopyTradingBot:
         except Exception as e:
             print(f"❌ Error checking balances: {str(e)}")
             return False
+    
+    async def _check_and_initialize_account(self, trade_info: dict) -> bool:
+        try:
+            print("\n🔍 Checking account initialization...")
+            print(f"⏰ Time: {get_formatted_datetime()}")
+            print(f"👤 User: {self.CURRENT_USER}")
+            
+            # Validate curve address first
+            if 'curve' not in trade_info:
+                print("❌ No curve address provided in trade info")
+                return False
+                
+            curve_address = trade_info['curve']
+            if not is_valid_curve(curve_address):
+                print(f"❌ Invalid curve address: {curve_address}")
+                return False
+                
+            # Get your wallet's pubkey
+            wallet_pubkey = self.keypair.pubkey()
+            print(f"💳 Using wallet: {wallet_pubkey}")
+            
+            # Get curve from trade info
+            curve = Pubkey.from_string(curve_address)
+            print(f"📊 Checking curve: {curve}")
+            
+            # Calculate your associated user account
+            assoc_user, _ = Pubkey.find_program_address(
+                [b"associated-user", bytes(wallet_pubkey), bytes(curve)],
+                PUMP_FUN_PROGRAM_ID
+            )
+            print(f"👥 Associated user account: {assoc_user}")
+            
+            # Check if account exists
+            account_info = await self.client.get_account_info(assoc_user)
+            if account_info.value is None:
+                print("\n⚠️ Account not initialized. Initializing now...")
+                
+                # Create initialization instruction
+                init_ix = Instruction(
+                    program_id=PUMP_FUN_PROGRAM_ID,
+                    accounts=[
+                        AccountMeta(assoc_user, False, True),
+                        AccountMeta(wallet_pubkey, True, True),
+                        AccountMeta(curve, False, False),
+                        AccountMeta(SYS_PROGRAM_ID, False, False)
+                    ],
+                    data=bytes([0])  # Init instruction
+                )
+                
+                # Get recent blockhash
+                blockhash = (await self.client.get_latest_blockhash()).value.blockhash
+                print(f"📦 Got recent blockhash: {blockhash}")
+                
+                # Create and sign transaction
+                msg = MessageV0.try_compile(
+                    payer=wallet_pubkey,
+                    instructions=[init_ix],
+                    recent_blockhash=blockhash,
+                    address_lookup_table_accounts=[]
+                )
+                tx = VersionedTransaction(msg, [self.keypair])
+                
+                # Send initialization transaction
+                print("🔄 Sending initialization transaction...")
+                result = await self.client.send_transaction(tx)
+                print(f"✅ Account initialized! Signature: {result.value}")
+                
+                # Wait for confirmation
+                print("⏳ Waiting for confirmation...")
+                await self.client.confirm_transaction(result.value)
+                print("✅ Initialization confirmed!")
+                
+                # Verify initialization
+                account_info = await self.client.get_account_info(assoc_user)
+                if account_info.value is None:
+                    print("❌ Verification failed: Account still not initialized")
+                    return False
+                    
+                print("\n🎉 Account successfully initialized and verified!")
+                print(f"📊 Account size: {len(account_info.value.data)} bytes")
+                
+            else:
+                print("✅ Account already initialized!")
+                print(f"📊 Account size: {len(account_info.value.data)} bytes")
+            
+            return True
 
-    def _analyze_transaction_logs(self, logs: List[str]) -> bool:
+        except Exception as e:
+            print(f"\n❌ Error checking/initializing account: {str(e)}")
+            print("📝 Stack trace:")
+            traceback.print_exc()
+            return False
+    
+    async def _analyze_transaction_logs(self, logs: List[str]) -> bool:
         try:
             print("\n🔍 Analyzing logs with WalletATxParser...")
             
-            # Use your existing parser
             parsed_result = self.tx_parser.parse_transaction_logs(logs)
-            print(f"Parser result: {parsed_result}")  # Add this debug line
+            print(f"Parser result: {parsed_result}")
             
             if not parsed_result:
-                print("❌ Parser returned no result")  # Add this debug line
+                print("❌ Parser returned no result")
                 return False
 
-            wallet_involved = any(self.target_wallet in log for log in logs)
-            print(f"Wallet A involved: {wallet_involved}")  # Add this debug line
+            # If we got this through our Wallet A subscription and it's a Pump.fun trade
+            if parsed_result['dex'] == "Pump.fun":
+                print(f"\n✨ Wallet A Trade Detected at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+                
+                # Check account initialization before proceeding
+                is_initialized = await self._check_and_initialize_account(parsed_result)
+                if not is_initialized:
+                    print("❌ Failed to initialize account")
+                    return False
 
-            if not wallet_involved:
-                print("❌ Transaction does not involve Wallet A")
-                return False
+                print(f"DEX: {parsed_result['dex']}")
+                print(f"Instruction: {parsed_result['instruction']}")
+                print(f"Type: {parsed_result['type']}")
+                return True
 
-            # Your existing output
-            print("\n🔍 Wallet A Trade Detected:")
-            print(f"DEX: {parsed_result['dex']}")
-            print(f"Instruction: {parsed_result['instruction']}")
-            print(f"Type: {parsed_result['type']}")
-            print(f"Program ID: {parsed_result['program_id']}")
-
-            return True
+            return False
 
         except Exception as e:
             print(f"❌ Error analyzing transaction logs: {str(e)}")
             traceback.print_exc()
             return False
-
+    
     def _determine_transaction_type(self, logs: List[str]) -> str:
         """Determine if trade is BUY or SELL"""
         try:
@@ -655,22 +813,35 @@ class CopyTradingBot:
         
     async def process_transaction_data(self, versioned_tx: VersionedTransaction, tx_type: str, blockhash: str) -> None:
         try:
-            # Add logging to track execution flow
             print(f"\n🔄 Processing {tx_type} transaction...")
             
-            # Check balances first with a more detailed error message
+            # Extract mint from transaction
+            mint = self._extract_mint_from_tx(versioned_tx)
+            if not mint:
+                print("❌ Could not extract mint from transaction")
+                return
+
+            # For BUY transactions
+            if tx_type == "BUY":
+                if not await self.can_buy_token(mint):
+                    print("🚫 Skipping buy due to safety checks")
+                    return
+
+            # Check balances
             if not await self.check_balances():
                 print("❌ Trade skipped: Insufficient balance")
                 print("💡 Tip: Ensure you have enough SOL for transaction fees (~0.05 SOL)")
                 return
 
-            # Simulate the transaction first
+            # Simulate the transaction
             sim_result = await self.simulate_transaction(versioned_tx)
             if not sim_result:
                 print("❌ Trade skipped: Simulation failed")
+                if tx_type == "SELL":
+                    await self.record_failed_sell(mint)
                 return
 
-            # Create bundle for Jito submission
+            # Try Jito first
             bundle = create_jito_bundle(versioned_tx)
             if bundle:
                 jito_success = await submit_to_jito_block_engine(
@@ -678,27 +849,67 @@ class CopyTradingBot:
                     auth_token=kz.JITO_AUTH_TOKEN
                 )
                 if jito_success:
+                    if tx_type == "BUY":
+                        amount = self._extract_amount_from_tx(versioned_tx)
+                        await self.record_successful_buy(mint, amount)
+                    else:  # SELL
+                        await self.record_successful_sell(mint)
                     self.stats.successful_mirrors += 1
                     print("✅ Trade executed via Jito")
                     return
 
-            # RPC fallback with proper error handling
+            # RPC fallback
             print("⚠️ Jito submission failed, trying RPC fallback...")
-            sig = await self.client.send_transaction(
-                versioned_tx,
-                opts=TxOpts(
-                    skip_preflight=True,
-                    preflight_commitment="confirmed",
-                    max_retries=3
+            try:
+                sig = await self.client.send_transaction(
+                    versioned_tx,
+                    opts=TxOpts(
+                        skip_preflight=True,
+                        preflight_commitment="confirmed",
+                        max_retries=3
+                    )
                 )
-            )
-            print(f"✅ Trade executed via RPC: {sig}")
-            self.stats.successful_mirrors += 1
+                await self.client.confirm_transaction(sig)
+                
+                if tx_type == "BUY":
+                    amount = self._extract_amount_from_tx(versioned_tx)
+                    await self.record_successful_buy(mint, amount)
+                else:  # SELL
+                    await self.record_successful_sell(mint)
+                
+                print(f"✅ Trade executed via RPC: {sig}")
+                self.stats.successful_mirrors += 1
+                
+            except Exception as e:
+                print(f"❌ RPC transaction failed: {str(e)}")
+                if tx_type == "SELL":
+                    await self.record_failed_sell(mint)
 
         except Exception as e:
             print(f"❌ Trade execution failed: {str(e)}")
             traceback.print_exc()
-            
+
+    def _extract_mint_from_tx(self, tx: VersionedTransaction) -> Optional[str]:
+        """Extract mint address from transaction."""
+        try:
+            for ix in tx.message.instructions:
+                if ix.program_id == PUMP_FUN_PROGRAM_ID:
+                    # Mint is typically the third account in Pump.fun instructions
+                    return str(tx.message.account_keys[ix.accounts[2]])
+        except Exception as e:
+            print(f"❌ Error extracting mint: {str(e)}")
+        return None
+
+    def _extract_amount_from_tx(self, tx: VersionedTransaction) -> int:
+        """Extract amount from transaction."""
+        try:
+            for ix in tx.message.instructions:
+                if ix.program_id == PUMP_FUN_PROGRAM_ID:
+                    return int.from_bytes(ix.data[:8], "little")
+        except Exception as e:
+            print(f"❌ Error extracting amount: {str(e)}")
+        return 0
+      
     async def _get_recent_blockhash(self) -> Optional[str]:
         """Get a recent blockhash from the network using RPC."""
         try:
@@ -956,5 +1167,34 @@ async def main():
             await bot.stop()
 
 if __name__ == "__main__":
-    nest_asyncio.apply()  # Add this line
-    asyncio.run(main())
+    try:
+        # Initialize bot components
+        keypair = Keypair.from_bytes(DECODED_PRIVATE_KEY)
+        bot = CopyTradingBot(keypair, WALLET_A_ADDRESS)
+        
+        async def startup():
+            # Initialize bot
+            if not await bot.initialize():
+                print("❌ Bot initialization failed")
+                return
+
+            print("\n🔍 Checking account initialization status...")
+            # Use a recent Pump.fun curve address
+            curve_address = "7qbRF6YsyGuLUVs6Y1q64bdVrfe4ZcUUz1JRdoVNUJpi"  # Example curve
+            
+            # Initialize your account for this curve
+            await bot._check_and_initialize_account({
+                'curve': curve_address
+            })
+            
+            print("\n🚀 Starting WebSocket connection...")
+            await bot.start()
+
+        # Run the async startup function
+        asyncio.run(startup())
+
+    except KeyboardInterrupt:
+        print("\n👋 Bot stopped by user")
+    except Exception as e:
+        print(f"\n❌ Fatal error: {str(e)}")
+        traceback.print_exc()
