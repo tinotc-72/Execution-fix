@@ -1298,7 +1298,7 @@ async def build_sell_tx(mint_str: str, amount: int, curve_str: str, wallet: Keyp
     curve = Pubkey.from_string(curve_str)
     client = AsyncClient(RPC_URL)
 
-    # PDAs
+    # Get PDAs and accounts
     global_pda, _ = Pubkey.find_program_address([b"global"], PUMP_FUN_PROGRAM_ID)
     fee_recipient, _ = Pubkey.find_program_address([b"fee-recipient", bytes(curve)], PUMP_FUN_PROGRAM_ID)
     assoc_curve, _ = Pubkey.find_program_address([b"associated-bonding-curve", bytes(curve)], PUMP_FUN_PROGRAM_ID)
@@ -1309,15 +1309,10 @@ async def build_sell_tx(mint_str: str, amount: int, curve_str: str, wallet: Keyp
     # Initialize instructions array
     ixs = []
 
-    # Check and create ATAs if needed
-    ata_info = await client.get_account_info(base_ata)
-    if ata_info.value is None:
-        create_ata_ix = create_associated_token_account(wallet_pubkey, wallet_pubkey, mint)
-        ixs.append(create_ata_ix)
-
-    # Check and initialize associated user account if needed
+    # 1. Check and initialize associated user account if needed
     assoc_user_info = await client.get_account_info(assoc_user)
     if assoc_user_info.value is None:
+        print("⚠️ Initializing associated user account...")
         init_user_ix = Instruction(
             program_id=PUMP_FUN_PROGRAM_ID,
             accounts=[
@@ -1329,7 +1324,10 @@ async def build_sell_tx(mint_str: str, amount: int, curve_str: str, wallet: Keyp
             data=bytes([0])  # Init instruction
         )
         ixs.append(init_user_ix)
+        print("✅ Added initialization instruction")
 
+    # 2. Create the sell instruction with base_ata
+    print("📝 Creating sell instruction...")
     sell_ix = Instruction(
         program_id=PUMP_FUN_PROGRAM_ID,
         accounts=[
@@ -1338,47 +1336,27 @@ async def build_sell_tx(mint_str: str, amount: int, curve_str: str, wallet: Keyp
             AccountMeta(mint, False, True),
             AccountMeta(curve, False, True),
             AccountMeta(assoc_curve, False, True),
-            AccountMeta(assoc_user, False, True),
+            AccountMeta(assoc_user, False, True),  # Now initialized
             AccountMeta(wallet_pubkey, True, True),
+            AccountMeta(base_ata, False, True),    # Added token account
             AccountMeta(SYS_PROGRAM_ID, False, False),
             AccountMeta(TOKEN_PROGRAM_ID, False, False),
             AccountMeta(RENT_PROGRAM_ID, False, False),
-            AccountMeta(event_authority, False, False),
+            AccountMeta(event_authority, False, False)
         ],
         data=amount.to_bytes(8, "little") + int(amount * 0.70).to_bytes(8, "little")  # 30% slippage
     )
 
-    # Add Compute + Tip instructions at the start
+    # 3. Add compute budget and Jito tip instructions
     jito_ixs = get_jito_fee_instructions(wallet_pubkey, total_lamports=5_000)
     ixs = jito_ixs + ixs + [sell_ix]
 
-    # Debug tip instruction
-    tip_ix = ixs[0]
-    tip_target = tip_ix.accounts[1]
-    print("🧪 Tip Target Pubkey:", str(tip_target.pubkey))
-    print("🧪 Tip Target Writable:", tip_target.is_writable)
-    print("🧪 Tip Amount:", int.from_bytes(tip_ix.data[1:], "little"))
-
-    # Print instruction data for debugging
-    for i, ix in enumerate(ixs):
-        print(f"Instruction {i} data bytes:", list(ix.data))
-
-    print("✅ Final instruction list:")
-    for i, ix in enumerate(ixs):
-        print(f"  - ixs[{i}]:", ix)
-
-    # Validate tip instruction
-    first_ix = ixs[0]
-    assert first_ix.program_id == SYS_PROGRAM_ID, "🚨 First instruction is not SystemProgram (tip)"
-    assert first_ix.data[0] == 0, "🚨 First instruction is not a transfer (missing 0x00)"
-    assert int.from_bytes(first_ix.data[1:], "little") >= 1000, "🚨 Tip amount < 1000 lamports"
-
-    # Compile transaction
-    blockhash_obj: Hash = (await client.get_latest_blockhash()).value.blockhash
+    # 4. Create and sign transaction
+    blockhash = (await client.get_latest_blockhash()).value.blockhash
     msg = MessageV0.try_compile(
         payer=wallet_pubkey,
         instructions=ixs,
-        recent_blockhash=blockhash_obj,
+        recent_blockhash=blockhash,
         address_lookup_table_accounts=[]
     )
 
