@@ -1,12 +1,14 @@
+# Sensitive Files (NEVER commit these)
+.env
+keyZ.py
+**/private_keys/
+*.key
+secure_backup/
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -20,86 +22,43 @@ parts/
 sdist/
 var/
 wheels/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
+# Trading Bot Specific
+bot.log
+*.log
+mirrored_trades.csv
+*.csv
+*.backup
+main2.py.backup
+test.py
+minimal_test.py
+test_bundle.py
+test_secure_config.py
 
 # Virtual Environment
-.env
-.venv
-env/
+hope/
+hope/bin/
+hope/lib/
 venv/
+env/
 ENV/
-venv.bak/
-env.bak/
-venv_clean/
-venv_test/
 
-# IDE
-.idea/
+# Mac specific (for tinotc-72)
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# VSCode
 .vscode/
-*.swp
-*.swo
-.spyderproject
-.spyproject
-.ropeproject
+*.code-workspace
+.history/
 
-# Jupyter
-.ipynb_checkpoints
-profile_default/
-ipython_config.py
-
-# Type checking
-.mypy_cache/
-.dmypy.json
-dmypy.json
-.pyre/
-.pytype/
-.ruff_cache/
-
-# Project specific
-*.csv
-*.log
-*.sqlite
-.pypirc
-.pdm.toml
-.pdm-python
-.pdm-build/
-.cursorignore
-.cursorindexingignore
-
-# Sensitive files
-keyZ.py
-*key*.py
-*.env
-.env*
-*secret*
-*private*
-
-# Additional files to ignore
-minimal_test.py
-replicatorRR.py
-tx_builder_old.py
-wallet_tx_parserOG.py
-wallet_tx_parserRR.py
+# Project specific paths
+**/Attempt/Hope/keyZ.py
+**/Axiom Sniper*/backup/
+**/Algo Trading/**/private/
+normalizer
