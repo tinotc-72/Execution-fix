@@ -2849,21 +2849,34 @@ class TradeProcessor:
             
             # Validation: Only execute if requirements are met
             if not requires_execution:
-                logger.warning(f"⚠️ [TRADE_EXECUTION] Execution not required - skipping")
-                execution_results['error'] = 'Execution not required by routing instructions'
-                return execution_results
+                logger.warning(f"⚠️ [TRADE_EXECUTION] Execution not required - but executing anyway (aggressive mode)")
+                logger.info(f"🚀 AGGRESSIVE EXECUTION: Matching wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj behavior")
+                # Don't return - continue with execution
             
             if not wallet_validation.get('eligible', False):
-                logger.warning(f"⚠️ [TRADE_EXECUTION] Wallet validation failed - skipping execution")
-                execution_results['error'] = f"Wallet validation failed: {wallet_validation.get('reason', 'Unknown')}"
-                return execution_results
+                logger.warning(f"⚠️ [TRADE_EXECUTION] Wallet validation failed - but executing anyway (aggressive mode)")
+                logger.info(f"🚀 AGGRESSIVE EXECUTION: Proceeding regardless of wallet validation")
+                # Don't return - continue with execution
             
-            # Validation: Ensure we have balance changes (key requirement)
+            # AGGRESSIVE MODE: Don't require balance changes - execute on any detected trade
             detected_actions = trade_info.get('detected_balance_actions', [])
             if not detected_actions:
-                logger.warning(f"⚠️ [TRADE_EXECUTION] No balance changes detected - execution blocked")
-                execution_results['error'] = 'No balance changes detected - execution requirement not met'
-                return execution_results
+                logger.warning(f"⚠️ [TRADE_EXECUTION] No balance changes detected - creating synthetic action for aggressive execution")
+                # Create synthetic action based on what we know
+                synthetic_action = action if action and action != 'unknown' else 'buy'
+                synthetic_mint = token_mint if token_mint and token_mint not in ['UNKNOWN', 'PENDING_ANALYSIS'] else 'UNKNOWN_MINT'
+                
+                logger.info(f"🚀 AGGRESSIVE EXECUTION: Creating synthetic {synthetic_action} action for {synthetic_mint[:8]}...")
+                detected_actions = [{
+                    'action': synthetic_action,
+                    'mint': synthetic_mint,
+                    'owner': source_wallet,
+                    'amount': 0.0,  # Unknown amount
+                    'delta': 1.0 if synthetic_action == 'buy' else -1.0,  # Synthetic delta
+                    'synthetic': True
+                }]
+                trade_info['detected_balance_actions'] = detected_actions
+                execution_results['synthetic_execution'] = True
             
             # NEW FEATURE: Validate significant balance changes (ignore non-trading transfers)
             significance_check = self._has_significant_token_balance_change(
@@ -2872,23 +2885,29 @@ class TradeProcessor:
             )
             
             if not significance_check['has_significant_changes']:
-                logger.warning(f"⚠️ [TRADE_EXECUTION] No significant balance changes - ignoring non-trading transfers")
+                logger.warning(f"⚠️ [TRADE_EXECUTION] No significant balance changes - but executing anyway (aggressive mode)")
                 logger.warning(f"   Total changes: {significance_check['total_changes']}")
                 logger.warning(f"   Threshold used: {significance_check['threshold_used']}")
                 logger.warning(f"   Details: {', '.join(significance_check['validation_details'][:3])}")
-                
-                execution_results['error'] = f"No significant balance changes (threshold: {significance_check['threshold_used']})"
+                logger.info(f"🚀 AGGRESSIVE EXECUTION: Proceeding despite insignificant changes")
+                # Don't return - continue with execution even if changes are insignificant
                 execution_results['significance_check'] = significance_check
-                return execution_results
+                execution_results['bypassed_significance_check'] = True
+            else:
+                execution_results['significance_check'] = significance_check
             
-            logger.info(f"✅ [TRADE_EXECUTION] Significant balance changes detected: {len(significance_check['significant_changes'])}")
-            for sig_change in significance_check['significant_changes']:
-                logger.info(f"   {sig_change['action'].upper()}: {sig_change['owner'][:8]}.../{sig_change['mint'][:8]}... = {sig_change['change']:+.6f}")
+            # Log significant changes if any
+            if significance_check.get('has_significant_changes'):
+                logger.info(f"✅ [TRADE_EXECUTION] Significant balance changes detected: {len(significance_check.get('significant_changes', []))}")
+                for sig_change in significance_check.get('significant_changes', []):
+                    logger.info(f"   {sig_change['action'].upper()}: {sig_change['owner'][:8]}.../{sig_change['mint'][:8]}... = {sig_change['change']:+.6f}")
+            else:
+                logger.info(f"ℹ️  [TRADE_EXECUTION] No significant changes but proceeding with execution (aggressive mode)")
                 
             # Store significance check results for audit
             execution_results['significance_check'] = significance_check
             
-            logger.info(f"✅ [TRADE_EXECUTION] Validation passed - proceeding with execution")
+            logger.info(f"✅ [TRADE_EXECUTION] Proceeding with execution (aggressive mode)")
             logger.info(f"   Balance actions detected: {len(detected_actions)}")
             logger.info(f"   DEX type: {trade_info.get('dex_type', 'unknown')}")
             logger.info(f"   Router: {trade_info.get('router_program_id', 'N/A')}")
@@ -2908,34 +2927,32 @@ class TradeProcessor:
                 logger.info(f"   Amount: {action_amount:,.6f}")
                 logger.info(f"   Delta: {action_delta:+,.6f}")
                 
-                # Validate this action is for a monitored wallet
+                # AGGRESSIVE MODE: Don't skip non-monitored wallets
                 if not self._validate_monitored_wallet(action_owner, self.target_wallets):
-                    # FEATURE 6: Log Skipped Actions for Debugging
-                    logger.warning(f"🚫 [EXECUTION_SKIP] Action {i+1} SKIPPED - Non-monitored wallet")
-                    logger.warning(f"   Action: {action_type.upper()}")
-                    logger.warning(f"   Token: {action_mint}")
-                    logger.warning(f"   Wallet: {action_owner}")
-                    logger.warning(f"   Amount: {action_amount:,.6f}")
-                    logger.warning(f"   Reason: Wallet not in monitored list")
-                    logger.warning(f"   Monitored Wallets: {len(self.target_wallets)} configured")
-                    continue
+                    logger.warning(f"🚫 [EXECUTION_NOTE] Action {i+1} for non-monitored wallet - but executing anyway (aggressive mode)")
+                    logger.info(f"🚀 AGGRESSIVE EXECUTION: Proceeding with non-monitored wallet")
+                    logger.info(f"   Action: {action_type.upper()}")
+                    logger.info(f"   Token: {action_mint}")
+                    logger.info(f"   Wallet: {action_owner}")
+                    logger.info(f"   Amount: {action_amount:,.6f}")
+                    # Don't continue - execute anyway
                 
-                # Additional validation: Check if this specific action meets significance threshold
+                # AGGRESSIVE MODE: Don't skip insignificant deltas
                 abs_delta = abs(action_delta)
                 min_threshold = 0.000001  # Same threshold as overall check
                 
                 if abs_delta < min_threshold:
-                    # FEATURE 6: Log Skipped Actions for Debugging
-                    logger.warning(f"🚫 [EXECUTION_SKIP] Action {i+1} SKIPPED - Below significance threshold")
-                    logger.warning(f"   Action: {action_type.upper()}")
-                    logger.warning(f"   Token: {action_mint}")
-                    logger.warning(f"   Wallet: {action_owner}")
-                    logger.warning(f"   Amount: {action_amount:,.6f}")
-                    logger.warning(f"   Delta: {action_delta:+,.6f}")
-                    logger.warning(f"   Absolute Delta: {abs_delta:.6f}")
-                    logger.warning(f"   Threshold: {min_threshold}")
-                    logger.warning(f"   Reason: Non-trading transfer (dust/airdrop)")
-                    continue
+                    logger.warning(f"🚫 [EXECUTION_NOTE] Action {i+1} below significance threshold - but executing anyway (aggressive mode)")
+                    logger.info(f"🚀 AGGRESSIVE EXECUTION: Proceeding despite low delta")
+                    logger.info(f"   Action: {action_type.upper()}")
+                    logger.info(f"   Token: {action_mint}")
+                    logger.info(f"   Wallet: {action_owner}")
+                    logger.info(f"   Amount: {action_amount:,.6f}")
+                    logger.info(f"   Delta: {action_delta:+,.6f}")
+                    logger.info(f"   Absolute Delta: {abs_delta:.6f}")
+                    logger.info(f"   Threshold: {min_threshold}")
+                    # Don't continue - execute anyway
+                
                 
                 execution_result = None
                 
@@ -3455,7 +3472,11 @@ class TradeProcessor:
             else:
                 logger.warning(f"⚠️ [ACTION_EXTRACTION_DEBUG] NO DEX PROGRAMS DETECTED:")
                 logger.warning(f"   No trade instructions found in transaction")
-                logger.warning(f"   Cannot execute without DEX involvement")
+                logger.warning(f"   AGGRESSIVE MODE: Defaulting to 'swap' anyway")
+                # AGGRESSIVE: Even without DEX detection, default to swap for execution
+                logger.info(f"✅ [ACTION_EXTRACTION_DEBUG] AGGRESSIVE SUCCESS: swap (no DEX but executing anyway)")
+                logger.info(f"   📝 Following wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj pattern: Execute on ANY detection")
+                return 'swap'
                     
         except Exception as e:
             logger.error(f"💥 [ACTION_EXTRACTION_DEBUG] Fallback analysis exception: {e}")
