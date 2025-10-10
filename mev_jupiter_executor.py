@@ -11,15 +11,13 @@ from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 from solders.message import MessageV0
 from solders.instruction import Instruction, AccountMeta
-from solana.rpc.async_api import AsyncClient
-from solana.rpc.commitment import Processed
-from solana.rpc.types import TxOpts
 from solders.system_program import ID as SYS_PROGRAM_ID
 from solders.compute_budget import ID as COMPUTE_BUDGET_ID
 from spl.token.constants import TOKEN_PROGRAM_ID
 from spl.token.instructions import get_associated_token_address, create_associated_token_account
 
 from env_keys import EnvKeys
+from utils import RPCClient
 
 # Import JitoClient for MEV protection
 try:
@@ -223,7 +221,7 @@ class MEVJupiterExecutor:
         # Initialize executor with official patterns
         self.wallet_keypair = wallet_keypair
         self.wallet_pubkey = wallet_keypair.pubkey()
-        self.client = AsyncClient(rpc_url)
+        self.client = RPCClient(rpc_url)
         self.config = config or {}
         self.jito_service = jito_service  # Add JitoClient support
         
@@ -426,11 +424,11 @@ class MEVJupiterExecutor:
                         
                         # RPC fallback (must exist)
                         if not signature:
-                            opts = TxOpts(
-                                skip_preflight=True,
-                                preflight_commitment=Processed,
-                                max_retries=1
-                            )
+                            opts = {
+                                "skip_preflight": True,
+                                "preflight_commitment": "processed",
+                                "max_retries": 1
+                            }
                             sig_result = await self.client.send_transaction(transaction, opts=opts)
                             signature = str(sig_result.value) if sig_result.value else None
                         
@@ -549,11 +547,11 @@ class MEVJupiterExecutor:
                     logger.info(f"   ✅ Simulation successful with {slippage_bps/100}% slippage!")
 
                     # AGGRESSIVE: Send transaction immediately with minimal retries
-                    opts = TxOpts(
-                        skip_preflight=True,  # Skip preflight for speed
-                        preflight_commitment=Processed,
-                        max_retries=1  # Reduced retries for speed
-                    )
+                    opts = {
+                        "skip_preflight": True,  # Skip preflight for speed
+                        "preflight_commitment": "processed",
+                        "max_retries": 1  # Reduced retries for speed
+                    }
                     
                     logger.info(f"   📡 Sending Jupiter transaction with {slippage_bps/100}% slippage...")
                     

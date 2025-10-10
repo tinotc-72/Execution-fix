@@ -21,7 +21,7 @@ import base58
 from solders.transaction import VersionedTransaction
 from solders.message import MessageV0
 from solders.hash import Hash
-from solana.rpc.async_api import AsyncClient
+from utils import RPCClient
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 JUPITER_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 METEORA_AGGREGATOR = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
 
-async def try_mev_direct_copy_sell(trade_info: dict, wallet: Keypair, rpc: AsyncClient):
+async def try_mev_direct_copy_sell(trade_info: dict, wallet: Keypair, rpc):
     """
     Build a *real* VersionedTransaction for cloning a SELL route.
     1) Fetch the original tx (via get_transaction).
@@ -651,10 +651,10 @@ class MEVDirectSellExecutor:
     async def _submit_via_rpc_fixed(self, serialized_tx: bytes) -> Optional[str]:
         """Submit transaction via RPC with proper AsyncClient and confirmation"""
         try:
-            # Create AsyncClient for proper async RPC calls
-            from solana.rpc.async_api import AsyncClient
+            # Create RPCClient for proper async RPC calls
+            from utils import RPCClient
             
-            async with AsyncClient(self.rpc_url) as rpc:
+            async with RPCClient(self.rpc_url) as rpc:
                 # Send raw transaction
                 send_response = await rpc.send_raw_transaction(
                     serialized_tx, 
