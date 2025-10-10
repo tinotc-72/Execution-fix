@@ -51,7 +51,7 @@ if not load_dotenv(dotenv_path=env_path, override=True):
     raise RuntimeError("Failed to load .env file!")
 
 def validate_env_vars() -> dict:
-    """Validate and return required environment variables"""
+    """Validate and return required environment variables with comprehensive checks"""
     required_vars = {
         "RPC_URL": "Solana RPC endpoint",
         "PHANTOM_PRIVATE_KEY": "Wallet private key"
@@ -68,11 +68,25 @@ def validate_env_vars() -> dict:
             env_vars[var] = value
     
     if missing:
+        error_msg = (
+            "\n" + "=" * 60 + "\n" +
+            "❌ ENVIRONMENT VALIDATION FAILED\n" +
+            "=" * 60 + "\n" +
+            "Missing required environment variables:\n" +
+            "\n".join([f"  • {var}" for var in missing]) + "\n" +
+            "\nPlease ensure your .env file contains all required variables.\n" +
+            "Example .env format:\n" +
+            "  RPC_URL=https://api.mainnet-beta.solana.com\n" +
+            "  PHANTOM_PRIVATE_KEY=your_base58_private_key_here\n" +
+            "=" * 60
+        )
+        logger.error(error_msg)
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
     
     # Log RPC configuration (but not private key)
-    logger.info("\nRPC Configuration:")
-    logger.info(f"RPC_URL: {env_vars['RPC_URL']}")
+    logger.info("\n✅ Environment Configuration:")
+    logger.info(f"   RPC_URL: {env_vars['RPC_URL']}")
+    logger.info(f"   PHANTOM_PRIVATE_KEY: {'*' * 20} (loaded)")
     
     return env_vars
 

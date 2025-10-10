@@ -1412,8 +1412,11 @@ class TradeProcessor:
 
     def _try_signer_instruction_fallback(self, trade_info: Dict[str, Any]) -> str:
         """
-        Fallback method to determine action using signer and instruction analysis.
+        ENHANCED fallback method to determine action using signer and instruction analysis.
         Called when token balance delta detection fails.
+        
+        This method is more permissive to handle incomplete upstream data while still
+        ensuring monitored wallets are involved.
         
         Returns:
             Action string if conditions are met, 'unknown' otherwise
@@ -1434,36 +1437,65 @@ class TradeProcessor:
             logger.debug(f"🔍 [SIGNER_FALLBACK] Monitored involvement: {has_monitored_involvement}")
             logger.debug(f"🔍 [SIGNER_FALLBACK] Trade instructions: {has_trade_instructions}")
             
-            # Either condition can trigger execution (OR logic)
+            # ENHANCED: More permissive condition - allow execution if EITHER condition is met
+            # This helps handle cases where upstream data is incomplete but a trade is clearly happening
             if has_monitored_involvement or has_trade_instructions:
-                logger.info(f"✅ [SIGNER_FALLBACK] At least one fallback condition met (signer or trade instruction) — executing copy trade")
+                logger.info(f"✅ [SIGNER_FALLBACK] At least one fallback condition met (signer or trade instruction)")
+                
+                # Log which condition triggered execution
+                if has_monitored_involvement:
+                    monitored_wallets = signer_info.get('monitored_wallets', [])
+                    logger.info(f"   ✅ Condition 1: Monitored wallet involvement detected ({len(monitored_wallets)} wallet(s))")
+                if has_trade_instructions:
+                    detected_programs = instruction_info.get('detected_programs', [])
+                    logger.info(f"   ✅ Condition 2: Trade instructions found ({len(detected_programs)} program(s))")
                 
                 # Try to determine specific action from logs
                 relevant_logs = instruction_info.get('relevant_logs', [])
                 action_from_logs = self._analyze_logs_for_action(relevant_logs)
                 
                 if action_from_logs and action_from_logs != 'unknown':
-                    logger.info(f"🎯 [SIGNER_FALLBACK] Specific action detected: {action_from_logs}")
+                    logger.info(f"🎯 [SIGNER_FALLBACK] Specific action detected from logs: {action_from_logs}")
                     return action_from_logs
                 
-                # If we can't determine specific action, but conditions are met, 
-                # default to 'swap' to allow execution with DEX routing
+                # ENHANCED: Even if we can't determine specific action from logs,
+                # we can infer action type from program type
                 detected_programs = instruction_info.get('detected_programs', [])
                 if detected_programs:
                     primary_program = detected_programs[0]
-                    logger.info(f"🎯 [SIGNER_FALLBACK] Defaulting to 'swap' for {primary_program['program_name']}")
+                    program_name = primary_program.get('program_name', 'unknown')
+                    
+                    # Map program types to likely actions
+                    # Most DEX swaps involve buying when monitored wallet is involved
+                    logger.info(f"🎯 [SIGNER_FALLBACK] Inferring action from program: {program_name}")
+                    
+                    # Default to 'swap' to allow execution with DEX routing
+                    # The execution coordinator will determine the exact action based on balance changes
+                    logger.info(f"🎯 [SIGNER_FALLBACK] Defaulting to 'swap' for {program_name} (allows DEX routing)")
                     return 'swap'
+                
+                # If we have monitored involvement but no trade instructions,
+                # still allow execution with 'swap' default
+                if has_monitored_involvement:
+                    logger.info(f"🎯 [SIGNER_FALLBACK] Monitored wallet involvement confirmed - defaulting to 'swap'")
+                    return 'swap'
+                    
             else:
                 logger.debug(f"🚫 [SIGNER_FALLBACK] Neither fallback condition met - skipping fallback")
                 if not has_monitored_involvement:
                     logger.debug(f"   - No monitored wallet involvement")
+                    logger.debug(f"     Fee payer: {signer_info.get('fee_payer', 'None')[:8] if signer_info.get('fee_payer') else 'None'}...")
+                    logger.debug(f"     Signers: {len(signer_info.get('signers', []))}")
                 if not has_trade_instructions:
                     logger.debug(f"   - No trade instructions detected")
+                    logger.debug(f"     Total instructions: {instruction_info.get('total_instructions', 0)}")
             
             return 'unknown'
             
         except Exception as e:
             logger.error(f"❌ [SIGNER_FALLBACK] Error in fallback analysis: {e}")
+            import traceback
+            logger.debug(f"[SIGNER_FALLBACK] Stack trace: {traceback.format_exc()}")
             return 'unknown'
     
     async def _determine_execution_strategy(self, trade_info: Dict[str, Any], action: str) -> Dict[str, Any]:

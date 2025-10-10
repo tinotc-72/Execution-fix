@@ -618,14 +618,45 @@ class SimpleCopyTradingBot:
         try:
             logger.info(f"🚨 ⚡ SPEED TRADE DETECTION: {trade_info}")
 
-            # Upstream Data Fix: Ensure required fields are present
+            # === ENHANCED UPSTREAM DATA FIX: Ensure required fields are present with debug logging ===
+            missing_fields = []
+            
+            # Check and fix signature
             sig = (trade_info.get("signature") or "").strip()
             if not sig or sig == "unknown":
-                logger.warning("ℹ️ No signature in account-change stub; proceeding with parsed trade data.")
+                missing_fields.append("signature")
+                logger.warning("ℹ️ [FIELD_DEBUG] No signature in trade_info; proceeding with parsed trade data.")
                 # Continue processing instead of returning
+            
+            # Check and fix wallet_address
             if not trade_info.get('wallet_address'):
-                logger.warning("[UPSTREAM DATA FIX] Missing 'wallet_address' in trade_info, setting to first target wallet.")
+                missing_fields.append("wallet_address")
+                logger.warning("[FIELD_DEBUG] Missing 'wallet_address' in trade_info, setting to first target wallet.")
                 trade_info['wallet_address'] = self.target_wallets[0] if self.target_wallets else 'unknown'
+            
+            # Check and default DEX type
+            if not trade_info.get('dex') and not trade_info.get('dex_type'):
+                missing_fields.append("dex/dex_type")
+                logger.debug("[FIELD_DEBUG] Missing 'dex' field - will be inferred during analysis")
+                trade_info['dex'] = 'unknown'
+            
+            # Check and default action
+            if not trade_info.get('action'):
+                missing_fields.append("action")
+                logger.debug("[FIELD_DEBUG] Missing 'action' field - will be inferred during analysis")
+                trade_info['action'] = 'unknown'
+            
+            # Check and default mint
+            if not trade_info.get('mint') and not trade_info.get('token_mint'):
+                missing_fields.append("mint/token_mint")
+                logger.debug("[FIELD_DEBUG] Missing 'mint'/'token_mint' field - will be extracted during analysis")
+                trade_info['token_mint'] = 'PENDING_ANALYSIS'
+            
+            # Log summary of missing fields for debugging
+            if missing_fields:
+                logger.info(f"📋 [FIELD_DEBUG] Missing/defaulted fields: {', '.join(missing_fields)}")
+                logger.debug(f"[FIELD_DEBUG] Full trade_info keys: {list(trade_info.keys())}")
+            
             logger.debug(f"[DEBUG] After upstream fix: {json.dumps(trade_info, default=str)}")
 
             # 🚀 SPEED OPTIMIZATION: Skip lengthy analysis if basic analysis suggests immediate copy
@@ -884,6 +915,76 @@ class SimpleCopyTradingBot:
                     await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"❌ Status loop failed: {e}")
+
+    async def _health_check(self) -> Dict[str, bool]:
+        """
+        Perform health checks on critical system components
+        Returns a dictionary with health status of each component
+        """
+        health_status = {}
+        
+        try:
+            # Check RPC client connectivity
+            try:
+                if self.rpc_client:
+                    # Try a simple RPC call to check connectivity
+                    response = await asyncio.wait_for(
+                        self.rpc_client.get_health(),
+                        timeout=5.0
+                    )
+                    health_status['rpc_client'] = True
+                else:
+                    health_status['rpc_client'] = False
+            except Exception as e:
+                logger.debug(f"RPC health check failed: {e}")
+                health_status['rpc_client'] = False
+            
+            # Check Jito service if configured
+            if self.jito_service:
+                try:
+                    # Simple check if Jito service is initialized
+                    health_status['jito_service'] = hasattr(self.jito_service, 'client')
+                except Exception as e:
+                    logger.debug(f"Jito health check failed: {e}")
+                    health_status['jito_service'] = False
+            else:
+                health_status['jito_service'] = True  # Not required, so mark as healthy
+            
+            # Check WebSocket handler
+            try:
+                if self.ws_handler:
+                    health_status['websocket'] = hasattr(self.ws_handler, 'is_connected')
+                else:
+                    health_status['websocket'] = False
+            except Exception as e:
+                logger.debug(f"WebSocket health check failed: {e}")
+                health_status['websocket'] = False
+            
+            # Check execution coordinator
+            try:
+                if self.execution_coordinator:
+                    health_status['execution_coordinator'] = True
+                else:
+                    health_status['execution_coordinator'] = False
+            except Exception as e:
+                logger.debug(f"Execution coordinator health check failed: {e}")
+                health_status['execution_coordinator'] = False
+            
+            # Check trade processor
+            try:
+                if self.trade_processor:
+                    health_status['trade_processor'] = True
+                else:
+                    health_status['trade_processor'] = False
+            except Exception as e:
+                logger.debug(f"Trade processor health check failed: {e}")
+                health_status['trade_processor'] = False
+                
+        except Exception as e:
+            logger.error(f"❌ Health check failed with exception: {e}")
+            health_status['overall'] = False
+        
+        return health_status
 
     async def stop(self):
         """Stop the bot"""
