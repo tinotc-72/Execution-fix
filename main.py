@@ -262,14 +262,19 @@ class SimpleCopyTradingBot:
                 if action != 'unknown' and token_mint not in ['UNKNOWN', 'PENDING_ANALYSIS']:
                     break
             if action == 'unknown' or token_mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
-                logger.error(f"Uncertain action or token mint after retries: action={action}, token_mint={token_mint}")
+                logger.warning(f"⚠️ Uncertain action or token mint after retries: action={action}, token_mint={token_mint}")
+                logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Proceeding with execution anyway (matching wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj behavior)")
+                # Default action to 'swap' for unknown - will execute as buy (copy trade)
+                if action == 'unknown':
+                    action = 'swap'
+                    logger.info(f"   Defaulting action to 'swap' for executor")
+                # Log for analytics but DO NOT return - continue with execution
                 log_failed_trade_analysis(
                     trade_info, 
-                    failure_reason=f"failed_after_retries_action_{action}_mint_{token_mint}",
+                    failure_reason=f"uncertain_after_retries_but_executing_action_{action}_mint_{token_mint}",
                     retry_count=3,
                     routing_data=routing
                 )
-                return
 
         # === MINT/ACTION UNCERTAINTY DEBUGGING IN MAIN ===
         if action == 'unknown' or token_mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
@@ -404,14 +409,13 @@ class SimpleCopyTradingBot:
                         await self.execution_coordinator._execute_copy_sell(token_mint=token_mint, source_wallet=source_wallet, trade_info=enriched)
                     return
                 else:
-                    logger.warning("❌ [FALLBACK FAILED] NO DEX DETECTED - Skipping execution")
-                    logger.warning(f"   No DEX programs found in transaction")
-                    logger.warning(f"   Cannot execute without DEX involvement")
-                    logger.warning(f"   This is the ONLY condition required in maximally permissive mode")
+                    logger.warning("⚠️ [FALLBACK] NO DEX DETECTED - But executing anyway (aggressive mode)")
+                    logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Executing detected trade regardless of DEX detection")
+                    logger.info(f"   Following wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj pattern: Execute ANY detected trade")
                     # log analytics
                     log_failed_trade_analysis(
                         enriched or trade_info,
-                        failure_reason="no_dex_detected",
+                        failure_reason="no_dex_detected_but_executing",
                         retry_count=0,
                         routing_data={
                             "routing": routing,
@@ -422,6 +426,16 @@ class SimpleCopyTradingBot:
                             "monitored_wallets": self.target_wallets
                         }
                     )
+                    # Default to swap/buy execution
+                    if action == 'unknown':
+                        action = 'swap'
+                    logger.info(f"🚀 Executing as {action} for token {str(token_mint)[:8]}...")
+                    if action in ("buy", "swap_in", "swap"):
+                        logger.info(f"🚀 [AGGRESSIVE EXECUTION] Executing copy BUY/SWAP for {str(token_mint)[:8]}...")
+                        await self.execution_coordinator._execute_copy_buy(token_mint=token_mint, source_wallet=source_wallet, trade_info=enriched)
+                    elif action in ("sell", "swap_out"):
+                        logger.info(f"🚀 [AGGRESSIVE EXECUTION] Executing copy SELL for {str(token_mint)[:8]}...")
+                        await self.execution_coordinator._execute_copy_sell(token_mint=token_mint, source_wallet=source_wallet, trade_info=enriched)
                     return
             
             # Execute trades for each detected wallet/token combination
@@ -464,8 +478,14 @@ class SimpleCopyTradingBot:
                         trade_info=enriched,
                     )
                 else:
-                    logger.warning(f"⚠️ Unknown action '{detected_action}' for wallet {wallet[:8]}... - skipping execution")
-                    continue
+                    logger.warning(f"⚠️ Unknown action '{detected_action}' for wallet {wallet[:8]}... - executing as BUY (aggressive mode)")
+                    # Default unknown action to buy/swap for aggressive execution
+                    exec_res = await self._resilient_async_call(
+                        self.execution_coordinator._execute_copy_buy,
+                        token_mint=mint,
+                        source_wallet=wallet,
+                        trade_info=enriched,
+                    )
                 
                 execution_results.append({
                     'wallet': wallet,
@@ -495,14 +515,22 @@ class SimpleCopyTradingBot:
                 detected_dex=dex,
             )
         else:
-            logger.warning(f"⚠️ Unknown action '{action}' — skipping execution.")
+            logger.warning(f"⚠️ Unknown action '{action}' — executing as BUY (aggressive mode, swap default).")
+            # Default unknown to swap (buy) for aggressive execution  
+            action = 'swap'
             log_failed_trade_analysis(
                 enriched or trade_info,
-                failure_reason=f"unknown_action_{action}_skipped_execution",
+                failure_reason=f"unknown_action_defaulted_to_swap_executing",
                 retry_count=0,
                 routing_data=routing
             )
-            return
+            # Execute as buy
+            exec_res = await self._resilient_async_call(
+                self.execution_coordinator._execute_copy_buy,
+                token_mint=token_mint,
+                source_wallet=source_wallet,
+                trade_info=enriched,
+            )
 
         if isinstance(exec_res, dict) and exec_res.get("success"):
             logger.info(f"✅ Execution sent | Signature: {exec_res.get('signature')}")

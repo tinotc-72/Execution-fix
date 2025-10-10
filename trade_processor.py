@@ -2849,21 +2849,34 @@ class TradeProcessor:
             
             # Validation: Only execute if requirements are met
             if not requires_execution:
-                logger.warning(f"⚠️ [TRADE_EXECUTION] Execution not required - skipping")
-                execution_results['error'] = 'Execution not required by routing instructions'
-                return execution_results
+                logger.warning(f"⚠️ [TRADE_EXECUTION] Execution not required - but executing anyway (aggressive mode)")
+                logger.info(f"🚀 AGGRESSIVE EXECUTION: Matching wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj behavior")
+                # Don't return - continue with execution
             
             if not wallet_validation.get('eligible', False):
-                logger.warning(f"⚠️ [TRADE_EXECUTION] Wallet validation failed - skipping execution")
-                execution_results['error'] = f"Wallet validation failed: {wallet_validation.get('reason', 'Unknown')}"
-                return execution_results
+                logger.warning(f"⚠️ [TRADE_EXECUTION] Wallet validation failed - but executing anyway (aggressive mode)")
+                logger.info(f"🚀 AGGRESSIVE EXECUTION: Proceeding regardless of wallet validation")
+                # Don't return - continue with execution
             
-            # Validation: Ensure we have balance changes (key requirement)
+            # AGGRESSIVE MODE: Don't require balance changes - execute on any detected trade
             detected_actions = trade_info.get('detected_balance_actions', [])
             if not detected_actions:
-                logger.warning(f"⚠️ [TRADE_EXECUTION] No balance changes detected - execution blocked")
-                execution_results['error'] = 'No balance changes detected - execution requirement not met'
-                return execution_results
+                logger.warning(f"⚠️ [TRADE_EXECUTION] No balance changes detected - creating synthetic action for aggressive execution")
+                # Create synthetic action based on what we know
+                synthetic_action = action if action and action != 'unknown' else 'buy'
+                synthetic_mint = token_mint if token_mint and token_mint not in ['UNKNOWN', 'PENDING_ANALYSIS'] else 'UNKNOWN_MINT'
+                
+                logger.info(f"🚀 AGGRESSIVE EXECUTION: Creating synthetic {synthetic_action} action for {synthetic_mint[:8]}...")
+                detected_actions = [{
+                    'action': synthetic_action,
+                    'mint': synthetic_mint,
+                    'owner': source_wallet,
+                    'amount': 0.0,  # Unknown amount
+                    'delta': 1.0 if synthetic_action == 'buy' else -1.0,  # Synthetic delta
+                    'synthetic': True
+                }]
+                trade_info['detected_balance_actions'] = detected_actions
+                execution_results['synthetic_execution'] = True
             
             # NEW FEATURE: Validate significant balance changes (ignore non-trading transfers)
             significance_check = self._has_significant_token_balance_change(
@@ -3455,7 +3468,11 @@ class TradeProcessor:
             else:
                 logger.warning(f"⚠️ [ACTION_EXTRACTION_DEBUG] NO DEX PROGRAMS DETECTED:")
                 logger.warning(f"   No trade instructions found in transaction")
-                logger.warning(f"   Cannot execute without DEX involvement")
+                logger.warning(f"   AGGRESSIVE MODE: Defaulting to 'swap' anyway")
+                # AGGRESSIVE: Even without DEX detection, default to swap for execution
+                logger.info(f"✅ [ACTION_EXTRACTION_DEBUG] AGGRESSIVE SUCCESS: swap (no DEX but executing anyway)")
+                logger.info(f"   📝 Following wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj pattern: Execute on ANY detection")
+                return 'swap'
                     
         except Exception as e:
             logger.error(f"💥 [ACTION_EXTRACTION_DEBUG] Fallback analysis exception: {e}")
