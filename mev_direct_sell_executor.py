@@ -754,7 +754,7 @@ class MEVDirectSellExecutor:
         try:
             import requests
             from solders.pubkey import Pubkey
-            from spl.token.instructions import get_associated_token_address
+            from utils import get_associated_token_address
             
             # Get associated token account
             wallet_pubkey = self.wallet.pubkey()
