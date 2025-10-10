@@ -59,10 +59,9 @@ from dataclasses import dataclass, field
 
 from solders.pubkey import Pubkey
 from config import WALLET
-from solana.rpc.async_api import AsyncClient
 
 # Import utilities
-from utils import get_transaction_with_logs, load_keypair
+from utils import get_transaction_with_logs, load_keypair, RPCClient
 
 # Import specialized modules
 from copy_trade_logger import get_copy_trade_logger
@@ -589,7 +588,7 @@ class SimpleCopyTradingBot:
         # Initialize proper Solana RPC client for transaction analysis
         try:
             import aiohttp
-            self.rpc_client = AsyncClient(self.config.rpc_url)
+            self.rpc_client = RPCClient(self.config.rpc_url)
             logger.info(f"✅ RPC client initialized with endpoint: {self.config.rpc_url}")
         except Exception as rpc_init_error:
             logger.error(f"❌ Failed to initialize RPC client: {rpc_init_error}")

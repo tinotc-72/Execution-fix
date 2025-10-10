@@ -1,6 +1,6 @@
 import asyncio
 from spl.token.instructions import create_associated_token_account, get_associated_token_address
-from solana.rpc.async_api import AsyncClient
+from utils import RPCClient
 
 # Stub for Jito tip instruction (replace with actual implementation if available)
 def create_jito_tip_instruction(pubkey, amount):

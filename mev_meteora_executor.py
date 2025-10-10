@@ -967,8 +967,8 @@ async def try_meteora_buy(
             await jito_client.initialize()
         else:
             jito_client = None
-        from solana.rpc.async_api import AsyncClient
-        rpc_client = AsyncClient("https://api.mainnet-beta.solana.com")
+        from utils import RPCClient
+        rpc_client = RPCClient("https://api.mainnet-beta.solana.com")
         executor = MEVMeteoraExecutor(
             wallet_keypair=wallet_keypair,
             rpc_client=rpc_client
@@ -1013,8 +1013,8 @@ async def try_meteora_sell_all(
             await jito_client.initialize()
         else:
             jito_client = None
-        from solana.rpc.async_api import AsyncClient
-        rpc_client = AsyncClient("https://api.mainnet-beta.solana.com")
+        from utils import RPCClient
+        rpc_client = RPCClient("https://api.mainnet-beta.solana.com")
         executor = MEVMeteoraExecutor(
             wallet_keypair=wallet_keypair,
             rpc_client=rpc_client

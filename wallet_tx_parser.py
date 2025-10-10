@@ -13,7 +13,6 @@ from typing import Optional, Dict, Any, List, Callable
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
-from solana.rpc.api import Client
 
 # Only import what's available to avoid import errors
 try:

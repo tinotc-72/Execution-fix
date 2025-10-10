@@ -32,15 +32,12 @@ import base64
 import struct
 
 # Solana imports
-from solana.rpc.async_api import AsyncClient
-from solana.rpc.commitment import Confirmed, Finalized
-from solana.rpc.types import TxOpts
 from solders.transaction import VersionedTransaction
 from solders.instruction import Instruction as TransactionInstruction
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey as PublicKey
 from solders.system_program import transfer, TransferParams
-from solana.rpc.core import RPCException
+from utils import RPCClient
 
 # Standard Solana Program IDs
 TOKEN_PROGRAM_ID = PublicKey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
@@ -320,7 +317,7 @@ class MEVAdvancedBotExecutor:
         """Execute transaction with RPC fallback (actually send transaction)"""
         try:
             logger.info("🔗 Executing with RPC...")
-            resp = await self.rpc_client.send_transaction(transaction, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
+            resp = await self.rpc_client.send_transaction(transaction, opts={"skip_preflight": True, "preflight_commitment": "confirmed"})
             signature = resp.value if hasattr(resp, 'value') else None
             if signature:
                 logger.info(f"✅ Transaction sent: {signature}")
