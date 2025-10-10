@@ -336,6 +336,96 @@ async def fetch_json_rpc_with_url(rpc_url: str, method: str, params: list) -> Di
             print(f"❌ Network error: {e}")
             return {"error": str(e)}
 
+# ============================================================================
+# SPL Token Helper Functions - Solders-Only Implementation
+# ============================================================================
+
+from solders.instruction import Instruction, AccountMeta
+from typing import Optional, Tuple
+
+# SPL Token Program IDs
+TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+ASSOCIATED_TOKEN_PROGRAM_ID = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+SYSTEM_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
+
+def find_associated_token_address(owner: Pubkey, mint: Pubkey) -> Pubkey:
+    """
+    Derive the associated token address for a given owner and mint.
+    Uses solders PDA derivation.
+    
+    Args:
+        owner: The owner's public key
+        mint: The token mint public key
+        
+    Returns:
+        The derived associated token address
+    """
+    seeds = [bytes(owner), bytes(TOKEN_PROGRAM_ID), bytes(mint)]
+    ata, _ = Pubkey.find_program_address(seeds, ASSOCIATED_TOKEN_PROGRAM_ID)
+    return ata
+
+def create_associated_token_account_ix(
+    payer: Pubkey,
+    owner: Pubkey, 
+    mint: Pubkey
+) -> Instruction:
+    """
+    Create an instruction to create an associated token account.
+    Uses solders instruction construction.
+    
+    Args:
+        payer: The account that will pay for the creation
+        owner: The owner of the associated token account
+        mint: The token mint
+        
+    Returns:
+        Instruction to create the associated token account
+    """
+    ata = find_associated_token_address(owner, mint)
+    
+    metas = [
+        AccountMeta(pubkey=payer, is_signer=True, is_writable=True),
+        AccountMeta(pubkey=ata, is_signer=False, is_writable=True),
+        AccountMeta(pubkey=owner, is_signer=False, is_writable=False),
+        AccountMeta(pubkey=mint, is_signer=False, is_writable=False),
+        AccountMeta(pubkey=SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
+        AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
+    ]
+    
+    # Associated token account instruction has no data
+    return Instruction(program_id=ASSOCIATED_TOKEN_PROGRAM_ID, accounts=metas, data=b"")
+
+def get_associated_token_address(owner: Pubkey, mint: Pubkey) -> Pubkey:
+    """
+    Alias for find_associated_token_address for compatibility with spl.token.instructions API.
+    
+    Args:
+        owner: The owner's public key
+        mint: The token mint public key
+        
+    Returns:
+        The derived associated token address
+    """
+    return find_associated_token_address(owner, mint)
+
+def create_associated_token_account(
+    payer: Pubkey,
+    owner: Pubkey,
+    mint: Pubkey
+) -> Instruction:
+    """
+    Alias for create_associated_token_account_ix for compatibility with spl.token.instructions API.
+    
+    Args:
+        payer: The account that will pay for the creation
+        owner: The owner of the associated token account
+        mint: The token mint
+        
+    Returns:
+        Instruction to create the associated token account
+    """
+    return create_associated_token_account_ix(payer, owner, mint)
+
 # RPC Client class to replace AsyncClient from solana-py
 class RPCClient:
     """

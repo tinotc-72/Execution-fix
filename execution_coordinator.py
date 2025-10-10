@@ -945,7 +945,7 @@ class ExecutionCoordinator:
                 return await self.wallet.get_token_balance(token_mint)
             if self.rpc_client:
                 from solders.pubkey import Pubkey
-                from spl.token.instructions import get_associated_token_address
+                from utils import get_associated_token_address
                 wallet_pubkey = self._get_wallet_pubkey()
                 
                 # Handle both string and Pubkey inputs with proper type conversion

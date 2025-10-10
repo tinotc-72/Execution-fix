@@ -13,11 +13,14 @@ from solders.message import MessageV0
 from solders.instruction import Instruction, AccountMeta
 from solders.system_program import ID as SYS_PROGRAM_ID
 from solders.compute_budget import ID as COMPUTE_BUDGET_ID
-from spl.token.constants import TOKEN_PROGRAM_ID
-from spl.token.instructions import get_associated_token_address, create_associated_token_account
 
 from env_keys import EnvKeys
-from utils import RPCClient
+from utils import (
+    RPCClient,
+    get_associated_token_address,
+    create_associated_token_account,
+    TOKEN_PROGRAM_ID
+)
 
 # Import JitoClient for MEV protection
 try:
