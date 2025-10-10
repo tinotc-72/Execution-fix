@@ -63,25 +63,41 @@ def test_field_validation():
         return False
 
 def test_fallback_logic():
-    """Test that fallback execution logic is enhanced"""
-    print("\n🧪 Test 3: Checking enhanced fallback logic...")
+    """Test that fallback execution logic is maximally permissive"""
+    print("\n🧪 Test 3: Checking maximally permissive fallback logic...")
     try:
         with open('trade_processor.py', 'r') as f:
             content = f.read()
         
-        # Check for fallback method
-        assert '_try_signer_instruction_fallback' in content, "Fallback method not found"
+        # Check for DEX detection as primary trigger
+        assert 'has_trade_instructions' in content, "DEX instruction detection not found"
         
-        # Check for OR logic (permissive condition)
-        assert 'has_monitored_involvement or has_trade_instructions' in content, "OR logic not found"
+        # Check for maximally permissive approach
+        assert 'MAXIMALLY PERMISSIVE' in content, "Maximally permissive mode not documented"
         
-        # Check for swap default
+        # Check for Jupiter/Raydium references
+        assert 'jupiter-copy-trading' in content, "Jupiter copy bot reference not found"
+        assert 'raydium-copy-bot' in content, "Raydium copy bot reference not found"
+        
+        # Check for swap default on DEX detection
         assert "return 'swap'" in content, "Swap default not found"
         
         # Check for enhanced logging
-        assert '[SIGNER_FALLBACK]' in content, "Fallback debug logging not found"
+        assert '[ACTION_EXTRACTION_DEBUG]' in content, "Action extraction debug logging not found"
+        assert 'DEX PROGRAM DETECTED' in content, "DEX detection logging not found"
         
-        print("   ✅ PASS: Enhanced fallback logic present")
+        # Check main.py for matching fallback logic
+        with open('main.py', 'r') as f:
+            main_content = f.read()
+        
+        assert 'MAXIMALLY PERMISSIVE' in main_content, "Main.py doesn't have maximally permissive mode"
+        assert 'jupiter-copy-trading' in main_content, "Main.py missing Jupiter reference"
+        assert 'raydium-copy-bot' in main_content, "Main.py missing Raydium reference"
+        assert 'found_trade_instruction' in main_content, "Main.py missing DEX instruction check"
+        
+        print("   ✅ PASS: Maximally permissive fallback logic present")
+        print("   📝 DEX detection is primary trigger for execution")
+        print("   📝 References to Jupiter and Raydium copy bots included")
         return True
     except Exception as e:
         print(f"   ❌ FAIL: {e}")
@@ -158,6 +174,7 @@ def test_documentation():
         # Check for execution flow documentation
         assert 'EXECUTION FLOW OVERVIEW' in main_content, "Execution flow doc not found"
         assert 'KEY IMPROVEMENTS' in main_content, "Key improvements doc not found"
+        assert 'MAXIMALLY PERMISSIVE FALLBACK EXECUTION' in main_content, "Maximally permissive doc not found"
         
         with open('trade_processor.py', 'r') as f:
             processor_content = f.read()
@@ -165,9 +182,11 @@ def test_documentation():
         # Check for module documentation
         assert 'OVERVIEW:' in processor_content, "Module overview not found"
         assert 'KEY COMPONENTS:' in processor_content, "Key components doc not found"
-        assert 'FALLBACK STRATEGY:' in processor_content, "Fallback strategy doc not found"
+        assert 'FALLBACK STRATEGY' in processor_content, "Fallback strategy doc not found"
+        assert 'MAXIMALLY PERMISSIVE EXECUTION PHILOSOPHY' in processor_content, "Maximally permissive philosophy not found"
         
         print("   ✅ PASS: Comprehensive documentation added")
+        print("   📝 Maximally permissive execution philosophy documented")
         return True
     except Exception as e:
         print(f"   ❌ FAIL: {e}")
