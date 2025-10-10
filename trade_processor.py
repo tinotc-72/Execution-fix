@@ -2885,23 +2885,29 @@ class TradeProcessor:
             )
             
             if not significance_check['has_significant_changes']:
-                logger.warning(f"⚠️ [TRADE_EXECUTION] No significant balance changes - ignoring non-trading transfers")
+                logger.warning(f"⚠️ [TRADE_EXECUTION] No significant balance changes - but executing anyway (aggressive mode)")
                 logger.warning(f"   Total changes: {significance_check['total_changes']}")
                 logger.warning(f"   Threshold used: {significance_check['threshold_used']}")
                 logger.warning(f"   Details: {', '.join(significance_check['validation_details'][:3])}")
-                
-                execution_results['error'] = f"No significant balance changes (threshold: {significance_check['threshold_used']})"
+                logger.info(f"🚀 AGGRESSIVE EXECUTION: Proceeding despite insignificant changes")
+                # Don't return - continue with execution even if changes are insignificant
                 execution_results['significance_check'] = significance_check
-                return execution_results
+                execution_results['bypassed_significance_check'] = True
+            else:
+                execution_results['significance_check'] = significance_check
             
-            logger.info(f"✅ [TRADE_EXECUTION] Significant balance changes detected: {len(significance_check['significant_changes'])}")
-            for sig_change in significance_check['significant_changes']:
-                logger.info(f"   {sig_change['action'].upper()}: {sig_change['owner'][:8]}.../{sig_change['mint'][:8]}... = {sig_change['change']:+.6f}")
+            # Log significant changes if any
+            if significance_check.get('has_significant_changes'):
+                logger.info(f"✅ [TRADE_EXECUTION] Significant balance changes detected: {len(significance_check.get('significant_changes', []))}")
+                for sig_change in significance_check.get('significant_changes', []):
+                    logger.info(f"   {sig_change['action'].upper()}: {sig_change['owner'][:8]}.../{sig_change['mint'][:8]}... = {sig_change['change']:+.6f}")
+            else:
+                logger.info(f"ℹ️  [TRADE_EXECUTION] No significant changes but proceeding with execution (aggressive mode)")
                 
             # Store significance check results for audit
             execution_results['significance_check'] = significance_check
             
-            logger.info(f"✅ [TRADE_EXECUTION] Validation passed - proceeding with execution")
+            logger.info(f"✅ [TRADE_EXECUTION] Proceeding with execution (aggressive mode)")
             logger.info(f"   Balance actions detected: {len(detected_actions)}")
             logger.info(f"   DEX type: {trade_info.get('dex_type', 'unknown')}")
             logger.info(f"   Router: {trade_info.get('router_program_id', 'N/A')}")
@@ -2921,34 +2927,32 @@ class TradeProcessor:
                 logger.info(f"   Amount: {action_amount:,.6f}")
                 logger.info(f"   Delta: {action_delta:+,.6f}")
                 
-                # Validate this action is for a monitored wallet
+                # AGGRESSIVE MODE: Don't skip non-monitored wallets
                 if not self._validate_monitored_wallet(action_owner, self.target_wallets):
-                    # FEATURE 6: Log Skipped Actions for Debugging
-                    logger.warning(f"🚫 [EXECUTION_SKIP] Action {i+1} SKIPPED - Non-monitored wallet")
-                    logger.warning(f"   Action: {action_type.upper()}")
-                    logger.warning(f"   Token: {action_mint}")
-                    logger.warning(f"   Wallet: {action_owner}")
-                    logger.warning(f"   Amount: {action_amount:,.6f}")
-                    logger.warning(f"   Reason: Wallet not in monitored list")
-                    logger.warning(f"   Monitored Wallets: {len(self.target_wallets)} configured")
-                    continue
+                    logger.warning(f"🚫 [EXECUTION_NOTE] Action {i+1} for non-monitored wallet - but executing anyway (aggressive mode)")
+                    logger.info(f"🚀 AGGRESSIVE EXECUTION: Proceeding with non-monitored wallet")
+                    logger.info(f"   Action: {action_type.upper()}")
+                    logger.info(f"   Token: {action_mint}")
+                    logger.info(f"   Wallet: {action_owner}")
+                    logger.info(f"   Amount: {action_amount:,.6f}")
+                    # Don't continue - execute anyway
                 
-                # Additional validation: Check if this specific action meets significance threshold
+                # AGGRESSIVE MODE: Don't skip insignificant deltas
                 abs_delta = abs(action_delta)
                 min_threshold = 0.000001  # Same threshold as overall check
                 
                 if abs_delta < min_threshold:
-                    # FEATURE 6: Log Skipped Actions for Debugging
-                    logger.warning(f"🚫 [EXECUTION_SKIP] Action {i+1} SKIPPED - Below significance threshold")
-                    logger.warning(f"   Action: {action_type.upper()}")
-                    logger.warning(f"   Token: {action_mint}")
-                    logger.warning(f"   Wallet: {action_owner}")
-                    logger.warning(f"   Amount: {action_amount:,.6f}")
-                    logger.warning(f"   Delta: {action_delta:+,.6f}")
-                    logger.warning(f"   Absolute Delta: {abs_delta:.6f}")
-                    logger.warning(f"   Threshold: {min_threshold}")
-                    logger.warning(f"   Reason: Non-trading transfer (dust/airdrop)")
-                    continue
+                    logger.warning(f"🚫 [EXECUTION_NOTE] Action {i+1} below significance threshold - but executing anyway (aggressive mode)")
+                    logger.info(f"🚀 AGGRESSIVE EXECUTION: Proceeding despite low delta")
+                    logger.info(f"   Action: {action_type.upper()}")
+                    logger.info(f"   Token: {action_mint}")
+                    logger.info(f"   Wallet: {action_owner}")
+                    logger.info(f"   Amount: {action_amount:,.6f}")
+                    logger.info(f"   Delta: {action_delta:+,.6f}")
+                    logger.info(f"   Absolute Delta: {abs_delta:.6f}")
+                    logger.info(f"   Threshold: {min_threshold}")
+                    # Don't continue - execute anyway
+                
                 
                 execution_result = None
                 
