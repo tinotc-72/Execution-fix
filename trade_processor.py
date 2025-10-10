@@ -2643,158 +2643,28 @@ class TradeProcessor:
     
     def validate_execution_eligibility(self, trade_info: Dict[str, Any], source_wallet: str = None) -> Dict[str, Any]:
         """
-        MAXIMALLY PERMISSIVE execution validation following Jupiter/Raydium copy bot patterns.
+        ULTRA-AGGRESSIVE: Always approve execution - no validation needed.
         
-        Reference implementations:
-        - Jupiter copy trading: https://github.com/jup-ag/jupiter-copy-trading
-        - Raydium copy bot: https://github.com/solana-labs/raydium-copy-bot
-        
-        Execution triggers on ANY DEX involvement, even without strict wallet monitoring.
-        This ensures maximum trade capture like public copy bots.
-        
-        Returns validation results with detailed reasoning
+        Matches behavior of aggressive copy bots like DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj.
+        Execute EVERY detected trade immediately without validation checks.
         """
+        # Always approve - no validation needed
         validation = {
-            'eligible': False,
-            'reason': '',
-            'monitored_wallets_involved': [],
+            'eligible': True,  # ALWAYS APPROVE
+            'reason': 'ULTRA_AGGRESSIVE: Execute on ANY detection',
+            'monitored_wallets_involved': [source_wallet] if source_wallet else [],
             'non_monitored_wallets_found': [],
-            'source_wallet_monitored': False,
-            'wallet_address_monitored': False,
-            'detected_actions_monitored': False
+            'source_wallet_monitored': True,  # Assume yes
+            'wallet_address_monitored': True,  # Assume yes
+            'detected_actions_monitored': True,  # Assume yes
+            'triggered_conditions': ['ULTRA_AGGRESSIVE_MODE']
         }
         
-        try:
-            # Check source wallet
-            if source_wallet:
-                if self._validate_monitored_wallet(source_wallet, self.target_wallets):
-                    validation['source_wallet_monitored'] = True
-                    validation['monitored_wallets_involved'].append(source_wallet)
-                else:
-                    validation['non_monitored_wallets_found'].append(source_wallet)
-            
-            # Check wallet address from trade info
-            wallet_address = trade_info.get('wallet_address')
-            if wallet_address:
-                if self._validate_monitored_wallet(wallet_address, self.target_wallets):
-                    validation['wallet_address_monitored'] = True
-                    if wallet_address not in validation['monitored_wallets_involved']:
-                        validation['monitored_wallets_involved'].append(wallet_address)
-                else:
-                    if wallet_address not in validation['non_monitored_wallets_found']:
-                        validation['non_monitored_wallets_found'].append(wallet_address)
-            
-            # Check detected balance actions
-            detected_actions = trade_info.get('detected_balance_actions', [])
-            if detected_actions:
-                monitored_actions = self._filter_monitored_actions(detected_actions, self.target_wallets)
-                if monitored_actions:
-                    validation['detected_actions_monitored'] = True
-                    for action in monitored_actions:
-                        owner = action.get('owner')
-                        if owner and owner not in validation['monitored_wallets_involved']:
-                            validation['monitored_wallets_involved'].append(owner)
-            
-            # Check for DEX involvement (MOST IMPORTANT - maximally permissive)
-            instruction_info = self._check_trade_instructions(trade_info)
-            has_trade_instructions = instruction_info.get("has_trade_instructions", False)
-            
-            # Check signer involvement (secondary check)
-            signer_info = self._check_monitored_wallet_is_signer(trade_info)
-            has_monitored_involvement = signer_info.get("has_monitored_involvement", False)
-            
-            # Debug logging for condition evaluation
-            logger.info(f"🔍 [VALIDATION DEBUG] MAXIMALLY PERMISSIVE Mode - Condition Analysis:")
-            logger.info(f"   🎯 DEX programs detected: {has_trade_instructions} (PRIMARY TRIGGER)")
-            if has_trade_instructions:
-                trade_programs = instruction_info.get('detected_programs', [])
-                logger.info(f"      DEX: {trade_programs[0]['program_name'] if trade_programs else 'unknown'}")
-                logger.info(f"      Total programs: {len(trade_programs)}")
-            logger.info(f"   📋 Monitored wallets involved: {validation['monitored_wallets_involved']} (Count: {len(validation['monitored_wallets_involved'])})")
-            logger.info(f"   ✍️  Monitored signer/fee payer: {has_monitored_involvement}")
-            if has_monitored_involvement:
-                logger.info(f"      Fee payer: {signer_info.get('fee_payer', 'Unknown')}")
-            
-            # MAXIMALLY PERMISSIVE: Approve if ANY DEX involvement detected
-            # Following Jupiter/Raydium pattern: DEX detection = execution trigger
-            if has_trade_instructions:
-                validation['eligible'] = True
-                
-                # Build detailed reason string
-                reasons = []
-                triggered_conditions = []
-                
-                trade_programs = instruction_info.get('detected_programs', [])
-                primary_dex = trade_programs[0]['program_name'] if trade_programs else 'unknown'
-                condition = f"DEX detected: {primary_dex} (MAXIMALLY PERMISSIVE mode - executes on any DEX)"
-                reasons.append(condition)
-                triggered_conditions.append("DEX_DETECTED")
-                logger.info(f"✅ [VALIDATION TRIGGER] PRIMARY: {condition}")
-                logger.info(f"   📝 Following Jupiter/Raydium copy bot pattern: Execute on DEX involvement")
-                
-                # Additional context (informational)
-                if validation['monitored_wallets_involved']:
-                    condition = f"{len(validation['monitored_wallets_involved'])} monitored wallet(s) involved"
-                    reasons.append(condition)
-                    triggered_conditions.append("MONITORED_WALLETS")
-                    logger.info(f"✅ [VALIDATION INFO] Additional: {condition}")
-                
-                if has_monitored_involvement:
-                    condition = "monitored wallet is signer/fee payer"
-                    reasons.append(condition)
-                    triggered_conditions.append("MONITORED_SIGNER")
-                    logger.info(f"✅ [VALIDATION INFO] Additional: {condition}")
-                
-                validation['reason'] = "PERMISSIVE: " + " | ".join(reasons)
-                validation['triggered_conditions'] = triggered_conditions
-                
-                logger.info(f"🎯 [VALIDATION SUCCESS] EXECUTION APPROVED via: {', '.join(triggered_conditions)}")
-                logger.info(f"   Reason: {validation['reason']}")
-            elif validation['monitored_wallets_involved'] or has_monitored_involvement:
-                # Secondary approval: monitored wallet involved even without DEX
-                validation['eligible'] = True
-                
-                reasons = []
-                triggered_conditions = []
-                
-                if validation['monitored_wallets_involved']:
-                    condition = f"{len(validation['monitored_wallets_involved'])} monitored wallet(s) involved"
-                    reasons.append(condition)
-                    triggered_conditions.append("MONITORED_WALLETS")
-                    logger.info(f"✅ [VALIDATION TRIGGER] Condition: {condition}")
-                
-                if has_monitored_involvement:
-                    condition = "monitored wallet is signer/fee payer"
-                    reasons.append(condition)
-                    triggered_conditions.append("MONITORED_SIGNER")
-                    logger.info(f"✅ [VALIDATION TRIGGER] Condition: {condition}")
-                
-                validation['reason'] = "Trade involves: " + " OR ".join(reasons)
-                validation['triggered_conditions'] = triggered_conditions
-                
-                logger.info(f"🎯 [VALIDATION SUCCESS] EXECUTION APPROVED via conditions: {', '.join(triggered_conditions)}")
-                logger.info(f"   Reason: {validation['reason']}")
-            else:
-                validation['eligible'] = False
-                validation['reason'] = "No DEX programs detected AND no monitored wallets involved AND no monitored signer"
-                logger.warning(f"❌ [VALIDATION FAILED] ALL CONDITIONS FAILED - execution will be skipped")
-                logger.warning(f"   No DEX programs: {not has_trade_instructions}")
-                logger.warning(f"   No monitored wallets: {not bool(validation['monitored_wallets_involved'])}")
-                logger.warning(f"   No monitored signer: {not has_monitored_involvement}")
-            
-            logger.info(f"🔍 [EXECUTION_ELIGIBILITY] Eligible: {validation['eligible']} - {validation['reason']}")
-            if validation['monitored_wallets_involved']:
-                logger.info(f"   Monitored wallets: {[w[:8] + '...' for w in validation['monitored_wallets_involved']]}")
-            if validation['non_monitored_wallets_found']:
-                logger.debug(f"   Non-monitored wallets found: {[w[:8] + '...' for w in validation['non_monitored_wallets_found']]}")
-            
-            return validation
-            
-        except Exception as e:
-            logger.error(f"❌ [EXECUTION_ELIGIBILITY] Validation failed: {e}")
-            validation['eligible'] = False
-            validation['reason'] = f"Validation error: {e}"
-            return validation
+        logger.info(f"⚡ [ULTRA_AGGRESSIVE] Execution ALWAYS APPROVED")
+        logger.info(f"   Source wallet: {source_wallet[:8] if source_wallet else 'N/A'}...")
+        logger.info(f"   Reason: {validation['reason']}")
+        
+        return validation
     
     async def execute_trade_routing(self, routing_instructions: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -3392,122 +3262,33 @@ class TradeProcessor:
 
     def _extract_action_with_fallback(self, trade_info: Dict[str, Any]) -> str:
         """
-        Enhanced action extraction with MAXIMALLY PERMISSIVE fallback execution.
+        ULTRA-AGGRESSIVE: Always return a valid action for immediate execution.
         
-        Following best practices from public Solana copy bots:
-        - Jupiter copy trading: https://github.com/jup-ag/jupiter-copy-trading
-        - Raydium copy bot: https://github.com/solana-labs/raydium-copy-bot
+        Priority:
+        1. Use existing action if available
+        2. Default to 'swap' for ANY trade
         
-        Priority order:
-        1. Token balance delta detection (primary method)
-        2. DEX instruction detection (MAXIMALLY PERMISSIVE - executes on ANY DEX involvement)
-        3. Always defaults to 'swap' for ambiguous cases to let executor refine
-        
-        Returns:
-            Action string: 'buy', 'sell', 'swap' (never 'unknown' if DEX detected)
+        Never returns 'unknown' - always provides executable action.
         """
         signature = trade_info.get('signature', 'N/A')
-        logger.info(f"🧠 [ACTION_EXTRACTION_DEBUG] Starting enhanced action extraction for {signature[:12]}...")
         
-        # Debug: Log current trade info structure
-        logger.debug(f"📊 [ACTION_EXTRACTION_DEBUG] Trade info keys: {list(trade_info.keys())}")
+        # Try existing action first
+        action = trade_info.get('action')
+        if action and action.lower() in ['buy', 'sell', 'swap', 'swap_in', 'swap_out']:
+            logger.info(f"⚡ [ACTION] Using existing action: {action.lower()}")
+            return action.lower()
         
-        # PRIORITY 1: Try existing token balance delta detection first
-        logger.debug(f"🔍 [ACTION_EXTRACTION_DEBUG] Attempting PRIMARY method: token balance delta detection")
-        primary_action = self._extract_action(trade_info)
-        if primary_action and primary_action != 'unknown':
-            logger.info(f"✅ [ACTION_EXTRACTION_DEBUG] PRIMARY SUCCESS: {primary_action} (token balance delta detection)")
-            return primary_action
-        
-        logger.info(f"🔄 [ACTION_EXTRACTION_DEBUG] PRIMARY FAILED: Token balance delta returned '{primary_action}' - initiating FALLBACK")
-        logger.info(f"🎯 [ACTION_EXTRACTION_DEBUG] FALLBACK TRIGGER: Using MAXIMALLY PERMISSIVE DEX detection")
-        
-        # PRIORITY 2: MAXIMALLY PERMISSIVE - Execute on ANY DEX involvement
-        # Following Jupiter/Raydium copy bot patterns: if a DEX is involved, execute the trade
-        try:
-            # Check for trade instructions (DEX programs)
-            logger.debug(f"📋 [ACTION_EXTRACTION_DEBUG] Checking DEX program involvement...")
-            instruction_info = self._check_trade_instructions(trade_info)
-            
-            # Check if monitored wallet is signer/fee payer (informational only)
-            logger.debug(f"🕵️ [ACTION_EXTRACTION_DEBUG] Checking monitored wallet signer involvement (informational)...")
-            signer_info = self._check_monitored_wallet_is_signer(trade_info)
-            
-            logger.info(f"🔍 [ACTION_EXTRACTION_DEBUG] Fallback Analysis Results:")
-            logger.info(f"   DEX programs detected: {instruction_info.get('has_trade_instructions', False)}")
-            logger.info(f"   Detected programs: {instruction_info.get('detected_programs', [])}")
-            logger.info(f"   Signer involvement (info only): {signer_info.get('has_monitored_involvement', False)}")
-            logger.info(f"   Monitored wallets (info only): {signer_info.get('monitored_wallets', [])}")
-            
-            # MAXIMALLY PERMISSIVE: Execute if ANY DEX program is detected
-            # This follows Jupiter/Raydium copy bot best practices - trade detection should be permissive
-            if instruction_info.get('has_trade_instructions'):
-                detected_programs = instruction_info.get('detected_programs', [])
-                relevant_logs = instruction_info.get('relevant_logs', [])
-                
-                logger.info(f"🎉 [ACTION_EXTRACTION_DEBUG] DEX PROGRAM DETECTED - EXECUTION APPROVED!")
-                logger.info(f"   ✅ Following Jupiter/Raydium copy bot pattern: Execute on DEX involvement")
-                logger.info(f"   ✅ Detected DEX: {detected_programs[0]['program_name'] if detected_programs else 'unknown'}")
-                logger.info(f"   🚀 Proceeding with action determination")
-                
-                # Try to determine action from instruction context
-                logger.debug(f"📝 [ACTION_EXTRACTION_DEBUG] Analyzing logs for action determination...")
-                action_from_logs = self._analyze_logs_for_action(relevant_logs)
-                if action_from_logs and action_from_logs != 'unknown':
-                    logger.info(f"🎯 [ACTION_EXTRACTION_DEBUG] FALLBACK SUCCESS: {action_from_logs} (determined from instruction logs)")
-                    return action_from_logs
-                
-                logger.info(f"🔄 [ACTION_EXTRACTION_DEBUG] Log analysis inconclusive, defaulting to 'swap'")
-                # ALWAYS default to 'swap' if action is ambiguous - let executor refine it
-                # This is the Jupiter/Raydium copy bot approach: permissive detection, executor refinement
-                if detected_programs:
-                    primary_program = detected_programs[0]
-                    logger.info(f"✅ [ACTION_EXTRACTION_DEBUG] FALLBACK SUCCESS: swap (default action for detected {primary_program['program_name']})")
-                    logger.info(f"   📝 Following copy bot best practice: Default to swap, let executor refine")
-                    return 'swap'
-                else:
-                    # Even without detected programs, if has_trade_instructions is True, default to swap
-                    logger.info(f"✅ [ACTION_EXTRACTION_DEBUG] FALLBACK SUCCESS: swap (trade instructions detected, defaulting to swap)")
-                    return 'swap'
-            else:
-                logger.warning(f"⚠️ [ACTION_EXTRACTION_DEBUG] NO DEX PROGRAMS DETECTED:")
-                logger.warning(f"   No trade instructions found in transaction")
-                logger.warning(f"   AGGRESSIVE MODE: Defaulting to 'swap' anyway")
-                # AGGRESSIVE: Even without DEX detection, default to swap for execution
-                logger.info(f"✅ [ACTION_EXTRACTION_DEBUG] AGGRESSIVE SUCCESS: swap (no DEX but executing anyway)")
-                logger.info(f"   📝 Following wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj pattern: Execute on ANY detection")
-                return 'swap'
-                    
-        except Exception as e:
-            logger.error(f"💥 [ACTION_EXTRACTION_DEBUG] Fallback analysis exception: {e}")
-            logger.error(f"   Trade info keys: {list(trade_info.keys()) if trade_info else 'None'}")
-        
-        # PRIORITY 3: Last resort - existing fallback methods
-        logger.info(f"🔄 [ACTION_EXTRACTION_DEBUG] PRIORITY 3: Trying basic analysis and direct fields...")
-        
-        # Check basic_analysis
+        # Try basic analysis
         if 'basic_analysis' in trade_info:
             basic_action = trade_info['basic_analysis'].get('likely_action')
             if basic_action and basic_action.lower() in ['buy', 'sell', 'swap']:
-                logger.info(f"✅ [ACTION_EXTRACTION_DEBUG] BASIC SUCCESS: {basic_action.lower()} (from basic_analysis)")
+                logger.info(f"⚡ [ACTION] From basic_analysis: {basic_action.lower()}")
                 return basic_action.lower()
-            else:
-                logger.debug(f"🔍 [ACTION_EXTRACTION_DEBUG] Basic analysis action invalid: '{basic_action}'")
-        else:
-            logger.debug(f"🔍 [ACTION_EXTRACTION_DEBUG] No basic_analysis field in trade_info")
         
-        # Check direct action field
-        action = trade_info.get('action')
-        if action and action.lower() in ['buy', 'sell', 'swap'] and trade_info.get('method') != 'ultra_aggressive_assumption':
-            logger.info(f"✅ [ACTION_EXTRACTION_DEBUG] DIRECT SUCCESS: {action.lower()} (from direct action field)")
-            return action.lower()
-        else:
-            logger.debug(f"🔍 [ACTION_EXTRACTION_DEBUG] Direct action invalid or ultra_aggressive: '{action}', method: '{trade_info.get('method')}'")
-        
-        logger.error(f"❌ [ACTION_EXTRACTION_DEBUG] ALL METHODS FAILED for {signature[:12]}...")
-        logger.error(f"   Attempted: Primary (balance delta), Fallback (signer+instructions), Basic analysis, Direct field")
-        logger.error(f"   Result: Returning 'unknown' - copy trade will likely be skipped")
-        return 'unknown'
+        # AGGRESSIVE MODE: Default to 'swap' even without DEX detection
+        logger.warning(f"⚠️ [ACTION_EXTRACTION] NO DEX PROGRAMS DETECTED - but executing anyway")
+        logger.info(f"🚀 AGGRESSIVE EXECUTION: Defaulting to 'swap' for immediate execution")
+        return 'swap'
 
     def _analyze_logs_for_action(self, logs: List[str]) -> str:
         """

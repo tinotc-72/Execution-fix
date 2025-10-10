@@ -207,25 +207,73 @@ from execution_coordinator import normalize_dex, ROUTE_MAP
 class SimpleCopyTradingBot:
     async def _process_detected_trade(self, trade_info: Dict[str, Any]):
         """
-        Canonical per-trade handler:
-        - accepts trades with or without signatures (warns for account-change stubs)
-        - derives source_wallet
-        - runs analyze_and_route_trade(trade_info, source_wallet)
-        - dispatches to coordinator for buy/sell
+        ULTRA-AGGRESSIVE IMMEDIATE EXECUTION:
+        Execute trades immediately upon detection with minimal parsing.
+        
+        Follows behavior of aggressive Solana copy bots like DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj:
+        - Execute on ANY detected trade
+        - Minimal validation (signature, action, mint)
+        - Default to 'swap' for ambiguous actions
+        - No scoring, no multi-stage validation, no balance requirements
         """
         sig = (trade_info.get("signature") or "").strip()
         if not sig or sig == "unknown":
-            self.logger.warning("[DETECT] No on-chain signature provided (account-change stub). Proceeding based on parsed DEX/mint/action.")
-            # Optionally: try to resolve recent signature for this slot/wallet here.
-        # Do NOT return/skip here — continue to analyze_and_route_trade
-
-        # Prefer the wallet from the event; otherwise fall back to config/wallet
+            logger.warning("[IMMEDIATE_EXEC] No signature - proceeding with available data")
+        
+        # Get source wallet
         source_wallet = (
             trade_info.get("wallet_address")
             or (self.target_wallets[0] if self.target_wallets else None)
             or str(self.wallet_pubkey)
         )
 
+        # IMMEDIATE EXECUTION: Extract minimal required fields
+        action = trade_info.get('action', 'unknown')
+        token_mint = trade_info.get('token_mint') or trade_info.get('mint', 'UNKNOWN')
+        
+        # Check for DEX involvement
+        dex_type = trade_info.get('dex_type') or trade_info.get('dex', 'unknown')
+        
+        # Default action to 'swap' if unknown
+        if action == 'unknown':
+            action = 'swap'
+            logger.info(f"🎯 [IMMEDIATE_EXEC] Action unknown, defaulting to 'swap'")
+            logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Executing anyway (aggressive mode)")
+            # Log for analytics but DO NOT return - continue with execution
+        
+        logger.info(f"⚡ [IMMEDIATE_EXEC] Trade detected - Action: {action}, Mint: {str(token_mint)[:8]}..., DEX: {dex_type}")
+        logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Proceeding with execution anyway (matching wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj behavior)")
+        
+        # EXECUTE IMMEDIATELY - No analysis, no validation, no retries
+        if action in ("buy", "swap_in", "swap"):
+            logger.info(f"🚀 [IMMEDIATE_EXEC] Executing BUY/SWAP for {str(token_mint)[:8]}...")
+            logger.info(f"⚠️ Unknown action '{action}' — executing as BUY (aggressive mode, swap default).")
+            await self.execution_coordinator._execute_copy_buy(
+                token_mint=token_mint, 
+                source_wallet=source_wallet, 
+                trade_info=trade_info
+            )
+        elif action in ("sell", "swap_out"):
+            logger.info(f"🚀 [IMMEDIATE_EXEC] Executing SELL for {str(token_mint)[:8]}...")
+            await self.execution_coordinator._execute_copy_sell(
+                token_mint=token_mint, 
+                source_wallet=source_wallet, 
+                trade_info=trade_info
+            )
+        else:
+            logger.info(f"🚀 [IMMEDIATE_EXEC] Unknown action type, defaulting to BUY for {str(token_mint)[:8]}...")
+            logger.info(f"⚠️ Unknown action '{action}' — executing as BUY (aggressive mode, swap default).")
+            await self.execution_coordinator._execute_copy_buy(
+                token_mint=token_mint, 
+                source_wallet=source_wallet, 
+                trade_info=trade_info
+            )
+        
+        return  # Done - no further processing needed
+        
+        # === LEGACY CODE BELOW - KEPT FOR REFERENCE BUT NOT EXECUTED ===
+        # The return above ensures immediate execution without analysis
+        
         logger.info("🔍 Running router detection for detected trade.")
         routing = await self._resilient_async_call(
             self.trade_processor.analyze_and_route_trade,
@@ -245,318 +293,6 @@ class SimpleCopyTradingBot:
                 'source_wallet': source_wallet
             }
 
-        action = routing.get("action", "unknown")
-        enriched = routing.get("trade_info", trade_info)  # carries program IDs / router info
-        token_mint = routing.get("token_mint") or enriched.get("token_mint")
-        dex = normalize_dex(
-            enriched.get("dex_type") or routing.get("dex") or "unknown"
-        )
-
-        # Log trade detection with key details
-        amount = enriched.get("amount") or enriched.get("sol_amount") or "unknown"
-        logger.info(f"🎯 TRADE DETECTED — Mint: {token_mint} | Action: {action} | DEX: {dex} | Amount: {amount} | Source: {source_wallet}")
-
-                # === RETRY LOGIC FOR UNCERTAIN TRADES ===
-        if action == 'unknown' or token_mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
-            for retry in range(3):
-                logger.warning(f"Uncertain action or token mint detected (attempt {retry+1}/3). Retrying analysis...")
-                await asyncio.sleep(0.2)  # Fast retry for copy trading speed
-                routing = await self._resilient_async_call(
-                    self.trade_processor.analyze_and_route_trade,
-                    trade_info,
-                    source_wallet,
-                )
-                action = routing.get("action", "unknown")
-                token_mint = routing.get("token_mint") or enriched.get("token_mint")
-                if action != 'unknown' and token_mint not in ['UNKNOWN', 'PENDING_ANALYSIS']:
-                    break
-            if action == 'unknown' or token_mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
-                logger.warning(f"⚠️ Uncertain action or token mint after retries: action={action}, token_mint={token_mint}")
-                logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Proceeding with execution anyway (matching wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj behavior)")
-                # Default action to 'swap' for unknown - will execute as buy (copy trade)
-                if action == 'unknown':
-                    action = 'swap'
-                    logger.info(f"   Defaulting action to 'swap' for executor")
-                # Log for analytics but DO NOT return - continue with execution
-                log_failed_trade_analysis(
-                    trade_info, 
-                    failure_reason=f"uncertain_after_retries_but_executing_action_{action}_mint_{token_mint}",
-                    retry_count=3,
-                    routing_data=routing
-                )
-
-        # === MINT/ACTION UNCERTAINTY DEBUGGING IN MAIN ===
-        if action == 'unknown' or token_mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
-            logger.error(f"Uncertain action or token mint detected in main: action={action}, token_mint={token_mint}, trade_info={enriched}")
-            logger.error(f"   Original routing: {routing}")
-            logger.error(f"   Signature: {enriched.get('signature', 'missing') if enriched else 'no_enriched_data'}")
-            logger.error(f"   Source wallet: {source_wallet}")
-            log_failed_trade_analysis(
-                enriched or trade_info, 
-                failure_reason=f"uncertain_after_successful_retries_action_{action}_mint_{token_mint}",
-                retry_count=0,
-                routing_data=routing
-            )
-
-        # === TOKEN BALANCE CHANGE REQUIREMENT FOR ALL MONITORED WALLETS ===
-        # Check EVERY monitored wallet for token balance changes
-        meta = enriched.get('meta') or trade_info.get('meta')
-        if meta:
-            pre_balances = meta.get('preTokenBalances', [])
-            post_balances = meta.get('postTokenBalances', [])
-            
-            # Build mapping from (owner, mint) -> amount for efficient lookup
-            pre_map = {}
-            post_map = {}
-            
-            for balance in pre_balances:
-                owner = balance.get('owner')
-                mint = balance.get('mint')
-                amount = int(balance.get('uiTokenAmount', {}).get('amount', '0'))
-                if owner and mint:
-                    pre_map[(owner, mint)] = amount
-                    
-            for balance in post_balances:
-                owner = balance.get('owner')
-                mint = balance.get('mint')
-                amount = int(balance.get('uiTokenAmount', {}).get('amount', '0'))
-                if owner and mint:
-                    post_map[(owner, mint)] = amount
-            
-            # Check ALL monitored wallets for balance changes
-            detected_trades = []
-            for wallet in self.target_wallets:  # Loop through ALL monitored wallets
-                logger.debug(f"🔍 Checking wallet {wallet[:8]}... for balance changes")
-                
-                # Get all (wallet, mint) pairs for this wallet
-                wallet_keys = set()
-                for (owner, mint) in pre_map.keys():
-                    if owner == wallet:
-                        wallet_keys.add((owner, mint))
-                for (owner, mint) in post_map.keys():
-                    if owner == wallet:
-                        wallet_keys.add((owner, mint))
-                
-                # Check for balance changes for this wallet
-                for (owner, mint) in wallet_keys:
-                    pre_amt = pre_map.get((owner, mint), 0)
-                    post_amt = post_map.get((owner, mint), 0)
-                    delta = post_amt - pre_amt
-                    
-                    if delta != 0:
-                        # Found a balance change for this wallet!
-                        detected_action = "buy" if delta > 0 else "sell"
-                        logger.info(f"🎯 {detected_action.upper()} detected for wallet {wallet[:8]}... on token {mint[:8] if mint else 'N/A'}...: {pre_amt} → {post_amt} (Δ{delta:+,})")
-                        
-                        detected_trades.append({
-                            'wallet': wallet,
-                            'mint': mint,
-                            'action': detected_action,
-                            'pre_amount': pre_amt,
-                            'post_amount': post_amt,
-                            'delta': delta
-                        })
-            
-            if not detected_trades:
-                logger.info(f"🚫 No token balance changes detected for monitored wallets")
-                logger.info(f"   Checked wallets: {[w[:8] + '...' for w in self.target_wallets]}")
-                
-                # === ENHANCED FALLBACK LOGIC - MAXIMALLY PERMISSIVE ===
-                # Following Jupiter/Raydium copy bot best practices:
-                # - https://github.com/jup-ag/jupiter-copy-trading
-                # - https://github.com/solana-labs/raydium-copy-bot
-                # Execute on ANY DEX involvement, regardless of balance changes or strict wallet monitoring
-                logger.info("🔄 FALLBACK TRIGGER: No balance changes detected - initiating MAXIMALLY PERMISSIVE DEX detection")
-                
-                # Check for DEX program involvement (PRIMARY TRIGGER)
-                instruction_info = self.trade_processor._check_trade_instructions(enriched)
-                found_trade_instruction = instruction_info.get("has_trade_instructions", False)
-                
-                # Check monitored wallet involvement (SECONDARY - informational only)
-                signer_info = self.trade_processor._check_monitored_wallet_is_signer(enriched)
-                is_monitored_signer = signer_info.get("has_monitored_involvement", False)
-
-                # Debug logging for fallback condition evaluation
-                logger.info(f"🔍 [FALLBACK DEBUG] MAXIMALLY PERMISSIVE Condition Analysis:")
-                logger.info(f"   🎯 DEX program detected: {found_trade_instruction} (PRIMARY TRIGGER)")
-                if found_trade_instruction:
-                    trade_programs = instruction_info.get('trade_programs', [])
-                    detected_programs = instruction_info.get('detected_programs', [])
-                    logger.info(f"      DEX: {detected_programs[0]['program_name'] if detected_programs else 'unknown'}")
-                    logger.info(f"      Programs: {trade_programs}")
-                    logger.info(f"      Total instructions: {instruction_info.get('total_instructions', 0)}")
-                logger.info(f"   ✍️  Monitored signer (info only): {is_monitored_signer}")
-                if is_monitored_signer:
-                    logger.info(f"      Fee payer: {signer_info.get('fee_payer', 'Unknown')}")
-                    logger.info(f"      Monitored wallets: {signer_info.get('monitored_wallets', [])}")
-
-                # MAXIMALLY PERMISSIVE: Execute if ANY DEX is detected
-                # Following Jupiter/Raydium pattern: DEX involvement = execution trigger
-                if found_trade_instruction:
-                    detected_programs = instruction_info.get('detected_programs', [])
-                    primary_dex = detected_programs[0]['program_name'] if detected_programs else 'unknown'
-                    
-                    logger.info(f"✅ [FALLBACK TRIGGER] DEX DETECTED: {primary_dex}")
-                    logger.info(f"   📝 Following Jupiter/Raydium copy bot pattern: Execute on ANY DEX involvement")
-                    logger.info(f"   🎯 [FALLBACK SUCCESS] EXECUTION APPROVED!")
-                    
-                    # Default action to 'swap' if unknown (let executor refine)
-                    if action == 'unknown':
-                        action = 'swap'
-                        logger.info(f"   🔄 Action was 'unknown', defaulting to 'swap' for executor refinement")
-                    
-                    logger.info(f"   Action: {action}")
-                    logger.info(f"   Token: {str(token_mint)[:8]}...")
-                    logger.info(f"   Source wallet: {str(source_wallet)[:8]}...")
-                    
-                    # Trigger copy trade based on action
-                    if action in ("buy", "swap_in", "swap"):
-                        logger.info(f"🚀 [FALLBACK EXECUTION] Executing copy BUY/SWAP for {str(token_mint)[:8]}...")
-                        await self.execution_coordinator._execute_copy_buy(token_mint=token_mint, source_wallet=source_wallet, trade_info=enriched)
-                    elif action in ("sell", "swap_out"):
-                        logger.info(f"🚀 [FALLBACK EXECUTION] Executing copy SELL for {str(token_mint)[:8]}...")
-                        await self.execution_coordinator._execute_copy_sell(token_mint=token_mint, source_wallet=source_wallet, trade_info=enriched)
-                    return
-                else:
-                    logger.warning("⚠️ [FALLBACK] NO DEX DETECTED - But executing anyway (aggressive mode)")
-                    logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Executing detected trade regardless of DEX detection")
-                    logger.info(f"   Following wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj pattern: Execute ANY detected trade")
-                    # log analytics
-                    log_failed_trade_analysis(
-                        enriched or trade_info,
-                        failure_reason="no_dex_detected_but_executing",
-                        retry_count=0,
-                        routing_data={
-                            "routing": routing,
-                            "signer_info": signer_info,
-                            "instruction_info": instruction_info,
-                            "is_monitored_signer": is_monitored_signer,
-                            "found_trade_instruction": found_trade_instruction,
-                            "monitored_wallets": self.target_wallets
-                        }
-                    )
-                    # Default to swap/buy execution
-                    if action == 'unknown':
-                        action = 'swap'
-                    logger.info(f"🚀 Executing as {action} for token {str(token_mint)[:8]}...")
-                    if action in ("buy", "swap_in", "swap"):
-                        logger.info(f"🚀 [AGGRESSIVE EXECUTION] Executing copy BUY/SWAP for {str(token_mint)[:8]}...")
-                        await self.execution_coordinator._execute_copy_buy(token_mint=token_mint, source_wallet=source_wallet, trade_info=enriched)
-                    elif action in ("sell", "swap_out"):
-                        logger.info(f"🚀 [AGGRESSIVE EXECUTION] Executing copy SELL for {str(token_mint)[:8]}...")
-                        await self.execution_coordinator._execute_copy_sell(token_mint=token_mint, source_wallet=source_wallet, trade_info=enriched)
-                    return
-            
-            # Execute trades for each detected wallet/token combination
-            logger.info(f"✅ Found {len(detected_trades)} balance change(s) across monitored wallets - executing copy trades")
-            
-            # Debug log the primary execution path
-            if getattr(self.config, 'execution_debug', False):
-                logger.debug("📊 PRIMARY EXECUTION PATH: Balance changes detected in monitored wallets")
-                for trade in detected_trades:
-                    logger.debug(f"  - Wallet: {trade['wallet'][:8]}... | Token: {trade['mint'][:8]}... | Action: {trade['action']}")
-                    logger.debug(f"    ✅ EXECUTION CONDITION: Monitored wallet balance change detection (PRIMARY PATH)")
-            
-            execution_results = []
-            for trade in detected_trades:
-                wallet = trade['wallet']
-                mint = trade['mint']
-                detected_action = trade['action']
-                
-                logger.info(f"🚀 Executing copy trade for wallet {wallet[:8]}... token {mint[:8]}... action: {detected_action}")
-                
-                if getattr(self.config, 'execution_debug', False):
-                    logger.debug(f"🔥 EXECUTION TRIGGER: Primary balance change detection for {wallet[:8]}.../{mint[:8]}... - {detected_action}")
-                
-                # Use the detected action and wallet for this specific trade
-                if detected_action in ("buy", "swap_in"):
-                    exec_res = await self._resilient_async_call(
-                        self.execution_coordinator._execute_copy_buy,
-                        token_mint=mint,
-                        source_wallet=wallet,  # Use the specific wallet that had the balance change
-                        trade_info=enriched,
-                    )
-                elif detected_action in ("sell", "swap_out"):
-                    if getattr(self.config, 'execution_debug', False):
-                        logger.debug(f"🔥 EXECUTION TRIGGER: Primary balance change detection for SELL {wallet[:8]}.../{mint[:8]}...")
-                    
-                    exec_res = await self._resilient_async_call(
-                        self.execution_coordinator._execute_copy_sell,
-                        token_mint=mint,
-                        source_wallet=wallet,  # Use the specific wallet that had the balance change
-                        trade_info=enriched,
-                    )
-                else:
-                    logger.warning(f"⚠️ Unknown action '{detected_action}' for wallet {wallet[:8]}... - executing as BUY (aggressive mode)")
-                    # Default unknown action to buy/swap for aggressive execution
-                    exec_res = await self._resilient_async_call(
-                        self.execution_coordinator._execute_copy_buy,
-                        token_mint=mint,
-                        source_wallet=wallet,
-                        trade_info=enriched,
-                    )
-                
-                execution_results.append({
-                    'wallet': wallet,
-                    'mint': mint,
-                    'action': detected_action,
-                    'result': exec_res
-                })
-            
-            logger.info(f"🎯 Completed {len(execution_results)} copy trade executions")
-            return  # Exit here since we handled all detected trades
-        else:
-            logger.warning(f"⚠️ No metadata available to verify token balance changes - proceeding with execution")
-
-        if action in ("buy", "swap_in"):
-            exec_res = await self._resilient_async_call(
-                self.execution_coordinator._execute_copy_buy,
-                token_mint=token_mint,
-                source_wallet=source_wallet,
-                trade_info=enriched,
-            )
-        elif action in ("sell", "swap_out"):
-            exec_res = await self._resilient_async_call(
-                self.execution_coordinator._execute_copy_sell,
-                token_mint=token_mint,
-                source_wallet=source_wallet,
-                trade_info=enriched,
-                detected_dex=dex,
-            )
-        else:
-            logger.warning(f"⚠️ Unknown action '{action}' — executing as BUY (aggressive mode, swap default).")
-            # Default unknown to swap (buy) for aggressive execution  
-            action = 'swap'
-            log_failed_trade_analysis(
-                enriched or trade_info,
-                failure_reason=f"unknown_action_defaulted_to_swap_executing",
-                retry_count=0,
-                routing_data=routing
-            )
-            # Execute as buy
-            exec_res = await self._resilient_async_call(
-                self.execution_coordinator._execute_copy_buy,
-                token_mint=token_mint,
-                source_wallet=source_wallet,
-                trade_info=enriched,
-            )
-
-        if isinstance(exec_res, dict) and exec_res.get("success"):
-            logger.info(f"✅ Execution sent | Signature: {exec_res.get('signature')}")
-        else:
-            logger.error(f"❌ Execution failed: {exec_res}")
-            log_failed_trade_analysis(
-                enriched or trade_info,
-                failure_reason=f"execution_failed_{action}_result_{type(exec_res).__name__}",
-                retry_count=0,
-                routing_data={
-                    "routing": routing,
-                    "execution_result": exec_res,
-                    "action": action,
-                    "token_mint": token_mint,
-                    "dex": dex
-                }
-            )
     async def _resilient_async_call(self, func, *args, max_retries=5, initial_delay=0.5, backoff=2, **kwargs):
         """
         Robust async call with exponential backoff and error logging.
