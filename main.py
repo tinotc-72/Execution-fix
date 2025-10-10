@@ -238,12 +238,16 @@ class SimpleCopyTradingBot:
         if action == 'unknown':
             action = 'swap'
             logger.info(f"🎯 [IMMEDIATE_EXEC] Action unknown, defaulting to 'swap'")
+            logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Executing anyway (aggressive mode)")
+            # Log for analytics but DO NOT return - continue with execution
         
         logger.info(f"⚡ [IMMEDIATE_EXEC] Trade detected - Action: {action}, Mint: {str(token_mint)[:8]}..., DEX: {dex_type}")
+        logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Proceeding with execution anyway (matching wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj behavior)")
         
         # EXECUTE IMMEDIATELY - No analysis, no validation, no retries
         if action in ("buy", "swap_in", "swap"):
             logger.info(f"🚀 [IMMEDIATE_EXEC] Executing BUY/SWAP for {str(token_mint)[:8]}...")
+            logger.info(f"⚠️ Unknown action '{action}' — executing as BUY (aggressive mode, swap default).")
             await self.execution_coordinator._execute_copy_buy(
                 token_mint=token_mint, 
                 source_wallet=source_wallet, 
@@ -258,6 +262,7 @@ class SimpleCopyTradingBot:
             )
         else:
             logger.info(f"🚀 [IMMEDIATE_EXEC] Unknown action type, defaulting to BUY for {str(token_mint)[:8]}...")
+            logger.info(f"⚠️ Unknown action '{action}' — executing as BUY (aggressive mode, swap default).")
             await self.execution_coordinator._execute_copy_buy(
                 token_mint=token_mint, 
                 source_wallet=source_wallet, 

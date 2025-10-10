@@ -3285,8 +3285,9 @@ class TradeProcessor:
                 logger.info(f"⚡ [ACTION] From basic_analysis: {basic_action.lower()}")
                 return basic_action.lower()
         
-        # DEFAULT: Always return 'swap' for execution
-        logger.info(f"⚡ [ACTION] Defaulting to 'swap' for immediate execution")
+        # AGGRESSIVE MODE: Default to 'swap' even without DEX detection
+        logger.warning(f"⚠️ [ACTION_EXTRACTION] NO DEX PROGRAMS DETECTED - but executing anyway")
+        logger.info(f"🚀 AGGRESSIVE EXECUTION: Defaulting to 'swap' for immediate execution")
         return 'swap'
 
     def _analyze_logs_for_action(self, logs: List[str]) -> str:
