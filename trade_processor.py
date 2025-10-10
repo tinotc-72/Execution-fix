@@ -86,6 +86,56 @@ import re
 from utils import get_transaction_with_logs
 """
 🚀 TRADE PROCESSOR - Pure trade analysis and routing logic
+
+OVERVIEW:
+=========
+This module handles all trade analysis and routing decisions WITHOUT executing trades.
+It separates analysis logic from execution, making the system more maintainable and testable.
+
+KEY COMPONENTS:
+===============
+
+1. ACTION EXTRACTION (_extract_action, _extract_action_with_fallback)
+   - Primary: Token balance delta detection (most accurate)
+   - Fallback: Signer + instruction analysis (handles incomplete data)
+   - Last resort: Direct field extraction
+   
+   The fallback logic is ENHANCED to be more permissive:
+   - Allows execution if monitored wallet is signer OR trade instructions exist
+   - Defaults to 'swap' action when specific action cannot be determined
+   - This prevents unnecessary trade skipping while maintaining safety
+
+2. TOKEN MINT EXTRACTION
+   - Sophisticated extraction from transaction metadata
+   - Delta-based detection from balance changes
+   - Pool cache for deterministic routing
+
+3. DEX DETECTION (detect_dex_router)
+   - Identifies DEX from program IDs
+   - Validates against known DEX programs (Raydium, Orca, Meteora, etc.)
+   - Routes to appropriate executor
+
+4. EXECUTION VALIDATION (validate_execution_eligibility)
+   - Ensures monitored wallets are involved
+   - Provides detailed validation results for debugging
+
+5. ROUTING DECISIONS (analyze_and_route_trade)
+   - Combines all analysis results
+   - Determines if execution is required
+   - Returns routing instructions for execution coordinator
+
+FALLBACK STRATEGY:
+==================
+The fallback logic implements OR conditions (not AND) for maximum trade capture:
+- Condition 1: Monitored wallet is signer/fee payer
+- Condition 2: Trade instructions detected
+- If EITHER condition is met, execution proceeds with 'swap' default action
+
+This is safe because:
+- Execution coordinator refines action from balance changes
+- DEX routing handles generic swap actions
+- Monitored wallet involvement ensures we're copying the right trades
+
 Handles validation, analysis, and routing decisions without execution
 """
 
@@ -1412,14 +1462,37 @@ class TradeProcessor:
 
     def _try_signer_instruction_fallback(self, trade_info: Dict[str, Any]) -> str:
         """
-        ENHANCED fallback method to determine action using signer and instruction analysis.
-        Called when token balance delta detection fails.
+        ENHANCED fallback method to determine trade action using signer and instruction analysis.
         
-        This method is more permissive to handle incomplete upstream data while still
-        ensuring monitored wallets are involved.
+        This method is called when primary token balance delta detection fails to determine
+        the trade action. It implements a more permissive approach to handle incomplete 
+        upstream data while still ensuring monitored wallets are involved.
+        
+        Fallback Conditions (OR logic - either condition triggers execution):
+        1. Monitored Wallet Involvement: A monitored wallet is the transaction signer/fee payer
+        2. Trade Instructions: Transaction contains recognized DEX/swap program instructions
+        
+        Action Determination Strategy:
+        1. Analyze transaction logs for explicit action indicators (buy/sell/swap)
+        2. If logs are inconclusive, infer action from detected program types
+        3. Default to 'swap' action to enable DEX routing in execution coordinator
+        
+        The 'swap' default is safe because:
+        - The execution coordinator will determine exact action from balance changes
+        - DEX routing logic can handle generic swap actions
+        - It prevents unnecessary trade skipping when action is determinable later
+        
+        Args:
+            trade_info (Dict[str, Any]): Trade information containing transaction data
         
         Returns:
-            Action string if conditions are met, 'unknown' otherwise
+            str: Action string - 'buy', 'sell', 'swap', or 'unknown'
+                'unknown' is only returned if neither fallback condition is met
+        
+        Note:
+            This method prioritizes execution over precision. If conditions indicate a trade
+            is happening (monitored wallet + DEX programs), it allows execution to proceed
+            with a generic 'swap' action, trusting downstream logic to refine the action.
         """
         try:
             signature = trade_info.get('signature', 'N/A')
@@ -1442,7 +1515,7 @@ class TradeProcessor:
             if has_monitored_involvement or has_trade_instructions:
                 logger.info(f"✅ [SIGNER_FALLBACK] At least one fallback condition met (signer or trade instruction)")
                 
-                # Log which condition triggered execution
+                # Log which condition triggered execution for debugging
                 if has_monitored_involvement:
                     monitored_wallets = signer_info.get('monitored_wallets', [])
                     logger.info(f"   ✅ Condition 1: Monitored wallet involvement detected ({len(monitored_wallets)} wallet(s))")
@@ -1450,7 +1523,7 @@ class TradeProcessor:
                     detected_programs = instruction_info.get('detected_programs', [])
                     logger.info(f"   ✅ Condition 2: Trade instructions found ({len(detected_programs)} program(s))")
                 
-                # Try to determine specific action from logs
+                # Strategy 1: Try to determine specific action from transaction logs
                 relevant_logs = instruction_info.get('relevant_logs', [])
                 action_from_logs = self._analyze_logs_for_action(relevant_logs)
                 
@@ -1458,7 +1531,8 @@ class TradeProcessor:
                     logger.info(f"🎯 [SIGNER_FALLBACK] Specific action detected from logs: {action_from_logs}")
                     return action_from_logs
                 
-                # ENHANCED: Even if we can't determine specific action from logs,
+                # Strategy 2: Infer action from detected program types
+                # Even if we can't determine specific action from logs,
                 # we can infer action type from program type
                 detected_programs = instruction_info.get('detected_programs', [])
                 if detected_programs:
@@ -1474,13 +1548,14 @@ class TradeProcessor:
                     logger.info(f"🎯 [SIGNER_FALLBACK] Defaulting to 'swap' for {program_name} (allows DEX routing)")
                     return 'swap'
                 
-                # If we have monitored involvement but no trade instructions,
+                # Strategy 3: If we have monitored involvement but no trade instructions,
                 # still allow execution with 'swap' default
                 if has_monitored_involvement:
                     logger.info(f"🎯 [SIGNER_FALLBACK] Monitored wallet involvement confirmed - defaulting to 'swap'")
                     return 'swap'
                     
             else:
+                # Neither condition met - provide detailed debugging info
                 logger.debug(f"🚫 [SIGNER_FALLBACK] Neither fallback condition met - skipping fallback")
                 if not has_monitored_involvement:
                     logger.debug(f"   - No monitored wallet involvement")
