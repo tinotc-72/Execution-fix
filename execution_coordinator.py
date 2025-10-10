@@ -143,10 +143,15 @@ class ExecutionCoordinator:
     async def _execute_copy_buy(self, token_mint: str, source_wallet: str, *, amount_sol: float = 0.001, trade_info: dict = None, **kwargs) -> dict:
         """
         Canonical copy buy: route by normalized DEX and plan, try each executor in order.
+        Enhanced with detailed logging for every executor attempt.
         """
-        # Debug logging controlled by config flags
-        if getattr(self.config, "execution_debug", False):
-            self.logger.debug(f"[COPY BUY] Input: token_mint={token_mint}, source_wallet={source_wallet}, amount_sol={amount_sol}, trade_info={trade_info}, kwargs={kwargs}")
+        # ENHANCED LOGGING: Log all input parameters for traceability
+        self.logger.info(f"[COPY_BUY] Starting execution with inputs:")
+        self.logger.info(f"  - token_mint: {token_mint}")
+        self.logger.info(f"  - source_wallet: {source_wallet}")
+        self.logger.info(f"  - amount_sol: {amount_sol}")
+        self.logger.info(f"  - trade_info: {trade_info}")
+        self.logger.info(f"  - kwargs: {kwargs}")
         
         trade_info = trade_info or {}
         dex_key = normalize_dex(trade_info.get("dex_type") or "unknown")
@@ -160,8 +165,6 @@ class ExecutionCoordinator:
             plan = ROUTE_MAP.get(dex_key, ROUTE_MAP["unknown"])
             self.logger.info(f"[DEX ROUTING] No signature - using DEX plan for {dex_key}")
         
-        if getattr(self.config, "execution_debug", False):
-            self.logger.debug(f"[COPY BUY] Plan: {plan}")
         self.logger.info(f"[COPY BUY] detected_dex={dex_key} plan={plan}")
         
         for label in plan:
@@ -169,27 +172,50 @@ class ExecutionCoordinator:
             
             # Use standardized executor routing
             result = None
-            if label == "jupiter":
-                result = await self._execute_jupiter_buy(token_mint, amount_sol, trade_info)
-            elif label == "direct_copy":
-                result = await self._execute_direct_copy_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
-            elif label == "raydium":
-                result = await self._execute_raydium_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
-            elif label == "meteora":
-                result = await self._execute_meteora_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
-            elif label == "advanced_mev":
-                result = await self._execute_advanced_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
-            else:
-                self.logger.warning(f"⚠️ Unknown executor: {label}")
-                continue
+            try:
+                # ENHANCED LOGGING: Log executor attempt with parameters
+                self.logger.info(f"[EXECUTOR_ATTEMPT] {label} - Starting with token_mint={token_mint[:8]}..., amount_sol={amount_sol}")
+                
+                if label == "jupiter":
+                    result = await self._execute_jupiter_buy(token_mint, amount_sol, trade_info)
+                elif label == "direct_copy":
+                    result = await self._execute_direct_copy_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                elif label == "raydium":
+                    result = await self._execute_raydium_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                elif label == "meteora":
+                    result = await self._execute_meteora_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                elif label == "advanced_mev":
+                    result = await self._execute_advanced_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                else:
+                    self.logger.warning(f"⚠️ Unknown executor: {label}")
+                    # ENHANCED LOGGING: Log unknown executor
+                    self.logger.error(f"[EXECUTOR_FAILURE] {label} - Unknown executor type")
+                    continue
+                
+                # ENHANCED LOGGING: Log executor result
+                self.logger.info(f"[EXECUTOR_RESULT] {label} - Returned: {result}")
+                
+            except Exception as e:
+                # ENHANCED LOGGING: Log all exceptions from executors
+                self.logger.error(f"[EXECUTOR_EXCEPTION] {label} - Exception occurred: {e}", exc_info=True)
+                self.logger.error(f"[EXECUTOR_EXCEPTION] {label} - Input params: token_mint={token_mint}, source_wallet={source_wallet}, amount_sol={amount_sol}")
+                result = {"ok": False, "error": str(e), "executor": label}
             
             # Use standardized success check
             if result and result.get("ok") and isinstance(result.get("signature"), str):
                 self.logger.info("✅ EXECUTED via %s — signature: %s", label, result["signature"])
+                # ENHANCED LOGGING: Log successful execution details
+                self.logger.info(f"[EXECUTION_SUCCESS] Executor={label}, Signature={result['signature']}, Details={result.get('details', {})}")
                 return result
-            self.logger.warning("⏭️ Skipped %s: %s", label, result and result.get("error"))
+            
+            # ENHANCED LOGGING: Log failure reason
+            failure_reason = result.get("error") if result else "No result returned"
+            self.logger.warning(f"[EXECUTOR_SKIP] {label} - Reason: {failure_reason}")
+            self.logger.warning("⏭️ Skipped %s: %s", label, failure_reason)
                 
         logger.error("❌ All executors failed")
+        # ENHANCED LOGGING: Log final failure with all attempted executors
+        self.logger.error(f"[EXECUTION_FAILED] All executors failed for token_mint={token_mint}, attempted executors: {plan}")
         return self.exec_err("All executors failed")
 
     async def _execute_direct_copy_buy(self, token_mint: str, source_wallet: str, *, amount_sol: float = 0.001, trade_info: dict = None, **kwargs) -> dict:
@@ -251,7 +277,16 @@ class ExecutionCoordinator:
     async def _execute_copy_sell(self, token_mint: str, trade_info: dict = None, source_wallet: str = None, detected_dex: str = None, **kwargs):
         """
         Execute SELL using the same method that worked for buying this token
+        Enhanced with detailed logging for every executor attempt.
         """
+        # ENHANCED LOGGING: Log all input parameters for traceability
+        self.logger.info(f"[COPY_SELL] Starting execution with inputs:")
+        self.logger.info(f"  - token_mint: {token_mint}")
+        self.logger.info(f"  - source_wallet: {source_wallet}")
+        self.logger.info(f"  - detected_dex: {detected_dex}")
+        self.logger.info(f"  - trade_info: {trade_info}")
+        self.logger.info(f"  - kwargs: {kwargs}")
+        
         # Use parsed transaction context if available
         parsed_tx = None
         if trade_info and 'parsed_tx' in trade_info:
@@ -269,13 +304,6 @@ class ExecutionCoordinator:
             if parsed_tx.get('dex') == 'ALT':
                 kwargs['addressTableLookups'] = required_accounts.get('lookup_tables', [])
                 kwargs['resolvedAccounts'] = required_accounts.get('resolved_accounts', [])
-        # Log all input parameters for debugging
-        logger.debug(f"🔍 [COPY_SELL] Input parameters:")
-        logger.debug(f"   Token Mint: {token_mint}")
-        logger.debug(f"   Trade Info: {trade_info}")
-        logger.debug(f"   Source Wallet: {source_wallet}")
-        logger.debug(f"   Detected DEX: {detected_dex}")
-        logger.debug(f"   Additional kwargs: {kwargs}")
         
         logger.info(f"🎯 [SMART SELL] Executing SELL for {str(token_mint)[:8]} from {str(source_wallet)[:8] if source_wallet else 'unknown'}")
         
@@ -283,6 +311,11 @@ class ExecutionCoordinator:
             # Only use best-practice MEV-protected logic
             pre_balance = await self._get_our_token_balance(token_mint)
             logger.info(f"[WALLET] Pre-sell token balance for {str(token_mint)[:8]}: {pre_balance}")
+            
+            # ENHANCED LOGGING: Log sell execution attempt
+            self.logger.info(f"[SELL_ATTEMPT] Attempting sell execution:")
+            self.logger.info(f"  - Pre-balance: {pre_balance}")
+            self.logger.info(f"  - Sell percentage: {kwargs.get('sell_percentage', 100.0)}%")
             
             # Configure for maximum speed and success
             config = DirectSellCopyConfig(
@@ -298,24 +331,46 @@ class ExecutionCoordinator:
             private_key = env.PHANTOM_PRIVATE_KEY
             sell_percentage = kwargs.get('sell_percentage', 100.0)
             signature = None
+            
+            # ENHANCED LOGGING: Log execution path selection
             if source_wallet and trade_info and trade_info.get('signature'):
+                self.logger.info(f"[SELL_PATH] Using copy_specific_sell_transaction with signature: {trade_info['signature'][:12]}...")
                 from mev_direct_sell_executor import copy_specific_sell_transaction
-                signature = await copy_specific_sell_transaction(
-                    wallet_private_key=private_key,
-                    sell_transaction_signature=trade_info['signature'],
-                    token_mint=token_mint,
-                    sell_percentage=sell_percentage,
-                    config=config
-                )
+                try:
+                    signature = await copy_specific_sell_transaction(
+                        wallet_private_key=private_key,
+                        sell_transaction_signature=trade_info['signature'],
+                        token_mint=token_mint,
+                        sell_percentage=sell_percentage,
+                        config=config
+                    )
+                    # ENHANCED LOGGING: Log execution result
+                    self.logger.info(f"[SELL_RESULT] copy_specific_sell_transaction returned: {signature}")
+                except Exception as e:
+                    # ENHANCED LOGGING: Log execution exception
+                    self.logger.error(f"[SELL_EXCEPTION] copy_specific_sell_transaction failed: {e}", exc_info=True)
+                    signature = None
             elif source_wallet:
+                self.logger.info(f"[SELL_PATH] Using execute_direct_sell_copy for wallet: {source_wallet[:8]}...")
                 from mev_direct_sell_executor import execute_direct_sell_copy
-                signature = await execute_direct_sell_copy(
-                    wallet_private_key=private_key,
-                    target_wallet=source_wallet,
-                    token_mint=token_mint,
-                    sell_percentage=sell_percentage,
-                    config=config
-                )
+                try:
+                    signature = await execute_direct_sell_copy(
+                        wallet_private_key=private_key,
+                        target_wallet=source_wallet,
+                        token_mint=token_mint,
+                        sell_percentage=sell_percentage,
+                        config=config
+                    )
+                    # ENHANCED LOGGING: Log execution result
+                    self.logger.info(f"[SELL_RESULT] execute_direct_sell_copy returned: {signature}")
+                except Exception as e:
+                    # ENHANCED LOGGING: Log execution exception
+                    self.logger.error(f"[SELL_EXCEPTION] execute_direct_sell_copy failed: {e}", exc_info=True)
+                    signature = None
+            else:
+                # ENHANCED LOGGING: Log missing source wallet
+                self.logger.error(f"[SELL_FAILURE] No source_wallet provided for sell execution")
+                
             if signature:
                 logger.info(f"✅ [DIRECT SELL COPY] SUCCESS: {signature}")
                 # Confirmation and retry logic after signature
@@ -376,21 +431,34 @@ class ExecutionCoordinator:
                 }
             else:
                 logger.error(f"❌ [COPY_SELL] Failed to execute sell for token {str(token_mint)[:8]}")
-                logger.error(f"   Input params: token_mint={token_mint}, source_wallet={source_wallet}, trade_info={trade_info}")
+                # ENHANCED LOGGING: Log detailed failure information
+                self.logger.error(f"[SELL_FAILURE] Sell execution failed:")
+                self.logger.error(f"  - Token mint: {token_mint}")
+                self.logger.error(f"  - Source wallet: {source_wallet}")
+                self.logger.error(f"  - Trade info: {trade_info}")
+                self.logger.error(f"  - Detected DEX: {detected_dex}")
+                self.logger.error(f"  - Signature result: {signature}")
                 log_failed_copy_trade(
                     source_wallet or 'unknown',
                     'sell', 
                     token_mint,
                     0.0,  # amount_sol unknown for sell
                     'direct_sell_executor',
-                    'Direct SELL copy failed'
+                    'Direct SELL copy failed - no signature returned'
                 )
                 return {'success': False, 'error': 'Direct SELL copy failed'}
             
         except Exception as e:
+            # ENHANCED LOGGING: Log comprehensive exception details
             logger.error(f"❌ [COPY_SELL] Exception in _execute_copy_sell: {e}", exc_info=True)
-            logger.error(f"   Input params: token_mint={token_mint}, trade_info={trade_info}, source_wallet={source_wallet}, detected_dex={detected_dex}, kwargs={kwargs}")
-            logger.error(f"   Exception type: {type(e).__name__}")
+            self.logger.error(f"[SELL_EXCEPTION] Comprehensive error details:")
+            self.logger.error(f"  - Exception type: {type(e).__name__}")
+            self.logger.error(f"  - Exception message: {str(e)}")
+            self.logger.error(f"  - Token mint: {token_mint}")
+            self.logger.error(f"  - Source wallet: {source_wallet}")
+            self.logger.error(f"  - Detected DEX: {detected_dex}")
+            self.logger.error(f"  - Trade info: {trade_info}")
+            self.logger.error(f"  - Additional kwargs: {kwargs}")
             return {'success': False, 'error': f'Copy sell exception: {str(e)}'}
     
     async def _detect_token_platform(self, token_mint: str, trade_info: dict = None) -> str:
