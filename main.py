@@ -341,14 +341,60 @@ class SimpleCopyTradingBot:
                         await self.execution_coordinator._execute_copy_sell(token_mint=token_mint, source_wallet=source_wallet, trade_info=enriched)
                     return
                 else:
-                    logger.warning("❌ [FALLBACK FAILED] ALL CONDITIONS NOT MET - Skipping execution")
-                    logger.warning(f"   Monitored signer: {is_monitored_signer}")
-                    logger.warning(f"   Trade instruction: {found_trade_instruction}")
-                    logger.warning(f"   Both conditions required in OR logic, neither met")
-                    # log analytics
+                    # ENHANCED FALLBACK: Always attempt direct_copy executor as last resort
+                    logger.warning("⚠️ [FALLBACK] Standard conditions not met - attempting direct_copy executor as last resort")
+                    logger.info(f"   Monitored signer: {is_monitored_signer}")
+                    logger.info(f"   Trade instruction: {found_trade_instruction}")
+                    
+                    # Check if we have a signature to attempt direct_copy
+                    signature = enriched.get('signature') or trade_info.get('signature')
+                    if signature and signature != 'unknown':
+                        logger.info(f"✅ [LAST_RESORT] Signature available ({signature[:12]}...) - attempting direct_copy executor")
+                        
+                        # Attempt direct_copy for the detected action
+                        try:
+                            if action in ("buy", "swap_in"):
+                                logger.info(f"🚀 [LAST_RESORT_BUY] Attempting direct_copy for {str(token_mint)[:8]}...")
+                                # Create minimal trade_info with signature for direct_copy
+                                fallback_trade_info = {**enriched, 'signature': signature, 'dex_type': 'direct_copy'}
+                                result = await self.execution_coordinator._execute_direct_copy_buy(
+                                    token_mint=token_mint, 
+                                    source_wallet=source_wallet,
+                                    amount_sol=self.config.investment_amount_sol,
+                                    trade_info=fallback_trade_info
+                                )
+                                logger.info(f"[LAST_RESORT_RESULT] direct_copy BUY result: {result}")
+                                if result and result.get('success'):
+                                    logger.info(f"✅ [LAST_RESORT_SUCCESS] direct_copy executor succeeded for BUY")
+                                else:
+                                    logger.error(f"❌ [LAST_RESORT_FAILED] direct_copy executor failed for BUY: {result}")
+                            elif action in ("sell", "swap_out"):
+                                logger.info(f"🚀 [LAST_RESORT_SELL] Attempting direct_copy for {str(token_mint)[:8]}...")
+                                # For sell, we use the full copy_sell which includes direct copy logic
+                                fallback_trade_info = {**enriched, 'signature': signature}
+                                result = await self.execution_coordinator._execute_copy_sell(
+                                    token_mint=token_mint,
+                                    source_wallet=source_wallet,
+                                    trade_info=fallback_trade_info
+                                )
+                                logger.info(f"[LAST_RESORT_RESULT] direct_copy SELL result: {result}")
+                                if result and result.get('success'):
+                                    logger.info(f"✅ [LAST_RESORT_SUCCESS] direct_copy executor succeeded for SELL")
+                                else:
+                                    logger.error(f"❌ [LAST_RESORT_FAILED] direct_copy executor failed for SELL: {result}")
+                            else:
+                                logger.warning(f"⚠️ [LAST_RESORT] Unknown action '{action}' - cannot attempt direct_copy")
+                        except Exception as e:
+                            logger.error(f"❌ [LAST_RESORT_EXCEPTION] direct_copy executor exception: {e}", exc_info=True)
+                            logger.error(f"   Token: {token_mint}, Source: {source_wallet}, Action: {action}")
+                    else:
+                        logger.error("❌ [LAST_RESORT_SKIP] No signature available - cannot attempt direct_copy executor")
+                        logger.error(f"   Available signature: {signature}")
+                    
+                    # log analytics for fully failed fallback
                     log_failed_trade_analysis(
                         enriched or trade_info,
-                        failure_reason="fallback_conditions_not_met",
+                        failure_reason="fallback_all_attempts_failed",
                         retry_count=0,
                         routing_data={
                             "routing": routing,
@@ -356,7 +402,9 @@ class SimpleCopyTradingBot:
                             "instruction_info": instruction_info,
                             "is_monitored_signer": is_monitored_signer,
                             "found_trade_instruction": found_trade_instruction,
-                            "monitored_wallets": self.target_wallets
+                            "monitored_wallets": self.target_wallets,
+                            "last_resort_attempted": True,
+                            "last_resort_signature": signature if signature and signature != 'unknown' else None
                         }
                     )
                     return
