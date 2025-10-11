@@ -127,12 +127,20 @@ except ImportError:
     WEBSOCKET_AVAILABLE = False
 
 from config import CopyTradeConfig
+
+# Custom StreamHandler that flushes after every log record
+class FlushingStreamHandler(logging.StreamHandler):
+    """StreamHandler that flushes after every log record for real-time output."""
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
 # Setup DEEP DEBUG logging
 logging.basicConfig(
     level=logging.DEBUG,  # Changed to DEBUG for deeper logging
     format='%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(funcName)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[logging.StreamHandler()]
+    handlers=[FlushingStreamHandler()]
 )
 
 logger = logging.getLogger(__name__)
