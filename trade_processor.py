@@ -2680,10 +2680,16 @@ class TradeProcessor:
         """
         Trade Execution Routing - Execute detected buy/sell actions via execution coordinator
         
+        AGGRESSIVE EXECUTION MODE (matches DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj behavior):
+        - Executes when EITHER condition is met:
+          1. Recognized trade instruction (DEX program) is present, OR
+          2. Transaction signer is in MONITORED_WALLETS
+        - Does NOT require token balance changes for execution
+        - Token balance changes are analyzed for informational purposes only
+        
         For each detected buy/sell:
         - Call execution coordinator's _execute_copy_buy or _execute_copy_sell
         - Pass detected token mint, wallet address, amount, and trade info (including DEX/router)
-        - Ensure execution only happens when balance change is detected
         
         Args:
             routing_instructions: Output from analyze_and_route_trade containing execution details
@@ -2723,8 +2729,7 @@ class TradeProcessor:
                 'source_wallet': source_wallet,
                 'executions': [],
                 'total_executions': 0,
-                'successful_executions': 0,
-                'balance_changes_required': True  # Ensure execution only on balance changes
+                'successful_executions': 0
             }
             
             # Validation: Only execute if requirements are met
@@ -2738,15 +2743,17 @@ class TradeProcessor:
                 logger.info(f"🚀 AGGRESSIVE EXECUTION: Proceeding regardless of wallet validation")
                 # Don't return - continue with execution
             
-            # AGGRESSIVE MODE: Don't require balance changes - execute on any detected trade
+            # EXECUTION TRIGGER: DEX instruction OR monitored wallet signer
+            # Token balance changes are NOT required - they're analyzed for informational purposes only
             detected_actions = trade_info.get('detected_balance_actions', [])
             if not detected_actions:
-                logger.warning(f"⚠️ [TRADE_EXECUTION] No balance changes detected - creating synthetic action for aggressive execution")
+                logger.info(f"ℹ️  [TRADE_EXECUTION] No balance changes detected - creating synthetic action")
+                logger.info(f"   📝 Execution triggered by: DEX instruction OR monitored wallet signer")
                 # Create synthetic action based on what we know
                 synthetic_action = action if action and action != 'unknown' else 'buy'
                 synthetic_mint = token_mint if token_mint and token_mint not in ['UNKNOWN', 'PENDING_ANALYSIS'] else 'UNKNOWN_MINT'
                 
-                logger.info(f"🚀 AGGRESSIVE EXECUTION: Creating synthetic {synthetic_action} action for {synthetic_mint[:8]}...")
+                logger.info(f"🚀 [EXECUTION] Creating synthetic {synthetic_action} action for {synthetic_mint[:8]}...")
                 detected_actions = [{
                     'action': synthetic_action,
                     'mint': synthetic_mint,
@@ -2758,33 +2765,34 @@ class TradeProcessor:
                 trade_info['detected_balance_actions'] = detected_actions
                 execution_results['synthetic_execution'] = True
             
-            # NEW FEATURE: Validate significant balance changes (ignore non-trading transfers)
+            # INFORMATIONAL ONLY: Check token balance significance (does not gate execution)
             significance_check = self._has_significant_token_balance_change(
                 trade_info=trade_info,
                 min_threshold=0.000001  # Configurable threshold for significance
             )
             
             if not significance_check['has_significant_changes']:
-                logger.warning(f"⚠️ [TRADE_EXECUTION] No significant balance changes - but executing anyway (aggressive mode)")
-                logger.warning(f"   Total changes: {significance_check['total_changes']}")
-                logger.warning(f"   Threshold used: {significance_check['threshold_used']}")
-                logger.warning(f"   Details: {', '.join(significance_check['validation_details'][:3])}")
-                logger.info(f"🚀 AGGRESSIVE EXECUTION: Proceeding despite insignificant changes")
+                logger.info(f"ℹ️  [BALANCE_INFO] No significant balance changes detected (informational only)")
+                logger.info(f"   📊 Total changes: {significance_check['total_changes']}")
+                logger.info(f"   📏 Threshold used: {significance_check['threshold_used']}")
+                if significance_check['validation_details']:
+                    logger.debug(f"   📋 Details: {', '.join(significance_check['validation_details'][:3])}")
+                logger.info(f"   ✅ Proceeding with execution (balance changes not required)")
                 # Don't return - continue with execution even if changes are insignificant
                 execution_results['significance_check'] = significance_check
                 execution_results['bypassed_significance_check'] = True
             else:
                 execution_results['significance_check'] = significance_check
             
-            # Log significant changes if any
+            # Log significant changes if any (informational only)
             if significance_check.get('has_significant_changes'):
-                logger.info(f"✅ [TRADE_EXECUTION] Significant balance changes detected: {len(significance_check.get('significant_changes', []))}")
-                for sig_change in significance_check.get('significant_changes', []):
+                logger.info(f"✅ [BALANCE_INFO] Significant balance changes detected: {len(significance_check.get('significant_changes', []))} (informational)")
+                for sig_change in significance_check.get('significant_changes', [])[:3]:
                     logger.info(f"   {sig_change['action'].upper()}: {sig_change['owner'][:8]}.../{sig_change['mint'][:8]}... = {sig_change['change']:+.6f}")
             else:
-                logger.info(f"ℹ️  [TRADE_EXECUTION] No significant changes but proceeding with execution (aggressive mode)")
+                logger.info(f"ℹ️  [BALANCE_INFO] No significant changes detected (does not prevent execution)")
                 
-            # Store significance check results for audit
+            # Store significance check results for audit (informational only)
             execution_results['significance_check'] = significance_check
             
             logger.info(f"✅ [TRADE_EXECUTION] Proceeding with execution (aggressive mode)")

@@ -27,15 +27,16 @@ EXECUTION FLOW OVERVIEW:
    - Detects DEX type from program IDs and logs
    - Validates execution eligibility (DEX involvement is primary trigger)
 
-4. AGGRESSIVE EXECUTION LOGIC:
+4. AGGRESSIVE EXECUTION LOGIC (NO TOKEN BALANCE GATING):
    Execute trades when EITHER condition is met:
    a. Recognizable trade instruction detected (DEX program), OR
    b. Transaction signer is in MONITORED_WALLETS (case-insensitive)
    
-   Following best practices from public Solana copy bots:
-     * Jupiter copy trading: https://github.com/jup-ag/jupiter-copy-trading
-     * Raydium copy bot: https://github.com/solana-labs/raydium-copy-bot
+   KEY BEHAVIOR (matching DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj):
+   - Does NOT require token balance changes for execution
+   - Token balance deltas are analyzed for informational purposes only
    - Executes on ANY DEX program detection (Raydium, Jupiter, Orca, Meteora, etc.)
+   - Executes if monitored wallet is signer (even with zero token delta)
    - Defaults to 'swap' action when ambiguous - executor refines it
    - Case-insensitive wallet matching for monitored wallets
    - Maximizes trade capture and reliability like public copy bots
@@ -213,13 +214,15 @@ from execution_coordinator import normalize_dex, ROUTE_MAP
 class SimpleCopyTradingBot:
     async def _process_detected_trade(self, trade_info: Dict[str, Any]):
         """
-        AGGRESSIVE TRADE EXECUTION:
+        AGGRESSIVE TRADE EXECUTION (NO TOKEN BALANCE GATING):
         Execute trades when either condition is met:
         1. A recognizable trade instruction is detected (DEX program), OR
         2. The transaction signer is in MONITORED_WALLETS (case-insensitive)
         
         Follows behavior of aggressive Solana copy bots like DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj:
         - Execute on trade instruction detection OR monitored wallet involvement
+        - Does NOT require token balance changes for execution
+        - Token balance deltas are analyzed for informational purposes only
         - Minimal validation (signature, action, mint)
         - Default to 'swap' for ambiguous actions
         - Buy with 0.001 SOL, sell with same percentage as monitored wallet
@@ -228,6 +231,10 @@ class SimpleCopyTradingBot:
         - All wallet comparisons use case-insensitive matching
         - Handles wallet address variations (e.g., 'DfMx...' matches 'dfmx...')
         - Ensures consistent execution regardless of address casing
+        
+        Execution Triggers (EITHER condition):
+        - DEX instruction present: Executes immediately, even with zero token delta
+        - Monitored wallet signer: Executes immediately, even with zero token delta
         """
         sig = (trade_info.get("signature") or "").strip()
         if not sig or sig == "unknown":
@@ -249,29 +256,34 @@ class SimpleCopyTradingBot:
         signer_info = self.trade_processor._check_monitored_wallet_is_signer(trade_info)
         has_monitored_signer = signer_info.get('has_monitored_involvement', False)
         
-        # Log conditions
+        # Log conditions and execution triggers
         logger.info(f"🔍 [EXECUTION_CHECK] Trade instructions detected: {has_trade_instructions}")
         logger.info(f"🔍 [EXECUTION_CHECK] Monitored wallet signer: {has_monitored_signer}")
+        logger.info(f"   📝 Token balance changes are NOT required for execution")
         
         if has_trade_instructions:
             detected_programs = instruction_info.get('detected_programs', [])
             logger.info(f"   ✅ Trade instructions: {len(detected_programs)} DEX program(s) detected")
             for prog in detected_programs[:3]:
                 logger.info(f"      - {prog.get('program_name', 'unknown')}")
+            logger.info(f"   🚀 EXECUTION TRIGGER: DEX instruction present (balance delta not required)")
         
         if has_monitored_signer:
             monitored_wallets = signer_info.get('monitored_signers', [])
             logger.info(f"   ✅ Monitored signer: {len(monitored_wallets)} wallet(s)")
             for wallet in monitored_wallets[:3]:
                 logger.info(f"      - {wallet[:8]}...")
+            logger.info(f"   🚀 EXECUTION TRIGGER: Monitored wallet signer (balance delta not required)")
         
-        # EXECUTE IF EITHER CONDITION IS MET
+        # EXECUTE IF EITHER CONDITION IS MET (token balance changes NOT required)
         if not (has_trade_instructions or has_monitored_signer):
             logger.warning("⚠️ [EXECUTION_CHECK] Neither condition met - skipping execution")
             logger.warning("   No trade instructions AND no monitored wallet signer")
+            logger.warning("   (Token balance changes are not considered for execution gating)")
             return
         
         logger.info("✅ [EXECUTION_CHECK] At least one condition met - proceeding with execution")
+        logger.info("   📝 Note: Token balance deltas will be analyzed for informational purposes only")
         
         # Extract minimal required fields for execution
         action = trade_info.get('action', 'unknown')
