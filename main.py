@@ -27,18 +27,23 @@ EXECUTION FLOW OVERVIEW:
    - Detects DEX type from program IDs and logs
    - Validates execution eligibility (DEX involvement is primary trigger)
 
-4. MAXIMALLY PERMISSIVE FALLBACK EXECUTION:
-   - Following best practices from public Solana copy bots:
+4. AGGRESSIVE EXECUTION LOGIC:
+   Execute trades when EITHER condition is met:
+   a. Recognizable trade instruction detected (DEX program), OR
+   b. Transaction signer is in MONITORED_WALLETS (case-insensitive)
+   
+   Following best practices from public Solana copy bots:
      * Jupiter copy trading: https://github.com/jup-ag/jupiter-copy-trading
      * Raydium copy bot: https://github.com/solana-labs/raydium-copy-bot
    - Executes on ANY DEX program detection (Raydium, Jupiter, Orca, Meteora, etc.)
    - Defaults to 'swap' action when ambiguous - executor refines it
-   - No strict wallet monitoring requirement - DEX involvement is sufficient
+   - Case-insensitive wallet matching for monitored wallets
    - Maximizes trade capture and reliability like public copy bots
 
 5. TRADE EXECUTION (via execution_coordinator)
    - Routes to appropriate executor based on DEX type
-   - Executes buy/sell with configured investment amount
+   - Buy with 0.001 SOL (default aggressive amount)
+   - Sell proportionally based on monitored wallet's percentage
    - Logs success/failure with comprehensive debugging info
 
 6. HEALTH MONITORING (_simple_status_loop + _health_check)
@@ -53,7 +58,8 @@ KEY IMPROVEMENTS:
 - Robust fallback execution logic: ✅ IMPLEMENTED
 - Clear environment variable validation: ✅ IMPLEMENTED
 - Enhanced failed trade logging: ✅ IMPLEMENTED
-- MAXIMALLY PERMISSIVE execution on DEX detection: ✅ IMPLEMENTED
+- AGGRESSIVE execution on DEX detection OR monitored signer: ✅ IMPLEMENTED
+- Case-insensitive wallet matching: ✅ IMPLEMENTED
 """
 
 import asyncio
@@ -210,13 +216,18 @@ class SimpleCopyTradingBot:
         AGGRESSIVE TRADE EXECUTION:
         Execute trades when either condition is met:
         1. A recognizable trade instruction is detected (DEX program), OR
-        2. The transaction signer is in MONITORED_WALLETS
+        2. The transaction signer is in MONITORED_WALLETS (case-insensitive)
         
         Follows behavior of aggressive Solana copy bots like DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj:
         - Execute on trade instruction detection OR monitored wallet involvement
         - Minimal validation (signature, action, mint)
         - Default to 'swap' for ambiguous actions
         - Buy with 0.001 SOL, sell with same percentage as monitored wallet
+        
+        Case-Insensitive Wallet Matching:
+        - All wallet comparisons use case-insensitive matching
+        - Handles wallet address variations (e.g., 'DfMx...' matches 'dfmx...')
+        - Ensures consistent execution regardless of address casing
         """
         sig = (trade_info.get("signature") or "").strip()
         if not sig or sig == "unknown":
