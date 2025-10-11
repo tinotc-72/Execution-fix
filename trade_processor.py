@@ -1027,20 +1027,25 @@ class TradeProcessor:
         """
         Strict validation that wallet is in monitored wallets list
         Returns True only if wallet is explicitly in the monitored list
+        
+        Uses case-insensitive matching to handle wallet address variations
         """
         if not wallet_address or not monitored_wallets:
             return False
         
-        # Normalize wallet address (ensure it's a string)
+        # Normalize wallet address (ensure it's a string and strip whitespace)
         wallet_str = str(wallet_address).strip()
         
-        # Check if wallet is in monitored list (case-sensitive exact match)
-        is_monitored = wallet_str in monitored_wallets
+        # Create case-insensitive comparison set (normalize to lowercase for comparison)
+        monitored_wallets_lower = {w.lower() for w in monitored_wallets if w}
+        
+        # Check if wallet is in monitored list (case-insensitive match)
+        is_monitored = wallet_str.lower() in monitored_wallets_lower
         
         if not is_monitored:
             logger.debug(f"⚠️ [WALLET_FILTER] Wallet {wallet_str[:8]}... NOT in monitored list")
         else:
-            logger.debug(f"✅ [WALLET_FILTER] Wallet {wallet_str[:8]}... IS monitored")
+            logger.debug(f"✅ [WALLET_FILTER] Wallet {wallet_str[:8]}... IS monitored (case-insensitive match)")
             
         return is_monitored
 
@@ -2638,8 +2643,13 @@ class TradeProcessor:
         return self.target_wallets.copy()
     
     def is_target_wallet(self, wallet_address: str) -> bool:
-        """Check if wallet is in target list"""
-        return wallet_address in self.target_wallets
+        """Check if wallet is in target list (case-insensitive)"""
+        if not wallet_address:
+            return False
+        # Use case-insensitive matching for wallet comparison
+        wallet_lower = wallet_address.lower()
+        target_wallets_lower = {w.lower() for w in self.target_wallets if w}
+        return wallet_lower in target_wallets_lower
     
     def validate_execution_eligibility(self, trade_info: Dict[str, Any], source_wallet: str = None) -> Dict[str, Any]:
         """
@@ -3085,6 +3095,7 @@ class TradeProcessor:
     def _check_monitored_wallet_is_signer(self, trade_info: Dict[str, Any]) -> Dict[str, Any]:
         """
         Helper to check if any monitored wallet is a signer/fee payer in the transaction.
+        Uses case-insensitive matching for wallet address comparison.
         
         Returns:
             Dict with signer information including fee_payer, signers, and validation results
@@ -3110,10 +3121,13 @@ class TradeProcessor:
             fee_payer = account_keys[0] if account_keys else None
             signers = account_keys[:num_signatures] if num_signatures > 0 and account_keys else []
             
-            # Check if any monitored wallet is involved
-            monitored_wallets_set = set(self.target_wallets)
-            is_monitored_fee_payer = fee_payer in monitored_wallets_set if fee_payer else False
-            monitored_signers = [s for s in signers if s in monitored_wallets_set]
+            # Check if any monitored wallet is involved (case-insensitive matching)
+            # Create lowercase set for case-insensitive comparison
+            monitored_wallets_lower = {w.lower() for w in self.target_wallets if w}
+            
+            # Normalize fee_payer and signers for comparison
+            is_monitored_fee_payer = fee_payer and fee_payer.lower() in monitored_wallets_lower
+            monitored_signers = [s for s in signers if s and s.lower() in monitored_wallets_lower]
             is_monitored_signer = len(monitored_signers) > 0
             
             result = {
@@ -3129,7 +3143,7 @@ class TradeProcessor:
             
             logger.debug(f"🔍 [SIGNER_CHECK] Fee Payer: {fee_payer[:8] + '...' if fee_payer else 'None'}")
             logger.debug(f"🔍 [SIGNER_CHECK] Signers: {[s[:8] + '...' for s in signers]}")
-            logger.debug(f"🔍 [SIGNER_CHECK] Monitored Involvement: {result['has_monitored_involvement']}")
+            logger.debug(f"🔍 [SIGNER_CHECK] Monitored Involvement: {result['has_monitored_involvement']} (case-insensitive matching)")
             
             return result
             
