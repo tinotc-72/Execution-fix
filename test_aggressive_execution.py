@@ -2,34 +2,44 @@
 """
 Test script to verify aggressive execution logic implementation.
 
-This script validates that all validation checks have been removed or bypassed,
-ensuring that ANY detected trade triggers execution.
+This script validates that the bot executes trades when either:
+1. Trade instructions (DEX programs) are detected, OR
+2. The transaction signer is in MONITORED_WALLETS
 """
 
 import re
 import sys
 
 
-def test_no_blocking_returns():
-    """Test that there are no blocking returns that prevent execution."""
+def test_execution_conditions():
+    """Test that execution conditions are properly checked."""
     print("=" * 80)
-    print("TEST 1: Verify No Blocking Returns")
+    print("TEST 1: Verify Execution Condition Checks")
     print("=" * 80)
     
     with open('main.py', 'r') as f:
         main = f.read()
     
-    # Check critical sections don't have blocking returns
     tests = [
-        # No early return on routing failure
+        # Check for trade instruction detection
         (
-            r"if not routing:.*?routing = \{.*?'action': 'swap'",
-            "Routing failure creates default routing (no early return)"
+            r"_check_trade_instructions.*trade_info",
+            "Trade instruction check implemented"
         ),
-        # No early return on unknown action after retries
+        # Check for monitored signer detection
         (
-            r"if action == 'unknown'.*?action = 'swap'.*?# Log for analytics but DO NOT return",
-            "Unknown action after retries continues execution (no early return)"
+            r"_check_monitored_wallet_is_signer.*trade_info",
+            "Monitored wallet signer check implemented"
+        ),
+        # Check for OR condition
+        (
+            r"if not \(has_trade_instructions or has_monitored_signer\)",
+            "Execution proceeds if EITHER condition is met"
+        ),
+        # Check for explicit 0.001 SOL investment
+        (
+            r"amount_sol=0\.001.*# Explicit 0\.001 SOL investment",
+            "Explicit 0.001 SOL investment for buys"
         ),
     ]
     
@@ -45,10 +55,50 @@ def test_no_blocking_returns():
     return passed == len(tests)
 
 
+def test_sell_percentage_calculation():
+    """Test that sell percentage is calculated from monitored wallet."""
+    print("=" * 80)
+    print("TEST 2: Verify Sell Percentage Calculation")
+    print("=" * 80)
+    
+    with open('main.py', 'r') as f:
+        main = f.read()
+    
+    tests = [
+        (
+            r"_calculate_sell_percentage",
+            "Sell percentage calculation method exists"
+        ),
+        (
+            r"sell_percentage = self\._calculate_sell_percentage",
+            "Sell percentage is calculated before sell execution"
+        ),
+        (
+            r"preTokenBalances.*postTokenBalances",
+            "Balance changes are analyzed for percentage"
+        ),
+        (
+            r"sell_percentage=sell_percentage",
+            "Calculated percentage is passed to executor"
+        ),
+    ]
+    
+    passed = 0
+    for pattern, description in tests:
+        if re.search(pattern, main, re.DOTALL | re.IGNORECASE):
+            print(f"  ✅ {description}")
+            passed += 1
+        else:
+            print(f"  ❌ {description}")
+    
+    print(f"\n  Result: {passed}/{len(tests)} tests passed\n")
+    return passed == len(tests)
+
+
 def test_aggressive_execution_patterns():
     """Test that aggressive execution patterns are present."""
     print("=" * 80)
-    print("TEST 2: Verify Aggressive Execution Patterns")
+    print("TEST 3: Verify Aggressive Execution Patterns")
     print("=" * 80)
     
     with open('main.py', 'r') as f:
@@ -58,12 +108,10 @@ def test_aggressive_execution_patterns():
         processor = f.read()
     
     tests = [
-        (main, r"AGGRESSIVE EXECUTION MODE", "Aggressive execution mode logging in main.py"),
-        (main, r"executing anyway.*?aggressive mode", "Execution continues in aggressive mode (main.py)"),
+        (main, r"AGGRESSIVE.*EXECUTION", "Aggressive execution mode logging in main.py"),
         (main, r"action = 'swap'", "Unknown actions default to swap (main.py)"),
         (processor, r"AGGRESSIVE EXECUTION", "Aggressive execution logging in trade_processor.py"),
-        (processor, r"but executing anyway", "Bypasses validation in trade_processor.py"),
-        (processor, r"synthetic.*?action", "Creates synthetic actions when needed"),
+        (processor, r"synthetic.*action", "Creates synthetic actions when needed"),
     ]
     
     passed = 0
@@ -81,7 +129,7 @@ def test_aggressive_execution_patterns():
 def test_execution_method_calls():
     """Test that execution methods are called in all critical paths."""
     print("=" * 80)
-    print("TEST 3: Verify Execution Method Calls")
+    print("TEST 4: Verify Execution Method Calls")
     print("=" * 80)
     
     with open('main.py', 'r') as f:
@@ -94,8 +142,8 @@ def test_execution_method_calls():
     print(f"  ✅ Found {sell_calls} _execute_copy_sell calls")
     print(f"\n  Total execution calls: {buy_calls + sell_calls}")
     
-    # Should have multiple calls (at least 5 total)
-    passed = (buy_calls + sell_calls) >= 5
+    # Should have at least 2 calls (one buy, one sell in main execution path)
+    passed = (buy_calls >= 2 and sell_calls >= 1)
     
     if passed:
         print(f"  ✅ Sufficient execution calls found\n")
@@ -105,61 +153,44 @@ def test_execution_method_calls():
     return passed
 
 
-def test_validation_bypasses():
-    """Test that all validation checks are bypassed."""
+def test_logging_and_debugging():
+    """Test that proper logging is in place."""
     print("=" * 80)
-    print("TEST 4: Verify All Validation Bypasses")
-    print("=" * 80)
-    
-    with open('trade_processor.py', 'r') as f:
-        processor = f.read()
-    
-    bypasses = [
-        (r"requires_execution.*?but executing anyway", "requires_execution bypass"),
-        (r"wallet validation failed.*?but executing anyway", "Wallet validation bypass"),
-        (r"No balance changes.*?synthetic action", "Balance changes bypass"),
-        (r"No significant.*?but executing anyway", "Significance check bypass"),
-        (r"non-monitored wallet.*?but executing anyway", "Monitored wallet bypass"),
-        (r"NO DEX PROGRAMS.*?return 'swap'", "DEX detection bypass"),
-    ]
-    
-    passed = 0
-    for pattern, description in bypasses:
-        if re.search(pattern, processor, re.IGNORECASE | re.DOTALL):
-            print(f"  ✅ {description}")
-            passed += 1
-        else:
-            print(f"  ❌ {description}")
-    
-    print(f"\n  Result: {passed}/{len(bypasses)} bypasses found\n")
-    return passed == len(bypasses)
-
-
-def test_default_action_strategy():
-    """Test that default action strategy is implemented."""
-    print("=" * 80)
-    print("TEST 5: Verify Default Action Strategy")
+    print("TEST 5: Verify Logging and Debugging")
     print("=" * 80)
     
     with open('main.py', 'r') as f:
         main = f.read()
     
-    strategies = [
-        (r"if action == 'unknown':.*?action = 'swap'", "Unknown action defaults to 'swap'"),
-        (r"executing as BUY.*?aggressive mode", "Unknown actions execute as BUY"),
-        (r"swap default", "Swap is default action for unknown"),
+    tests = [
+        (
+            r"EXECUTION_CHECK.*Trade instructions detected",
+            "Logs trade instruction detection status"
+        ),
+        (
+            r"EXECUTION_CHECK.*Monitored wallet signer",
+            "Logs monitored wallet signer status"
+        ),
+        (
+            r"At least one condition met",
+            "Logs when execution conditions are met"
+        ),
+        (
+            r"Neither condition met.*skipping execution",
+            "Logs when execution is skipped"
+        ),
     ]
     
     passed = 0
-    for pattern, description in strategies:
+    for pattern, description in tests:
         if re.search(pattern, main, re.DOTALL | re.IGNORECASE):
             print(f"  ✅ {description}")
             passed += 1
         else:
             print(f"  ❌ {description}")
     
-    print(f"\n  Result: {passed}/{len(strategies)} strategies found\n")
-    return passed == len(strategies)
+    print(f"\n  Result: {passed}/{len(tests)} tests passed\n")
+    return passed == len(tests)
 
 
 def main():
@@ -170,11 +201,11 @@ def main():
     print()
     
     tests = [
-        test_no_blocking_returns(),
+        test_execution_conditions(),
+        test_sell_percentage_calculation(),
         test_aggressive_execution_patterns(),
         test_execution_method_calls(),
-        test_validation_bypasses(),
-        test_default_action_strategy(),
+        test_logging_and_debugging(),
     ]
     
     passed = sum(tests)
@@ -188,7 +219,8 @@ def main():
     if passed == total:
         print("\n  ✅ ALL TESTS PASSED!")
         print("  ✅ Aggressive execution logic fully implemented")
-        print("  ✅ ANY detected trade will trigger execution")
+        print("  ✅ Executes on trade instructions OR monitored wallet signer")
+        print("  ✅ Buys with 0.001 SOL, sells same % as monitored wallet")
         print()
         return 0
     else:
@@ -200,3 +232,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
