@@ -1221,7 +1221,14 @@ class WebSocketWalletMonitor:
             log_debug(f"❌ Error in fallback fetch for {wallet_address[:8]}: {e}")
             
     async def _analyze_transaction_logs(self, signature: str, logs: List[str], wallet_address: str):
-        """Analyze transaction logs to detect meme coin buy/sell activities"""
+        """
+        AGGRESSIVE EXECUTION MODE: Analyze transaction logs to detect trade activities.
+        Executes when EITHER condition is met:
+        1. DEX trade instruction is detected in logs, OR
+        2. Transaction is from a monitored wallet
+        
+        Token balance changes are NOT required for execution.
+        """
         try:
             log_debug(f"🔍 DETAILED ANALYSIS: {signature[:8]}... from {wallet_address[:8]}...")
             log_debug(f"   📊 Total logs: {len(logs)}")
@@ -1230,16 +1237,38 @@ class WebSocketWalletMonitor:
             for i, log in enumerate(logs[:5]):
                 log_debug(f"   Log {i}: {log}")
 
-            # 🚨 NEW: Try official Solana balance analysis FIRST
-            log_debug(f"🔧 TRYING OFFICIAL SOLANA BALANCE ANALYSIS FIRST...")
+            # Check for execution triggers BEFORE balance analysis
+            # Condition 1: Check for DEX trade instructions in logs
+            has_dex_instruction = self._check_dex_instruction_in_logs(logs)
+            
+            # Condition 2: Check if wallet is monitored
+            is_monitored_wallet = self._is_monitored_wallet(wallet_address)
+            
+            log_debug(f"🔍 [EXECUTION_CHECK] DEX instruction in logs: {has_dex_instruction}")
+            log_debug(f"🔍 [EXECUTION_CHECK] Is monitored wallet: {is_monitored_wallet}")
+            log_debug(f"   📝 Token balance changes are NOT required for execution")
+            
+            # Try balance analysis for additional info (not for gating)
+            log_debug(f"🔧 Attempting balance analysis for informational purposes...")
             trade_info = await self._analyze_with_official_balance_method(signature, wallet_address, logs)
             
             if trade_info:
-                log_debug(f"✅ OFFICIAL METHOD SUCCESS! Token: {trade_info.get('token_mint', 'Unknown')[:8]}...")
+                log_debug(f"✅ Balance analysis success! Token: {trade_info.get('token_mint', 'Unknown')[:8]}...")
             else:
-                log_debug(f"❌ Official method failed - no evidence of token movement or trade pattern")
-                log_debug(f"🚫 Skipping: No token balance changes or swap/trade logs detected")
-                trade_info = None
+                log_debug(f"ℹ️  [BALANCE_INFO] No balance changes detected (does not prevent execution)")
+                
+                # AGGRESSIVE EXECUTION: Create synthetic trade_info if execution triggers are met
+                if has_dex_instruction or is_monitored_wallet:
+                    log_debug(f"🚀 AGGRESSIVE EXECUTION: Creating synthetic trade info (zero delta)")
+                    trade_info = await self._create_synthetic_trade_info(signature, wallet_address, logs, has_dex_instruction)
+                    if has_dex_instruction:
+                        log_debug(f"   🚀 EXECUTION TRIGGER: DEX instruction present (balance delta not required)")
+                    if is_monitored_wallet:
+                        log_debug(f"   🚀 EXECUTION TRIGGER: Monitored wallet signer (balance delta not required)")
+                else:
+                    log_debug(f"⚠️ [EXECUTION_CHECK] Neither condition met - skipping execution")
+                    log_debug(f"   No DEX instruction AND not a monitored wallet")
+                    trade_info = None
             
             if trade_info:
                 log_debug(f"🚨 TRADE DETECTED! Calling main bot callback...")
@@ -1267,9 +1296,12 @@ class WebSocketWalletMonitor:
 
     async def _analyze_with_official_balance_method(self, signature: str, wallet_address: str, logs: List[str]) -> Optional[Dict[str, Any]]:
         """
-        🎯 PRODUCTION-READY BALANCE-BASED TRADE DETECTION - 100% ACCURATE
-        Uses actual balance changes to determine buy/sell/swap actions
-        This completely replaces all flawed detection methods
+        INFORMATIONAL: Balance-based trade detection for additional trade details.
+        Uses actual balance changes to determine buy/sell/swap actions and token info.
+        
+        NOTE: This method is for informational purposes only and does NOT gate execution.
+        Execution is triggered by DEX instructions OR monitored wallet detection,
+        regardless of whether balance changes are detected.
         """
         
         log_debug(f"🎯 BALANCE-BASED ANALYSIS for {signature[:12]}...")
@@ -1465,6 +1497,161 @@ class WebSocketWalletMonitor:
             # 🚀 SMART FALLBACK: Try log-based analysis when RPC fails
             log_debug(f"   🔧 Attempting smart log analysis fallback...")
             return await self._analyze_logs_for_trade_smart(signature, wallet_address, logs)
+
+    def _check_dex_instruction_in_logs(self, logs: List[str]) -> bool:
+        """
+        Check if logs contain DEX trade instructions.
+        Returns True if any known DEX program or trade instruction is found.
+        """
+        # Known DEX program IDs
+        dex_programs = [
+            'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',  # Jupiter V6
+            'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB',  # Jupiter V4
+            '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',  # Pump.fun
+            '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',  # Raydium AMM
+            'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C',  # Raydium CPMM
+            '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1',  # Raydium CLMM
+            'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',  # Raydium CLMM v2
+            'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',  # Orca Whirlpool
+            'SwaPpA9LAaLfeLi3a68M4DjnLqgtticKg6CnyNwgAC8',  # Orca Swap
+            'dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN',  # Meteora Aggregator
+            'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',  # Meteora DLMM
+            'ALPHAQmeA7bjrVuccPsYPiCvsi428SNwte66Srvs4pHA',  # Alpha DEX
+        ]
+        
+        # Trade instruction keywords
+        trade_keywords = [
+            'Instruction: Swap',
+            'Instruction: Buy',
+            'Instruction: Sell',
+            'Instruction: Route',
+            'Program log: swap',
+            'Program log: trade',
+            'SharedAccountsRoute'
+        ]
+        
+        for log in logs:
+            # Check for DEX programs
+            for program_id in dex_programs:
+                if program_id in log:
+                    log_debug(f"   ✅ DEX program found in logs: {program_id[:8]}...")
+                    return True
+            
+            # Check for trade keywords
+            for keyword in trade_keywords:
+                if keyword.lower() in log.lower():
+                    log_debug(f"   ✅ Trade keyword found in logs: {keyword}")
+                    return True
+        
+        return False
+    
+    def _is_monitored_wallet(self, wallet_address: str) -> bool:
+        """
+        Check if wallet is in the monitored wallets list (case-insensitive).
+        """
+        if not hasattr(self, 'target_wallets') or not self.target_wallets:
+            return False
+        
+        wallet_lower = wallet_address.lower()
+        for monitored in self.target_wallets:
+            if monitored.lower() == wallet_lower:
+                log_debug(f"   ✅ Wallet is monitored: {wallet_address[:8]}...")
+                return True
+        
+        return False
+    
+    async def _create_synthetic_trade_info(self, signature: str, wallet_address: str, logs: List[str], has_dex_instruction: bool) -> Optional[Dict[str, Any]]:
+        """
+        Create synthetic trade info for execution when balance changes are zero.
+        This ensures execution occurs when DEX instructions or monitored wallet is detected,
+        even without token balance changes.
+        """
+        log_debug(f"🔧 Creating synthetic trade info with zero balance delta...")
+        
+        # Analyze logs to determine DEX and action
+        dex = "unknown"
+        action = "swap"  # Default to swap if unclear
+        token_mint = None
+        
+        # Try to extract more details from logs
+        for log in logs:
+            # DEX detection
+            if 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4' in log or 'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB' in log:
+                dex = "jupiter"
+            elif '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P' in log:
+                dex = "pump.fun"
+                if 'Instruction: Buy' in log:
+                    action = "buy"
+                elif 'Instruction: Sell' in log:
+                    action = "sell"
+            elif '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' in log or 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C' in log:
+                dex = "raydium"
+            elif 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc' in log:
+                dex = "orca"
+        
+        # Try to fetch transaction data to extract token mint
+        try:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getTransaction",
+                "params": [
+                    signature,
+                    {
+                        "encoding": "json",
+                        "commitment": "confirmed",
+                        "maxSupportedTransactionVersion": 0
+                    }
+                ]
+            }
+            
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.post(self._get_http_rpc_url(), json=payload) as response:
+                    data = await response.json()
+                    result = data.get('result')
+                    if result:
+                        meta = result.get('meta', {})
+                        # Try to get a token mint from post token balances
+                        post_token_balances = meta.get('postTokenBalances', [])
+                        for balance in post_token_balances:
+                            if balance.get('owner') == wallet_address:
+                                mint = balance.get('mint')
+                                if mint and mint != 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v':  # Not USDC
+                                    token_mint = mint
+                                    break
+                        
+                        # If still no mint, try preTokenBalances
+                        if not token_mint:
+                            pre_token_balances = meta.get('preTokenBalances', [])
+                            for balance in pre_token_balances:
+                                if balance.get('owner') == wallet_address:
+                                    mint = balance.get('mint')
+                                    if mint and mint != 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v':
+                                        token_mint = mint
+                                        break
+        except Exception as e:
+            log_debug(f"   ⚠️ Could not fetch transaction for token mint: {e}")
+        
+        # Create synthetic trade info
+        trade_info = {
+            'signature': signature,
+            'wallet_address': wallet_address,
+            'action': action,
+            'dex': dex,
+            'token_mint': token_mint or 'PENDING_ANALYSIS',
+            'confidence': 'SYNTHETIC',
+            'reasoning': 'Execution triggered by DEX instruction or monitored wallet (zero balance delta)',
+            'sol_delta': 0.0,
+            'gained_tokens': [],
+            'lost_tokens': [],
+            'timestamp': datetime.now(UTC),
+            'method': 'aggressive_execution_zero_delta',
+            'zero_delta': True
+        }
+        
+        log_debug(f"   ✅ Synthetic trade info created: {dex} {action}")
+        return trade_info
 
     async def _analyze_logs_for_trade_smart(self, signature: str, wallet_address: str, logs: List[str]) -> Optional[Dict[str, Any]]:
         """🚀 SMART LOG ANALYSIS: Extract trade info from logs when balance analysis fails due to timing"""
