@@ -1572,24 +1572,10 @@ class WebSocketWalletMonitor:
         dex = "unknown"
         action = "swap"  # Default to swap if unclear
         token_mint = None
+        transaction_data = None
+        meta_data = None
         
-        # Try to extract more details from logs
-        for log in logs:
-            # DEX detection
-            if 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4' in log or 'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB' in log:
-                dex = "jupiter"
-            elif '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P' in log:
-                dex = "pump.fun"
-                if 'Instruction: Buy' in log:
-                    action = "buy"
-                elif 'Instruction: Sell' in log:
-                    action = "sell"
-            elif '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' in log or 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C' in log:
-                dex = "raydium"
-            elif 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc' in log:
-                dex = "orca"
-        
-        # Try to fetch transaction data to extract token mint
+        # Try to fetch transaction data to include in trade_info
         try:
             payload = {
                 "jsonrpc": "2.0",
@@ -1611,9 +1597,11 @@ class WebSocketWalletMonitor:
                     data = await response.json()
                     result = data.get('result')
                     if result:
-                        meta = result.get('meta', {})
+                        transaction_data = result.get('transaction', {})
+                        meta_data = result.get('meta', {})
+                        
                         # Try to get a token mint from post token balances
-                        post_token_balances = meta.get('postTokenBalances', [])
+                        post_token_balances = meta_data.get('postTokenBalances', [])
                         for balance in post_token_balances:
                             if balance.get('owner') == wallet_address:
                                 mint = balance.get('mint')
@@ -1623,7 +1611,7 @@ class WebSocketWalletMonitor:
                         
                         # If still no mint, try preTokenBalances
                         if not token_mint:
-                            pre_token_balances = meta.get('preTokenBalances', [])
+                            pre_token_balances = meta_data.get('preTokenBalances', [])
                             for balance in pre_token_balances:
                                 if balance.get('owner') == wallet_address:
                                     mint = balance.get('mint')
@@ -1631,9 +1619,25 @@ class WebSocketWalletMonitor:
                                         token_mint = mint
                                         break
         except Exception as e:
-            log_debug(f"   ⚠️ Could not fetch transaction for token mint: {e}")
+            log_debug(f"   ⚠️ Could not fetch transaction data: {e}")
         
-        # Create synthetic trade info
+        # Analyze logs for DEX detection (after transaction fetch)
+        for log in logs:
+            # DEX detection
+            if 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4' in log or 'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB' in log:
+                dex = "jupiter"
+            elif '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P' in log:
+                dex = "pump.fun"
+                if 'Instruction: Buy' in log:
+                    action = "buy"
+                elif 'Instruction: Sell' in log:
+                    action = "sell"
+            elif '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' in log or 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C' in log:
+                dex = "raydium"
+            elif 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc' in log:
+                dex = "orca"
+        
+        # Create synthetic trade info with transaction data if available
         trade_info = {
             'signature': signature,
             'wallet_address': wallet_address,
@@ -1647,10 +1651,19 @@ class WebSocketWalletMonitor:
             'lost_tokens': [],
             'timestamp': datetime.now(UTC),
             'method': 'aggressive_execution_zero_delta',
-            'zero_delta': True
+            'zero_delta': True,
+            'logs': logs  # Include logs for further analysis
         }
         
+        # Include transaction data if fetched
+        if transaction_data:
+            trade_info['transaction'] = transaction_data
+            trade_info['transaction_full'] = transaction_data
+        if meta_data:
+            trade_info['meta'] = meta_data
+        
         log_debug(f"   ✅ Synthetic trade info created: {dex} {action}")
+        log_debug(f"      Transaction data included: {transaction_data is not None}")
         return trade_info
 
     async def _analyze_logs_for_trade_smart(self, signature: str, wallet_address: str, logs: List[str]) -> Optional[Dict[str, Any]]:
