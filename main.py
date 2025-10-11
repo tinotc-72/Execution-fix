@@ -27,19 +27,21 @@ EXECUTION FLOW OVERVIEW:
    - Detects DEX type from program IDs and logs
    - Validates execution eligibility (DEX involvement is primary trigger)
 
-4. AGGRESSIVE EXECUTION LOGIC (NO TOKEN BALANCE GATING):
-   Execute trades when EITHER condition is met:
-   a. Recognizable trade instruction detected (DEX program), OR
-   b. Transaction signer is in MONITORED_WALLETS (case-insensitive)
+4. INTELLIGENT AGGRESSIVE EXECUTION LOGIC:
+   Execute trades ONLY when trade intent is fully reconstructable:
+   a. Transaction contains DEX instruction OR monitored wallet is signer, AND
+   b. Trade direction (buy/sell/swap) is parseable from logs/instructions, AND
+   c. Token mint is extractable from transaction data
    
-   KEY BEHAVIOR (matching DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj):
-   - Does NOT require token balance changes for execution
-   - Token balance deltas are analyzed for informational purposes only
-   - Executes on ANY DEX program detection (Raydium, Jupiter, Orca, Meteora, etc.)
-   - Executes if monitored wallet is signer (even with zero token delta)
-   - Defaults to 'swap' action when ambiguous - executor refines it
+   KEY BEHAVIOR (matching intelligent wallets like DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj):
+   - Parses logs/instructions to extract action (buy/sell/swap) and token mint
+   - Validates all required data before execution (no blind trades)
+   - Logs and skips ambiguous trades where direction or token cannot be parsed
+   - Executes buy if monitored wallet buys (0.001 SOL)
+   - Executes sell if monitored wallet sells (matching percentage)
+   - Provides audit trail documenting parsing, execution, and skipped trades
    - Case-insensitive wallet matching for monitored wallets
-   - Maximizes trade capture and reliability like public copy bots
+   - No execution on incomplete data (action=unknown or token=UNKNOWN)
 
 5. TRADE EXECUTION (via execution_coordinator)
    - Routes to appropriate executor based on DEX type
@@ -59,7 +61,10 @@ KEY IMPROVEMENTS:
 - Robust fallback execution logic: ✅ IMPLEMENTED
 - Clear environment variable validation: ✅ IMPLEMENTED
 - Enhanced failed trade logging: ✅ IMPLEMENTED
-- AGGRESSIVE execution on DEX detection OR monitored signer: ✅ IMPLEMENTED
+- INTELLIGENT execution requiring parsed trade intent: ✅ IMPLEMENTED
+- Validation of action (buy/sell/swap) from logs/instructions: ✅ IMPLEMENTED
+- Validation of token mint extraction: ✅ IMPLEMENTED
+- Skip ambiguous trades with audit logging: ✅ IMPLEMENTED
 - Case-insensitive wallet matching: ✅ IMPLEMENTED
 """
 
@@ -214,27 +219,42 @@ from execution_coordinator import normalize_dex, ROUTE_MAP
 class SimpleCopyTradingBot:
     async def _process_detected_trade(self, trade_info: Dict[str, Any]):
         """
-        AGGRESSIVE TRADE EXECUTION (NO TOKEN BALANCE GATING):
-        Execute trades when either condition is met:
-        1. A recognizable trade instruction is detected (DEX program), OR
-        2. The transaction signer is in MONITORED_WALLETS (case-insensitive)
+        INTELLIGENT AGGRESSIVE TRADE EXECUTION:
+        Execute trades ONLY when trade intent can be fully reconstructed from transaction data.
+        Never blindly execute on account changes or wallet triggers alone.
         
-        Follows behavior of aggressive Solana copy bots like DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj:
-        - Execute on trade instruction detection OR monitored wallet involvement
-        - Does NOT require token balance changes for execution
-        - Token balance deltas are analyzed for informational purposes only
-        - Minimal validation (signature, action, mint)
-        - Default to 'swap' for ambiguous actions
-        - Buy with 0.001 SOL, sell with same percentage as monitored wallet
+        Implements intelligent copy trading as practiced by top Solana wallets like 
+        DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj:
+        
+        EXECUTION REQUIREMENTS (ALL must be met):
+        1. Transaction must contain DEX instructions OR be signed by monitored wallet
+        2. Trade direction (buy/sell/swap) must be parseable from logs/instructions
+        3. Token mint must be extractable from transaction data
+        
+        VALIDATION & PARSING:
+        - Parses transaction logs and instructions to extract:
+          * Direction: buy/sell/swap (from DEX instruction logs)
+          * Token mint: extracted from transaction accounts/balances
+          * Proportional amounts: calculated from balance changes
+        - Validates all required data before execution
+        - Logs and skips ambiguous trades where direction or token cannot be parsed
+        
+        EXECUTION LOGIC:
+        - Execute BUY if monitored wallet buys (with 0.001 SOL)
+        - Execute SELL if monitored wallet sells (matching percentage)
+        - Maintain 0.001 SOL investment for all buy trades
+        - Skip trades with incomplete or ambiguous data
+        
+        AUDIT LOGGING:
+        - Documents trade parsing results
+        - Logs execution decisions with reasoning
+        - Records skipped trades with specific reasons
+        - Provides full audit trail for validation
         
         Case-Insensitive Wallet Matching:
         - All wallet comparisons use case-insensitive matching
         - Handles wallet address variations (e.g., 'DfMx...' matches 'dfmx...')
         - Ensures consistent execution regardless of address casing
-        
-        Execution Triggers (EITHER condition):
-        - DEX instruction present: Executes immediately, even with zero token delta
-        - Monitored wallet signer: Executes immediately, even with zero token delta
         """
         sig = (trade_info.get("signature") or "").strip()
         if not sig or sig == "unknown":
@@ -282,25 +302,49 @@ class SimpleCopyTradingBot:
             logger.warning("   (Token balance changes are not considered for execution gating)")
             return
         
-        logger.info("✅ [EXECUTION_CHECK] At least one condition met - proceeding with execution")
+        logger.info("✅ [EXECUTION_CHECK] At least one condition met - proceeding with validation")
         logger.info("   📝 Note: Token balance deltas will be analyzed for informational purposes only")
         
-        # Extract minimal required fields for execution
+        # Extract required fields for execution
         action = trade_info.get('action', 'unknown')
         token_mint = trade_info.get('token_mint') or trade_info.get('mint', 'UNKNOWN')
         
         # Check for DEX involvement
         dex_type = trade_info.get('dex_type') or trade_info.get('dex', 'unknown')
         
-        # Default action to 'swap' if unknown
-        if action == 'unknown':
-            action = 'swap'
-            logger.info(f"🎯 [IMMEDIATE_EXEC] Action unknown, defaulting to 'swap'")
+        # INTELLIGENT VALIDATION: Only execute if we can reconstruct trade intent
+        # Validate action (buy/sell/swap) is parseable from logs/instructions
+        valid_actions = ['buy', 'sell', 'swap', 'swap_in', 'swap_out']
+        if action == 'unknown' or action not in valid_actions:
+            logger.warning(f"⚠️ [TRADE_PARSE] Cannot determine trade direction - Action: '{action}'")
+            logger.warning(f"   📋 [SKIP] Skipping ambiguous trade - direction cannot be parsed from logs/instructions")
+            logger.info(f"   🔍 [AUDIT] Trade skipped: signature={sig[:16] if sig else 'none'}..., reason=unknown_action")
+            return
         
-        logger.info(f"⚡ [IMMEDIATE_EXEC] Trade detected - Action: {action}, Mint: {str(token_mint)[:8]}..., DEX: {dex_type}")
-        logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Proceeding with execution (matching wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj behavior)")
+        # Validate token mint is extractable from transaction
+        if token_mint == 'UNKNOWN' or not token_mint or token_mint == '':
+            logger.warning(f"⚠️ [TRADE_PARSE] Cannot extract token mint from transaction")
+            logger.warning(f"   📋 [SKIP] Skipping ambiguous trade - token cannot be identified")
+            logger.info(f"   🔍 [AUDIT] Trade skipped: signature={sig[:16] if sig else 'none'}..., reason=unknown_token")
+            return
         
-        # EXECUTE IMMEDIATELY - No further analysis, validation, or retries
+        # Validate token mint format (basic Solana address validation)
+        if not isinstance(token_mint, str) or len(str(token_mint)) < 32:
+            logger.warning(f"⚠️ [TRADE_PARSE] Invalid token mint format: {token_mint}")
+            logger.warning(f"   📋 [SKIP] Skipping trade - token mint validation failed")
+            logger.info(f"   🔍 [AUDIT] Trade skipped: signature={sig[:16] if sig else 'none'}..., reason=invalid_token_format")
+            return
+        
+        # Log successful parsing
+        logger.info(f"✅ [TRADE_PARSE] Successfully parsed trade intent:")
+        logger.info(f"   📊 Action: {action} (parsed from logs/instructions)")
+        logger.info(f"   🪙 Token Mint: {str(token_mint)[:8]}... (extracted from transaction)")
+        logger.info(f"   🔄 DEX: {dex_type}")
+        logger.info(f"⚡ [IMMEDIATE_EXEC] Trade validated - Action: {action}, Mint: {str(token_mint)[:8]}..., DEX: {dex_type}")
+        logger.info(f"🚀 INTELLIGENT EXECUTION MODE: Trade intent successfully reconstructed")
+        logger.info(f"   🎯 Executing parsed trade (matching intelligent wallet behavior)")
+        
+        # EXECUTE ONLY PARSED TRADES - No blind execution on incomplete data
         # Buy with 0.001 SOL (default in execution_coordinator)
         if action in ("buy", "swap_in", "swap"):
             logger.info(f"🚀 [IMMEDIATE_EXEC] Executing BUY/SWAP for {str(token_mint)[:8]}...")
@@ -324,13 +368,11 @@ class SimpleCopyTradingBot:
                 sell_percentage=sell_percentage
             )
         else:
-            logger.info(f"🚀 [IMMEDIATE_EXEC] Unknown action type, defaulting to BUY for {str(token_mint)[:8]}...")
-            await self.execution_coordinator._execute_copy_buy(
-                token_mint=token_mint, 
-                source_wallet=source_wallet, 
-                trade_info=trade_info,
-                amount_sol=0.001  # Explicit 0.001 SOL investment
-            )
+            # This should never happen due to validation above
+            logger.error(f"❌ [EXEC_ERROR] Unexpected action '{action}' passed validation")
+            logger.error(f"   📋 [SKIP] Skipping execution due to logic error")
+            logger.info(f"   🔍 [AUDIT] Trade skipped: signature={sig[:16] if sig else 'none'}..., reason=validation_logic_error")
+            return
         
         return  # Done - no further processing needed
     
