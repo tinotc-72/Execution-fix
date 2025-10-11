@@ -14,10 +14,11 @@ import json
 from typing import Any, Dict
 from solders.hash import Hash
 from solders.pubkey import Pubkey
-import keyZ as kz
+from env_keys import EnvKeys
 
 # Use your actual RPC URL here
-RPC_URL = kz.HELIUS_RPC_URL
+env = EnvKeys()
+RPC_URL = env.HELIUS_RPC_URL
 
 WALLET_A = Pubkey.from_string("suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK")
 
