@@ -207,14 +207,16 @@ from execution_coordinator import normalize_dex, ROUTE_MAP
 class SimpleCopyTradingBot:
     async def _process_detected_trade(self, trade_info: Dict[str, Any]):
         """
-        ULTRA-AGGRESSIVE IMMEDIATE EXECUTION:
-        Execute trades immediately upon detection with minimal parsing.
+        AGGRESSIVE TRADE EXECUTION:
+        Execute trades when either condition is met:
+        1. A recognizable trade instruction is detected (DEX program), OR
+        2. The transaction signer is in MONITORED_WALLETS
         
         Follows behavior of aggressive Solana copy bots like DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj:
-        - Execute on ANY detected trade
+        - Execute on trade instruction detection OR monitored wallet involvement
         - Minimal validation (signature, action, mint)
         - Default to 'swap' for ambiguous actions
-        - No scoring, no multi-stage validation, no balance requirements
+        - Buy with 0.001 SOL, sell with same percentage as monitored wallet
         """
         sig = (trade_info.get("signature") or "").strip()
         if not sig or sig == "unknown":
@@ -227,7 +229,40 @@ class SimpleCopyTradingBot:
             or str(self.wallet_pubkey)
         )
 
-        # IMMEDIATE EXECUTION: Extract minimal required fields
+        # CHECK EXECUTION CONDITIONS:
+        # Condition 1: Check for trade instructions (DEX programs)
+        instruction_info = self.trade_processor._check_trade_instructions(trade_info)
+        has_trade_instructions = instruction_info.get('has_trade_instructions', False)
+        
+        # Condition 2: Check if signer is in MONITORED_WALLETS
+        signer_info = self.trade_processor._check_monitored_wallet_is_signer(trade_info)
+        has_monitored_signer = signer_info.get('has_monitored_involvement', False)
+        
+        # Log conditions
+        logger.info(f"🔍 [EXECUTION_CHECK] Trade instructions detected: {has_trade_instructions}")
+        logger.info(f"🔍 [EXECUTION_CHECK] Monitored wallet signer: {has_monitored_signer}")
+        
+        if has_trade_instructions:
+            detected_programs = instruction_info.get('detected_programs', [])
+            logger.info(f"   ✅ Trade instructions: {len(detected_programs)} DEX program(s) detected")
+            for prog in detected_programs[:3]:
+                logger.info(f"      - {prog.get('program_name', 'unknown')}")
+        
+        if has_monitored_signer:
+            monitored_wallets = signer_info.get('monitored_signers', [])
+            logger.info(f"   ✅ Monitored signer: {len(monitored_wallets)} wallet(s)")
+            for wallet in monitored_wallets[:3]:
+                logger.info(f"      - {wallet[:8]}...")
+        
+        # EXECUTE IF EITHER CONDITION IS MET
+        if not (has_trade_instructions or has_monitored_signer):
+            logger.warning("⚠️ [EXECUTION_CHECK] Neither condition met - skipping execution")
+            logger.warning("   No trade instructions AND no monitored wallet signer")
+            return
+        
+        logger.info("✅ [EXECUTION_CHECK] At least one condition met - proceeding with execution")
+        
+        # Extract minimal required fields for execution
         action = trade_info.get('action', 'unknown')
         token_mint = trade_info.get('token_mint') or trade_info.get('mint', 'UNKNOWN')
         
@@ -238,60 +273,103 @@ class SimpleCopyTradingBot:
         if action == 'unknown':
             action = 'swap'
             logger.info(f"🎯 [IMMEDIATE_EXEC] Action unknown, defaulting to 'swap'")
-            logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Executing anyway (aggressive mode)")
-            # Log for analytics but DO NOT return - continue with execution
         
         logger.info(f"⚡ [IMMEDIATE_EXEC] Trade detected - Action: {action}, Mint: {str(token_mint)[:8]}..., DEX: {dex_type}")
-        logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Proceeding with execution anyway (matching wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj behavior)")
+        logger.info(f"🚀 AGGRESSIVE EXECUTION MODE: Proceeding with execution (matching wallet DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj behavior)")
         
-        # EXECUTE IMMEDIATELY - No analysis, no validation, no retries
+        # EXECUTE IMMEDIATELY - No further analysis, validation, or retries
+        # Buy with 0.001 SOL (default in execution_coordinator)
         if action in ("buy", "swap_in", "swap"):
             logger.info(f"🚀 [IMMEDIATE_EXEC] Executing BUY/SWAP for {str(token_mint)[:8]}...")
-            logger.info(f"⚠️ Unknown action '{action}' — executing as BUY (aggressive mode, swap default).")
             await self.execution_coordinator._execute_copy_buy(
                 token_mint=token_mint, 
                 source_wallet=source_wallet, 
-                trade_info=trade_info
+                trade_info=trade_info,
+                amount_sol=0.001  # Explicit 0.001 SOL investment
             )
         elif action in ("sell", "swap_out"):
             logger.info(f"🚀 [IMMEDIATE_EXEC] Executing SELL for {str(token_mint)[:8]}...")
+            
+            # Calculate sell percentage from monitored wallet's balance change
+            sell_percentage = self._calculate_sell_percentage(trade_info, source_wallet, token_mint)
+            logger.info(f"   📊 Calculated sell percentage: {sell_percentage:.2f}%")
+            
             await self.execution_coordinator._execute_copy_sell(
                 token_mint=token_mint, 
                 source_wallet=source_wallet, 
-                trade_info=trade_info
+                trade_info=trade_info,
+                sell_percentage=sell_percentage
             )
         else:
             logger.info(f"🚀 [IMMEDIATE_EXEC] Unknown action type, defaulting to BUY for {str(token_mint)[:8]}...")
-            logger.info(f"⚠️ Unknown action '{action}' — executing as BUY (aggressive mode, swap default).")
             await self.execution_coordinator._execute_copy_buy(
                 token_mint=token_mint, 
                 source_wallet=source_wallet, 
-                trade_info=trade_info
+                trade_info=trade_info,
+                amount_sol=0.001  # Explicit 0.001 SOL investment
             )
         
         return  # Done - no further processing needed
+    
+    def _calculate_sell_percentage(self, trade_info: Dict[str, Any], source_wallet: str, token_mint: str) -> float:
+        """
+        Calculate the sell percentage based on monitored wallet's balance change.
         
-        # === LEGACY CODE BELOW - KEPT FOR REFERENCE BUT NOT EXECUTED ===
-        # The return above ensures immediate execution without analysis
-        
-        logger.info("🔍 Running router detection for detected trade.")
-        routing = await self._resilient_async_call(
-            self.trade_processor.analyze_and_route_trade,
-            trade_info,
-            source_wallet,        # ← REQUIRED
-        )
-        if not routing:
-            logger.warning("⚠️ No routing instructions returned - creating default routing for aggressive execution")
-            logger.info("🚀 AGGRESSIVE EXECUTION: Proceeding with minimal trade info")
-            # Create minimal routing for execution
-            routing = {
-                'action': 'swap',  # Default to swap
-                'token_mint': trade_info.get('token_mint', 'UNKNOWN'),
-                'trade_info': trade_info,
-                'requires_execution': True,
-                'wallet_validation': {'eligible': True},
-                'source_wallet': source_wallet
-            }
+        Args:
+            trade_info: Transaction information with balance data
+            source_wallet: Monitored wallet address
+            token_mint: Token mint address
+            
+        Returns:
+            float: Sell percentage (0-100)
+        """
+        try:
+            # Get balance changes from transaction
+            meta = trade_info.get('meta')
+            if not meta:
+                tx = trade_info.get('transaction_full') or trade_info.get('transaction', {})
+                meta = tx.get('meta')
+            
+            if not meta:
+                logger.warning("⚠️ [SELL_PCT] No meta data - defaulting to 100% sell")
+                return 100.0
+            
+            pre_token_balances = meta.get('preTokenBalances', [])
+            post_token_balances = meta.get('postTokenBalances', [])
+            
+            # Find source wallet's balance change for this token
+            pre_amount = 0
+            post_amount = 0
+            
+            for tb in pre_token_balances:
+                if tb.get('owner') == source_wallet and tb.get('mint') == token_mint:
+                    pre_amount = float(tb.get('uiTokenAmount', {}).get('uiAmount') or 0)
+                    break
+            
+            for tb in post_token_balances:
+                if tb.get('owner') == source_wallet and tb.get('mint') == token_mint:
+                    post_amount = float(tb.get('uiTokenAmount', {}).get('uiAmount') or 0)
+                    break
+            
+            if pre_amount == 0:
+                logger.warning(f"⚠️ [SELL_PCT] No pre-balance found for {source_wallet[:8]}... - defaulting to 100% sell")
+                return 100.0
+            
+            # Calculate percentage sold
+            amount_sold = pre_amount - post_amount
+            percentage_sold = (amount_sold / pre_amount) * 100
+            
+            # Ensure percentage is between 0 and 100
+            percentage_sold = max(0, min(100, percentage_sold))
+            
+            logger.info(f"📊 [SELL_PCT] Monitored wallet sold {percentage_sold:.2f}% ({amount_sold:.6f} / {pre_amount:.6f})")
+            
+            return percentage_sold
+            
+        except Exception as e:
+            logger.error(f"❌ [SELL_PCT] Error calculating sell percentage: {e}")
+            logger.warning("   Defaulting to 100% sell")
+            return 100.0
 
     async def _resilient_async_call(self, func, *args, max_retries=5, initial_delay=0.5, backoff=2, **kwargs):
         """
