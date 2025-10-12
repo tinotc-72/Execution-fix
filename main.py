@@ -19,25 +19,24 @@ EXECUTION FLOW OVERVIEW:
    - Routes to appropriate processing based on confidence level
 
 3. TRADE ANALYSIS (_process_detected_trade -> analyze_and_route_trade)
-   - Extracts action using ROBUST FALLBACK mechanism (_extract_action_with_fallback):
-     a. Primary: Existing action field if valid
-     b. Secondary: Basic analysis fields  
-     c. Fallback: Always defaults to 'swap' (NEVER returns 'unknown')
-   - Extracts token mint from transaction data or balance changes
-   - Detects DEX type from program IDs and logs
-   - Validates execution eligibility (DEX involvement is primary trigger)
+   - Analyzes token balance changes using detect_buy_sell (PRIMARY method)
+   - Extracts action from balance deltas (positive delta = BUY, negative = SELL)
+   - Uses signer/instruction checks for VALIDATION only (not execution trigger)
+   - Returns 'unknown' when action cannot be determined (skips ambiguous trades)
+   - Extracts token mint from transaction balance changes
 
-4. ROBUST EXECUTION LOGIC WITH FALLBACK MECHANISM:
-   Execute trades when DEX instruction OR monitored wallet is detected:
-   a. Transaction contains DEX instruction OR monitored wallet is signer, AND
-   b. Trade direction guaranteed via robust fallback (defaults to 'swap' if ambiguous), AND
-   c. Token mint is extractable from transaction data
+4. ROBUST EXECUTION LOGIC (BALANCE-BASED):
+   Execute trades ONLY when token balance changes are detected:
+   a. Token balance changes REQUIRED (monitored wallet must have delta), AND
+   b. Trade direction determined from balance delta (BUY/SELL) or skipped if unclear, AND
+   c. Token mint extracted from balance changes
    
-   KEY BEHAVIOR (robust execution with fallback):
-   - Uses robust fallback mechanism that NEVER returns 'unknown' action
-   - Defaults ambiguous actions to 'swap' ensuring trades always execute
-   - Validates token mint is extractable before execution
-   - Executes buy if monitored wallet buys (0.001 SOL)
+   KEY BEHAVIOR (balance change required):
+   - Requires actual token balance changes for execution
+   - Detects BUY/SELL from balance deltas, returns 'unknown' if unclear
+   - Uses signer + instruction checks for validation only
+   - Skips trades without balance changes or unclear actions
+   - Executes buy if balance delta positive (0.001 SOL)
    - Executes sell if monitored wallet sells (matching percentage)
    - Provides audit trail documenting parsing, execution, and skipped trades
    - Case-insensitive wallet matching for monitored wallets
@@ -58,13 +57,13 @@ KEY IMPROVEMENTS:
 - Missing async _health_check method: ✅ IMPLEMENTED
 - Enhanced field validation and defaulting: ✅ IMPLEMENTED
 - Debug logging for missing fields: ✅ IMPLEMENTED
-- Robust fallback execution logic with 'swap' default: ✅ IMPLEMENTED
+- Balance-based execution logic (requires balance changes): ✅ IMPLEMENTED
 - Clear environment variable validation: ✅ IMPLEMENTED
 - Enhanced failed trade logging: ✅ IMPLEMENTED
-- ROBUST action extraction that NEVER returns 'unknown': ✅ IMPLEMENTED
-- Fallback mechanism defaults ambiguous actions to 'swap': ✅ IMPLEMENTED
+- Action extraction from balance deltas (returns 'unknown' if unclear): ✅ IMPLEMENTED
+- Signer + instruction checks for validation only: ✅ IMPLEMENTED
 - Validation of token mint extraction: ✅ IMPLEMENTED
-- Skip trades ONLY on token extraction failure: ✅ IMPLEMENTED
+- Skip trades on missing balance changes or unclear action: ✅ IMPLEMENTED
 - Case-insensitive wallet matching: ✅ IMPLEMENTED
 """
 
@@ -227,37 +226,35 @@ from execution_coordinator import normalize_dex, ROUTE_MAP
 class SimpleCopyTradingBot:
     async def _process_detected_trade(self, trade_info: Dict[str, Any]):
         """
-        ROBUST TRADE EXECUTION WITH FALLBACK MECHANISM:
-        Execute trades using robust fallback logic that ensures actionable results.
-        Uses proven fallback patterns to maximize execution while maintaining safety.
+        ROBUST TRADE DETECTION AND PARSING:
+        Execute trades based on actual token balance changes with proper action detection.
+        Uses balance delta analysis as primary method for determining trade intent.
         
-        Implements robust copy trading with fallback mechanism:
+        Implements robust copy trading with balance-based detection:
         
         EXECUTION REQUIREMENTS:
-        1. Transaction must contain DEX instructions OR be signed by monitored wallet
-        2. Trade direction guaranteed via robust fallback (defaults to 'swap' if ambiguous)
-        3. Token mint must be extractable from transaction data
+        1. Token balance changes REQUIRED - transaction must show monitored wallet balance delta
+        2. Trade direction determined from balance changes (buy/sell) or returns 'unknown'
+        3. Token mint extracted from transaction balance changes
         
-        VALIDATION & PARSING WITH FALLBACK:
-        - Extracts action using robust fallback mechanism (_extract_action_with_fallback):
-          * Primary: Uses existing action field if valid
-          * Secondary: Uses basic analysis fields
-          * Fallback: Defaults to 'swap' (NEVER returns 'unknown')
-        - Extracts token mint from transaction data/balances
-        - Validates token mint is extractable before execution
-        - Skips ONLY if token cannot be extracted (action always valid via fallback)
+        VALIDATION & PARSING:
+        - Detects buy/sell actions from token balance deltas (primary method):
+          * Positive delta (tokens increased) = BUY
+          * Negative delta (tokens decreased) = SELL
+        - Uses signer + instruction checks for VALIDATION only (not execution trigger)
+        - Returns 'unknown' when action cannot be determined (skips ambiguous trades)
+        - Skips trades when no balance changes detected or action unclear
         
         EXECUTION LOGIC:
-        - Execute BUY if action is 'buy' or 'swap_in' (with 0.001 SOL)
-        - Execute SELL if action is 'sell' or 'swap_out' (matching percentage)
-        - Execute SWAP if action is 'swap' (defaults to buy with 0.001 SOL)
+        - Execute BUY if action is 'buy' (with 0.001 SOL)
+        - Execute SELL if action is 'sell' (matching detected percentage)
+        - Skip trade if action is 'unknown' or no balance changes found
         - Maintain 0.001 SOL investment for all buy trades
-        - Skip trades ONLY if token mint cannot be extracted
         
         AUDIT LOGGING:
-        - Documents trade parsing results
-        - Logs execution decisions with reasoning
-        - Records skipped trades with specific reasons (token extraction failures only)
+        - Documents balance change detection results
+        - Logs execution decisions with balance delta evidence
+        - Records skipped trades when balance changes absent or action unclear
         - Provides full audit trail for validation
         
         Case-Insensitive Wallet Matching:

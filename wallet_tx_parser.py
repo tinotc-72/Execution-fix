@@ -1273,9 +1273,9 @@ class WebSocketWalletMonitor:
         Uses actual balance changes to determine buy/sell/swap actions and token info.
         NO execution without balance changes.
         
-        NOTE: This method is for informational purposes only and does NOT gate execution.
-        Execution is triggered by DEX instructions OR monitored wallet detection,
-        regardless of whether balance changes are detected.
+        This method analyzes token balance changes to detect trades.
+        Returns None if no balance changes are detected, which prevents execution.
+        Balance changes are the PRIMARY requirement for trade detection and execution.
         """
         
         log_debug(f"🎯 BALANCE-BASED ANALYSIS for {signature[:12]}...")
@@ -1302,16 +1302,16 @@ class WebSocketWalletMonitor:
                     
                     if 'error' in data:
                         log_debug(f"   ❌ RPC Error: {data['error']}")
-                        # 🚀 SMART FALLBACK: If balance analysis fails, use the log data we already have
-                        log_debug(f"   🔧 SMART FALLBACK: Using log-based analysis since balance fetch failed")
-                        return await self._analyze_logs_for_trade_smart(signature, wallet_address, logs)
+                        # Balance analysis failed - return None (no execution without balance changes)
+                        log_debug(f"   ⚠️ Cannot proceed without balance data - skipping")
+                        return None
                     
                     result = data.get('result')
                     if not result:
                         log_debug(f"   ❌ No transaction data")
-                        # 🚀 SMART FALLBACK: Use log-based analysis 
-                        log_debug(f"   🔧 SMART FALLBACK: Using log-based analysis since no transaction data")
-                        return await self._analyze_logs_for_trade_smart(signature, wallet_address, logs)
+                        # Balance analysis failed - return None (no execution without balance changes)
+                        log_debug(f"   ⚠️ Cannot proceed without transaction data - skipping")
+                        return None
                     
                     meta = result.get('meta', {})
                     transaction = result.get('transaction', {})
@@ -1468,9 +1468,9 @@ class WebSocketWalletMonitor:
                         
         except Exception as e:
             log_debug(f"   ❌ Error in balance analysis: {e}")
-            # 🚀 SMART FALLBACK: Try log-based analysis when RPC fails
-            log_debug(f"   🔧 Attempting smart log analysis fallback...")
-            return await self._analyze_logs_for_trade_smart(signature, wallet_address, logs)
+            # Balance analysis failed - return None (no execution without balance changes)
+            log_debug(f"   ⚠️ Cannot proceed without balance analysis - skipping")
+            return None
 
     def _check_dex_instruction_in_logs(self, logs: List[str]) -> bool:
         """
@@ -1536,185 +1536,26 @@ class WebSocketWalletMonitor:
     
     async def _create_synthetic_trade_info(self, signature: str, wallet_address: str, logs: List[str], has_dex_instruction: bool) -> Optional[Dict[str, Any]]:
         """
-        Create synthetic trade info for execution when balance changes are zero.
-        This ensures execution occurs when DEX instructions or monitored wallet is detected,
-        even without token balance changes.
+        DEPRECATED: This method created synthetic trades without balance changes.
+        This violates the principle of requiring actual balance changes for execution.
+        Returns None to prevent execution without balance proof.
         """
-        log_debug(f"🔧 Creating synthetic trade info with zero balance delta...")
-        
-        # Analyze logs to determine DEX and action
-        dex = "unknown"
-        action = "swap"  # Default to swap if unclear
-        token_mint = None
-        transaction_data = None
-        meta_data = None
-        
-        # Try to fetch transaction data to include in trade_info
-        try:
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getTransaction",
-                "params": [
-                    signature,
-                    {
-                        "encoding": "json",
-                        "commitment": "confirmed",
-                        "maxSupportedTransactionVersion": 0
-                    }
-                ]
-            }
-            
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self._get_http_rpc_url(), json=payload) as response:
-                    data = await response.json()
-                    result = data.get('result')
-                    if result:
-                        transaction_data = result.get('transaction', {})
-                        meta_data = result.get('meta', {})
-                        
-                        # Try to get a token mint from post token balances
-                        post_token_balances = meta_data.get('postTokenBalances', [])
-                        for balance in post_token_balances:
-                            if balance.get('owner') == wallet_address:
-                                mint = balance.get('mint')
-                                if mint and mint != 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v':  # Not USDC
-                                    token_mint = mint
-                                    break
-                        
-                        # If still no mint, try preTokenBalances
-                        if not token_mint:
-                            pre_token_balances = meta_data.get('preTokenBalances', [])
-                            for balance in pre_token_balances:
-                                if balance.get('owner') == wallet_address:
-                                    mint = balance.get('mint')
-                                    if mint and mint != 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v':
-                                        token_mint = mint
-                                        break
-        except Exception as e:
-            log_debug(f"   ⚠️ Could not fetch transaction data: {e}")
-        
-        # Analyze logs for DEX detection (after transaction fetch)
-        for log in logs:
-            # DEX detection
-            if 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4' in log or 'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB' in log:
-                dex = "jupiter"
-            elif '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P' in log:
-                dex = "pump.fun"
-                if 'Instruction: Buy' in log:
-                    action = "buy"
-                elif 'Instruction: Sell' in log:
-                    action = "sell"
-            elif '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' in log or 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C' in log:
-                dex = "raydium"
-            elif 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc' in log:
-                dex = "orca"
-        
-        # Create synthetic trade info with transaction data if available
-        trade_info = {
-            'signature': signature,
-            'wallet_address': wallet_address,
-            'action': action,
-            'dex': dex,
-            'token_mint': token_mint or 'PENDING_ANALYSIS',
-            'confidence': 'SYNTHETIC',
-            'reasoning': 'Execution triggered by DEX instruction or monitored wallet (zero balance delta)',
-            'sol_delta': 0.0,
-            'gained_tokens': [],
-            'lost_tokens': [],
-            'timestamp': datetime.now(UTC),
-            'method': 'aggressive_execution_zero_delta',
-            'zero_delta': True,
-            'logs': logs  # Include logs for further analysis
-        }
-        
-        # Include transaction data if fetched
-        if transaction_data:
-            trade_info['transaction'] = transaction_data
-            trade_info['transaction_full'] = transaction_data
-        if meta_data:
-            trade_info['meta'] = meta_data
-        
-        log_debug(f"   ✅ Synthetic trade info created: {dex} {action}")
-        log_debug(f"      Transaction data included: {transaction_data is not None}")
-        return trade_info
+        log_debug(f"⚠️ DEPRECATED METHOD CALLED: _create_synthetic_trade_info")
+        log_debug(f"   This method is deprecated and returns None")
+        log_debug(f"   Balance changes are REQUIRED for trade detection")
+        return None
 
     async def _analyze_logs_for_trade_smart(self, signature: str, wallet_address: str, logs: List[str]) -> Optional[Dict[str, Any]]:
-        """🚀 SMART LOG ANALYSIS: Extract trade info from logs when balance analysis fails due to timing"""
-        try:
-            log_debug(f"🔧 SMART LOG ANALYSIS: {signature[:8]}... using available log data")
-            
-            # Look for common trading patterns in logs
-            has_pump_fun = False
-            has_raydium = False
-            has_jupiter = False
-            is_buy = False
-            is_sell = False
-            
-            for log in logs:
-                # Pump.fun detection
-                if "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW" in log or "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" in log:
-                    has_pump_fun = True
-                    if "Instruction: Buy" in log:
-                        is_buy = True
-                    elif "Instruction: Sell" in log:
-                        is_sell = True
-                
-                # Raydium detection
-                if "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" in log or "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C" in log:
-                    has_raydium = True
-                    if "Instruction: Swap" in log:
-                        # For Raydium, require additional evidence to determine direction
-                        # Don't assume buy/sell without token balance evidence
-                        pass
-                
-                # Jupiter detection  
-                if "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB" in log:
-                    has_jupiter = True
-                    # Don't assume buy/sell without additional evidence
-            
-            # Determine DEX and action based on evidence only
-            dex = "Unknown"
-            action = None  # Don't assume any action
-            
-            if has_pump_fun:
-                dex = "Pump.fun"
-                # Only set action if we have clear evidence from logs
-                if is_buy:
-                    action = "buy"
-                elif is_sell:
-                    action = "sell"
-                # If no clear evidence, don't assume anything
-            elif has_raydium:
-                dex = "Raydium"
-                # Don't assume action without evidence
-            elif has_jupiter:
-                dex = "Jupiter"
-                # Don't assume action without evidence
-            
-            # Only return trade info if we have clear action evidence
-            if (has_pump_fun or has_raydium or has_jupiter) and action:
-                log_debug(f"   ✅ SMART ANALYSIS: {dex} {action} detected with evidence")
-                return {
-                    'signature': signature,
-                    'wallet_address': wallet_address,
-                    'action': action,
-                    'dex': dex,
-                    'token_mint': 'BALANCE_ANALYSIS_REQUIRED',  # Flag for main bot to do balance analysis
-                    'timestamp': datetime.now(UTC),
-                    'requires_balance_analysis': True,
-                    'method': 'smart_log_analysis'
-                }
-            else:
-                log_debug(f"   ❌ SMART ANALYSIS: No trading patterns detected")
-                return None
-                
-        except Exception as e:
-            log_debug(f"   ❌ Error in smart log analysis: {e}")
-            return None
+        """
+        DEPRECATED: This method attempted log-based trade detection without balance changes.
+        This violates the principle of requiring actual balance changes for execution.
+        Returns None to prevent execution without balance proof.
+        """
+        log_debug(f"⚠️ DEPRECATED METHOD CALLED: _analyze_logs_for_trade_smart")
+        log_debug(f"   This method is deprecated and returns None")
+        log_debug(f"   Balance changes are REQUIRED for trade detection")
+        return None
 
-    async def _get_token_from_balance_changes(self, signature: str, wallet_address: str) -> Optional[str]:
         """OFFICIAL: Extract token mint using official Solana getTransaction with jsonParsed encoding"""
         try:
             log_debug(f"   🔧 OFFICIAL BALANCE ANALYSIS: Using Solana jsonParsed for {signature[:8]}...")
