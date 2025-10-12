@@ -487,9 +487,10 @@ class TradeProcessor:
             Dict with routing instructions for the execution coordinator
         """
         try:
-            # Extract action from trade info
-            action = self._extract_action(trade_info)
-            logger.debug(f"[DEBUG] _extract_action result: {action}")
+            # Extract action from trade info using robust fallback mechanism
+            # This ensures we always get an actionable result (never 'unknown')
+            action = self._extract_action_with_fallback(trade_info)
+            logger.debug(f"[DEBUG] _extract_action_with_fallback result: {action}")
             token_mint = trade_info.get('token_mint', 'UNKNOWN')
             
             # Enrich if any critical field is missing
