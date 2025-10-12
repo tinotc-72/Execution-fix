@@ -18,7 +18,7 @@ for a copy bot, with:
         self.kp = keypair or self._load_keypair_from_env()
         self.owner = self.kp.pubkey()
         self.ata = ATAManager(self.rpc)
-        self.pool_resolver = PoolResolver()
+        self.pool_resolver = None  # Will be set with trade_info when needed
         self.jito_service = jito_service  # Add JitoClient supportessageV0 handling using solders v0.26.x
 
 IMPORTANT:
@@ -420,7 +420,7 @@ class MEVRaydiumExecutor:
         self.kp = keypair or self._load_keypair_from_env()
         self.owner = self.kp.pubkey()
         self.ata = ATAManager(self.rpc)
-        self.pool_resolver = PoolResolver()
+        self.pool_resolver = None  # Will be set with trade_info when needed
         self.jito_service = jito_service  # Add JitoClient support
 
     # ---------- Wallet loader ----------
@@ -448,6 +448,10 @@ class MEVRaydiumExecutor:
     ) -> Signature:
         opts = opts or ExecOptions()
 
+        # Validate pool_resolver is set
+        if not self.pool_resolver:
+            raise ValueError("pool_resolver not initialized. Set executor.pool_resolver = PoolResolver(rpc, trade_info)")
+        
         # 1) Resolve pool & accounts
         pool = self.pool_resolver.resolve(mint_in, mint_out, self.owner)
 
@@ -564,8 +568,8 @@ async def try_raydium_buy(token_mint: str, source_wallet: str, *, amount_sol: fl
         return {"success": False, "error": "trade_info required (must include parsed_tx.raydium_info)"}
 
     executor = MEVRaydiumExecutor(rpc_url=HELIUS_RPC_URL, keypair=(WALLET.keypair if hasattr(WALLET, "keypair") else WALLET), jito_service=jito_service)
-    # Override resolver with context-aware one
-    executor.pool_resolver = ContextPoolResolver(executor.rpc, trade_info)
+    # Override resolver with context-aware one that has rpc and trade_info
+    executor.pool_resolver = PoolResolver(executor.rpc, trade_info)
 
     lamports = int(amount_sol * 1_000_000_000)
     try:
@@ -620,7 +624,7 @@ async def try_raydium_sell_all(token_mint: str, source_wallet: str, *, slippage_
 
     # Build executor and resolver
     executor = MEVRaydiumExecutor(rpc_url=HELIUS_RPC_URL, keypair=(WALLET.keypair if hasattr(WALLET, "keypair") else WALLET), jito_service=jito_service)
-    executor.pool_resolver = ContextPoolResolver(executor.rpc, trade_info)
+    executor.pool_resolver = PoolResolver(executor.rpc, trade_info)
 
     # min_out with naive slippage application (sell path → out is SOL)
     # For safety use min_out=1; production should compute from quotes

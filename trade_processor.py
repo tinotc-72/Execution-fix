@@ -454,19 +454,30 @@ class TradeProcessor:
     
     def validate_trade_info(self, trade: dict) -> bool:
         """
+        Permissive validation allowing inferred fields.
+        
         Allow either:
           (a) signature present, OR
           (b) actionable fields for building: dex + action + mint (+ optional amount)
+        
+        This method now accepts inferred/default values to enable permissive execution.
         """
         sig = (trade.get("signature") or "").strip()
-        if sig:
+        if sig and sig != "unknown":
             return True
 
-        dex    = (trade.get("dex") or "").strip().lower()
+        # Check for actionable fields (including inferred/default values)
+        dex = (trade.get("dex") or trade.get("dex_type") or "").strip().lower()
         action = (trade.get("action") or "").strip().lower()
-        mint   = (trade.get("mint") or "").strip()
+        mint = (trade.get("mint") or trade.get("token_mint") or "").strip()
 
-        if dex in {"pumpfun", "raydium", "jupiter", "meteora"} and action in {"buy", "sell"} and mint:
+        # Accept known DEXes (including 'unknown' for fallback routing)
+        valid_dexes = {"pumpfun", "raydium", "jupiter", "meteora", "unknown"}
+        # Accept all actionable actions (including 'swap' from inference)
+        valid_actions = {"buy", "sell", "swap", "swap_in", "swap_out"}
+        
+        if dex in valid_dexes and action in valid_actions and mint and mint not in {"UNKNOWN", "PENDING_ANALYSIS"}:
+            logger.debug(f"[VALIDATION] ✅ Valid trade info - dex:{dex}, action:{action}, mint:{mint[:8]}...")
             return True
 
         # LOG why we're bailing for visibility
