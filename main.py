@@ -276,116 +276,79 @@ class SimpleCopyTradingBot:
             or str(self.wallet_pubkey)
         )
 
-        # CHECK EXECUTION CONDITIONS:
-        # Condition 1: Check for trade instructions (DEX programs)
-        instruction_info = self.trade_processor._check_trade_instructions(trade_info)
-        has_trade_instructions = instruction_info.get('has_trade_instructions', False)
-        
-        # Condition 2: Check if signer is in MONITORED_WALLETS
+        # CHECK EXECUTION CONDITIONS - Monitored wallet involvement AND balance changes REQUIRED
+        # Condition 1: Check if signer is in MONITORED_WALLETS (for validation)
         signer_info = self.trade_processor._check_monitored_wallet_is_signer(trade_info)
         has_monitored_signer = signer_info.get('has_monitored_involvement', False)
         
-        # Log conditions and execution triggers
-        logger.info(f"🔍 [EXECUTION_CHECK] Trade instructions detected: {has_trade_instructions}")
-        logger.info(f"🔍 [EXECUTION_CHECK] Monitored wallet signer: {has_monitored_signer}")
-        logger.info(f"   📝 Token balance changes are NOT required for execution")
+        # Condition 2: Check for trade instructions (DEX programs) (for validation)
+        instruction_info = self.trade_processor._check_trade_instructions(trade_info)
+        has_trade_instructions = instruction_info.get('has_trade_instructions', False)
         
-        if has_trade_instructions:
-            detected_programs = instruction_info.get('detected_programs', [])
-            logger.info(f"   ✅ Trade instructions: {len(detected_programs)} DEX program(s) detected")
-            for prog in detected_programs[:3]:
-                logger.info(f"      - {prog.get('program_name', 'unknown')}")
-            logger.info(f"   🚀 EXECUTION TRIGGER: DEX instruction present (balance delta not required)")
+        # Log conditions for debugging
+        logger.info(f"🔍 [VALIDATION_CHECK] Monitored wallet signer: {has_monitored_signer}")
+        logger.info(f"🔍 [VALIDATION_CHECK] Trade instructions detected: {has_trade_instructions}")
         
-        if has_monitored_signer:
-            monitored_wallets = signer_info.get('monitored_signers', [])
-            logger.info(f"   ✅ Monitored signer: {len(monitored_wallets)} wallet(s)")
-            for wallet in monitored_wallets[:3]:
-                logger.info(f"      - {wallet[:8]}...")
-            logger.info(f"   🚀 EXECUTION TRIGGER: Monitored wallet signer (balance delta not required)")
+        # PRIMARY EXECUTION CONDITION: Check for token balance changes (REQUIRED)
+        # This is the main trigger - trades MUST have balance changes to execute
+        meta = trade_info.get('meta') or (trade_info.get('transaction_full', {}) or {}).get('meta', {})
         
-        # EXECUTE IF EITHER CONDITION IS MET (token balance changes NOT required)
-        if not (has_trade_instructions or has_monitored_signer):
-            logger.warning("⚠️ [EXECUTION_CHECK] Neither condition met - skipping execution")
-            logger.warning("   No trade instructions AND no monitored wallet signer")
-            logger.warning("   (Token balance changes are not considered for execution gating)")
+        if not meta:
+            logger.warning("⚠️ [BALANCE_CHECK] No metadata available - cannot verify balance changes")
+            logger.warning("   📋 [SKIP] Skipping trade - balance verification required")
             return
         
-        logger.info("✅ [EXECUTION_CHECK] At least one condition met - proceeding with validation")
-        logger.info("   📝 Note: Token balance deltas will be analyzed for informational purposes only")
+        # Detect balance changes using trade processor
+        detected_actions = self.trade_processor.detect_buy_sell(meta, self.target_wallets)
         
-        # Extract required fields for execution using robust fallback mechanism
-        # Use _extract_action_with_fallback to ensure we always get a valid action (never 'unknown')
-        action = self.trade_processor._extract_action_with_fallback(trade_info)
-        logger.info(f"🎯 [ACTION_EXTRACTION] Extracted action: '{action}' (via robust fallback)")
-        token_mint = trade_info.get('token_mint') or trade_info.get('mint', 'UNKNOWN')
-        
-        # Check for DEX involvement
-        dex_type = trade_info.get('dex_type') or trade_info.get('dex', 'unknown')
-        
-        # VALIDATION WITH ROBUST FALLBACK:
-        # Action is guaranteed to be valid via _extract_action_with_fallback (never 'unknown')
-        # Validate action is in the list of executable actions (should always pass)
-        valid_actions = ['buy', 'sell', 'swap', 'swap_in', 'swap_out']
-        if action not in valid_actions:
-            # This should never happen with robust fallback, but kept for safety
-            logger.error(f"⚠️ [TRADE_PARSE] Unexpected action value: '{action}' (fallback failed)")
-            logger.error(f"   📋 [SKIP] Skipping trade - unexpected action value")
-            logger.info(f"   🔍 [AUDIT] Trade skipped: signature={sig[:16] if sig else 'none'}..., reason=unexpected_action")
+        if not detected_actions:
+            logger.warning("⚠️ [BALANCE_CHECK] No balance changes detected for monitored wallets")
+            logger.warning("   📋 [SKIP] Skipping trade - balance changes required for execution")
+            logger.info(f"   🔍 Checked wallets: {[w[:8] + '...' for w in self.target_wallets]}")
             return
         
-        # Validate token mint is extractable from transaction
-        if token_mint == 'UNKNOWN' or not token_mint or token_mint == '':
-            logger.warning(f"⚠️ [TRADE_PARSE] Cannot extract token mint from transaction")
-            logger.warning(f"   📋 [SKIP] Skipping ambiguous trade - token cannot be identified")
-            logger.info(f"   🔍 [AUDIT] Trade skipped: signature={sig[:16] if sig else 'none'}..., reason=unknown_token")
-            return
+        logger.info(f"✅ [BALANCE_CHECK] Found {len(detected_actions)} balance change(s) - proceeding with execution")
         
-        # Validate token mint format (basic Solana address validation)
-        if not isinstance(token_mint, str) or len(str(token_mint)) < 32:
-            logger.warning(f"⚠️ [TRADE_PARSE] Invalid token mint format: {token_mint}")
-            logger.warning(f"   📋 [SKIP] Skipping trade - token mint validation failed")
-            logger.info(f"   🔍 [AUDIT] Trade skipped: signature={sig[:16] if sig else 'none'}..., reason=invalid_token_format")
-            return
-        
-        # Log successful parsing
-        logger.info(f"✅ [TRADE_PARSE] Successfully parsed trade intent:")
-        logger.info(f"   📊 Action: {action} (guaranteed via robust fallback)")
-        logger.info(f"   🪙 Token Mint: {str(token_mint)[:8]}... (extracted from transaction)")
-        logger.info(f"   🔄 DEX: {dex_type}")
-        logger.info(f"⚡ [IMMEDIATE_EXEC] Trade validated - Action: {action}, Mint: {str(token_mint)[:8]}..., DEX: {dex_type}")
-        logger.info(f"🚀 ROBUST EXECUTION MODE: Trade action guaranteed via fallback mechanism")
-        logger.info(f"   🎯 Executing with action '{action}' (defaults to 'swap' if ambiguous)")
-        
-        # EXECUTE ONLY PARSED TRADES - No blind execution on incomplete data
-        # Buy with 0.001 SOL (default in execution_coordinator)
-        if action in ("buy", "swap_in", "swap"):
-            logger.info(f"🚀 [IMMEDIATE_EXEC] Executing BUY/SWAP for {str(token_mint)[:8]}...")
-            await self.execution_coordinator._execute_copy_buy(
-                token_mint=token_mint, 
-                source_wallet=source_wallet, 
-                trade_info=trade_info,
-                amount_sol=0.001  # Explicit 0.001 SOL investment
-            )
-        elif action in ("sell", "swap_out"):
-            logger.info(f"🚀 [IMMEDIATE_EXEC] Executing SELL for {str(token_mint)[:8]}...")
+        # Execute trades based on detected balance changes
+        for i, balance_action in enumerate(detected_actions):
+            action_type = balance_action['action']  # 'buy' or 'sell'
+            action_mint = balance_action['mint']
+            action_owner = balance_action['owner']
+            action_amount = balance_action['amount']
+            action_delta = balance_action['delta']
             
-            # Calculate sell percentage from monitored wallet's balance change
-            sell_percentage = self._calculate_sell_percentage(trade_info, source_wallet, token_mint)
-            logger.info(f"   📊 Calculated sell percentage: {sell_percentage:.2f}%")
+            logger.info(f"🎯 [EXECUTION] Processing balance change {i+1}/{len(detected_actions)}")
+            logger.info(f"   Type: {action_type}")
+            logger.info(f"   Mint: {action_mint[:8]}...")
+            logger.info(f"   Owner: {action_owner[:8]}...")
+            logger.info(f"   Amount: {action_amount:,.6f}")
+            logger.info(f"   Delta: {action_delta:+,.6f}")
             
-            await self.execution_coordinator._execute_copy_sell(
-                token_mint=token_mint, 
-                source_wallet=source_wallet, 
-                trade_info=trade_info,
-                sell_percentage=sell_percentage
-            )
-        else:
-            # This should never happen due to validation above
-            logger.error(f"❌ [EXEC_ERROR] Unexpected action '{action}' passed validation")
-            logger.error(f"   📋 [SKIP] Skipping execution due to logic error")
-            logger.info(f"   🔍 [AUDIT] Trade skipped: signature={sig[:16] if sig else 'none'}..., reason=validation_logic_error")
-            return
+            # Validate this action is for a monitored wallet
+            if not self.trade_processor._validate_monitored_wallet(action_owner, self.target_wallets):
+                logger.warning(f"🚫 [EXECUTION_SKIP] Non-monitored wallet - skipping action {i+1}")
+                continue
+            
+            # Execute based on detected action
+            if action_type == 'buy':
+                logger.info(f"🟢 [COPY_BUY] Executing for {action_mint[:8]}...")
+                await self.execution_coordinator._execute_copy_buy(
+                    token_mint=action_mint,
+                    source_wallet=action_owner,
+                    trade_info=trade_info,
+                    amount_sol=0.001  # Default amount
+                )
+            elif action_type == 'sell':
+                logger.info(f"🔴 [COPY_SELL] Executing for {action_mint[:8]}...")
+                await self.execution_coordinator._execute_copy_sell(
+                    token_mint=action_mint,
+                    source_wallet=action_owner,
+                    trade_info=trade_info
+                )
+            else:
+                logger.warning(f"⚠️ Unknown action type: {action_type}")
+        
+        logger.info(f"✅ [EXECUTION] Completed {len(detected_actions)} copy trade(s)")
         
         return  # Done - no further processing needed
     

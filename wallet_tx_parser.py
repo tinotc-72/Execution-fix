@@ -1222,55 +1222,28 @@ class WebSocketWalletMonitor:
             
     async def _analyze_transaction_logs(self, signature: str, logs: List[str], wallet_address: str):
         """
-        AGGRESSIVE EXECUTION MODE: Analyze transaction logs to detect trade activities.
-        Executes when EITHER condition is met:
-        1. DEX trade instruction is detected in logs, OR
-        2. Transaction is from a monitored wallet
+        Analyze transaction logs to detect trade activities with STRICT balance change requirement.
         
-        Token balance changes are NOT required for execution.
+        Execution ONLY occurs when:
+        1. Token balance changes are detected for monitored wallets, AND
+        2. Transaction involves monitored wallet (validated)
+        
+        Balance changes are REQUIRED - no synthetic trades or zero-delta execution.
         """
         try:
-            log_debug(f"🔍 DETAILED ANALYSIS: {signature[:8]}... from {wallet_address[:8]}...")
+            log_debug(f"🔍 ANALYSIS: {signature[:8]}... from {wallet_address[:8]}...")
             log_debug(f"   📊 Total logs: {len(logs)}")
             
             # Show first few logs for debugging
             for i, log in enumerate(logs[:5]):
                 log_debug(f"   Log {i}: {log}")
 
-            # Check for execution triggers BEFORE balance analysis
-            # Condition 1: Check for DEX trade instructions in logs
-            has_dex_instruction = self._check_dex_instruction_in_logs(logs)
-            
-            # Condition 2: Check if wallet is monitored
-            is_monitored_wallet = self._is_monitored_wallet(wallet_address)
-            
-            log_debug(f"🔍 [EXECUTION_CHECK] DEX instruction in logs: {has_dex_instruction}")
-            log_debug(f"🔍 [EXECUTION_CHECK] Is monitored wallet: {is_monitored_wallet}")
-            log_debug(f"   📝 Token balance changes are NOT required for execution")
-            
-            # Try balance analysis for additional info (not for gating)
-            log_debug(f"🔧 Attempting balance analysis for informational purposes...")
+            # PRIMARY: Try balance analysis (REQUIRED for execution)
+            log_debug(f"🔧 Running balance analysis (REQUIRED for execution)...")
             trade_info = await self._analyze_with_official_balance_method(signature, wallet_address, logs)
             
             if trade_info:
-                log_debug(f"✅ Balance analysis success! Token: {trade_info.get('token_mint', 'Unknown')[:8]}...")
-            else:
-                log_debug(f"ℹ️  [BALANCE_INFO] No balance changes detected (does not prevent execution)")
-                
-                # AGGRESSIVE EXECUTION: Create synthetic trade_info if execution triggers are met
-                if has_dex_instruction or is_monitored_wallet:
-                    log_debug(f"🚀 AGGRESSIVE EXECUTION: Creating synthetic trade info (zero delta)")
-                    trade_info = await self._create_synthetic_trade_info(signature, wallet_address, logs, has_dex_instruction)
-                    if has_dex_instruction:
-                        log_debug(f"   🚀 EXECUTION TRIGGER: DEX instruction present (balance delta not required)")
-                    if is_monitored_wallet:
-                        log_debug(f"   🚀 EXECUTION TRIGGER: Monitored wallet signer (balance delta not required)")
-                else:
-                    log_debug(f"⚠️ [EXECUTION_CHECK] Neither condition met - skipping execution")
-                    log_debug(f"   No DEX instruction AND not a monitored wallet")
-                    trade_info = None
-            
-            if trade_info:
+                log_debug(f"✅ Balance analysis SUCCESS! Token: {trade_info.get('token_mint', 'Unknown')[:8]}...")
                 log_debug(f"🚨 TRADE DETECTED! Calling main bot callback...")
                 log_debug(f"   💎 Token: {trade_info.get('token_mint', 'Unknown')[:8]}...")
                 log_debug(f"   🏪 DEX: {trade_info.get('dex', 'Unknown')}")
@@ -1285,9 +1258,9 @@ class WebSocketWalletMonitor:
                 else:
                     log_debug(f"❌ ERROR: No trade_callback set!")
             else:
-                log_debug(f"⚠️ NO TRADE DETECTED - Both official and log parsing methods failed")
-                log_debug(f"   🔍 This means neither balance analysis nor log parsing found a valid trade")
-                log_debug(f"   📋 Consider checking the transaction patterns for this type")
+                log_debug(f"⚠️ NO TRADE DETECTED - No balance changes for monitored wallets")
+                log_debug(f"   🔍 Balance changes are REQUIRED for trade detection")
+                log_debug(f"   📋 No execution will occur without balance changes")
                     
         except Exception as e:
             log_debug(f"❌ ERROR in _analyze_transaction_logs: {e}")
@@ -1296,8 +1269,9 @@ class WebSocketWalletMonitor:
 
     async def _analyze_with_official_balance_method(self, signature: str, wallet_address: str, logs: List[str]) -> Optional[Dict[str, Any]]:
         """
-        INFORMATIONAL: Balance-based trade detection for additional trade details.
+        Balance-based trade detection - REQUIRED for execution.
         Uses actual balance changes to determine buy/sell/swap actions and token info.
+        NO execution without balance changes.
         
         NOTE: This method is for informational purposes only and does NOT gate execution.
         Execution is triggered by DEX instructions OR monitored wallet detection,
