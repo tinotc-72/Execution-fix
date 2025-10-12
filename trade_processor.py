@@ -3357,7 +3357,6 @@ class TradeProcessor:
             return None
         
         import re
-        from utils import is_valid_solana_address
         
         # Pattern to match Solana addresses (base58, 32-44 chars)
         address_pattern = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
