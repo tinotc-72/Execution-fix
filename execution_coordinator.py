@@ -114,12 +114,12 @@ class ExecutionCoordinator:
             executor = getattr(self, f"{executor_name}_executor", None)
             if not executor:
                 logger.error(f"❌ Executor '{executor_name}' not found")
-                return self.exec_err(f"Executor '{executor_name}' not available")
+                return exec_err(executor_name, f"Executor '{executor_name}' not available")
             
             method = getattr(executor, method_name, None)
             if not method:
                 logger.error(f"❌ Method '{method_name}' not found on {executor_name} executor")
-                return self.exec_err(f"Method '{method_name}' not available on {executor_name}")
+                return exec_err(executor_name, f"Method '{method_name}' not available on {executor_name}")
             
             logger.debug(f"🔄 Running {executor_name}.{method_name} with args={args}, kwargs={kwargs}")
             result = await method(*args, **kwargs)
@@ -130,15 +130,15 @@ class ExecutionCoordinator:
                     return result  # Already standardized
                 else:
                     # Legacy format - convert to standardized
-                    return self.exec_ok(data=result)
+                    return exec_ok(executor_name, data=result)
             else:
                 # Non-dict result - wrap it
-                return self.exec_ok(data=result)
+                return exec_ok(executor_name, data=result)
                 
         except Exception as e:
             error_msg = f"Error running {executor_name}.{method_name}: {str(e)}"
             logger.error(f"❌ {error_msg}", exc_info=True)
-            return self.exec_err(error_msg)
+            return exec_err(executor_name, error_msg)
 
     async def _execute_copy_buy(self, token_mint: str, source_wallet: str, *, amount_sol: float = 0.001, trade_info: dict = None, **kwargs) -> dict:
         """
@@ -190,7 +190,7 @@ class ExecutionCoordinator:
             self.logger.warning("⏭️ Skipped %s: %s", label, result and result.get("error"))
                 
         logger.error("❌ All executors failed")
-        return self.exec_err("All executors failed")
+        return exec_err("all_executors", "All executors failed")
 
     async def _execute_direct_copy_buy(self, token_mint: str, source_wallet: str, *, amount_sol: float = 0.001, trade_info: dict = None, **kwargs) -> dict:
         try:
@@ -671,6 +671,64 @@ class ExecutionCoordinator:
             logger.info(f"🔄 Exception fallback to Advanced MEV...")
             return await self._execute_advanced_mev_buy(token_mint, source_wallet, **kwargs)
     
+    async def _submit_with_retries(self, executor_func, *args, max_retries=3, retry_delay=1.0, **kwargs):
+        """
+        Submit transaction with retry logic and error handling
+        
+        Args:
+            executor_func: The executor function to call
+            *args: Positional arguments for executor_func
+            max_retries: Maximum number of retry attempts
+            retry_delay: Delay between retries in seconds
+            **kwargs: Keyword arguments for executor_func
+            
+        Returns:
+            Result dict from executor or error result
+        """
+        last_error = None
+        
+        # Get retries from config if available
+        if self.config:
+            max_retries = getattr(self.config, 'max_retries', max_retries)
+            retry_delay = getattr(self.config, 'retry_delay', retry_delay)
+        
+        for attempt in range(max_retries):
+            try:
+                logger.debug(f"🔄 Attempt {attempt + 1}/{max_retries} for executor")
+                result = await executor_func(*args, **kwargs)
+                
+                # Check if result indicates success
+                if result and result.get('success'):
+                    logger.debug(f"✅ Executor succeeded on attempt {attempt + 1}")
+                    return result
+                
+                # Result indicates failure, but might be retryable
+                last_error = result.get('error', 'Unknown error') if result else 'No result returned'
+                logger.warning(f"⚠️ Attempt {attempt + 1} failed: {last_error}")
+                
+                # Don't retry on last attempt
+                if attempt < max_retries - 1:
+                    logger.debug(f"⏳ Waiting {retry_delay}s before retry...")
+                    await asyncio.sleep(retry_delay)
+                    
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"❌ Exception on attempt {attempt + 1}: {e}")
+                
+                # Don't retry on last attempt
+                if attempt < max_retries - 1:
+                    logger.debug(f"⏳ Waiting {retry_delay}s before retry...")
+                    await asyncio.sleep(retry_delay)
+        
+        # All retries exhausted
+        logger.error(f"❌ All {max_retries} retry attempts failed. Last error: {last_error}")
+        return {
+            'success': False,
+            'error': f'All retry attempts failed: {last_error}',
+            'retries': max_retries
+        }
+    
+    
     async def _execute_advanced_mev_buy(self, token_mint: str, source_wallet: str, **kwargs):
         """Execute Advanced MEV Bot buy using reverse-engineered patterns"""
         try:
@@ -690,15 +748,15 @@ class ExecutionCoordinator:
                 # Add other params from trade_info or kwargs as needed
             )
             result = await self.advanced_mev_executor.execute_buy(params)
-            if result and result.get('success'):
+            if result and result.success:  # Use dot notation for dataclass
                 logger.info(f"✅ Advanced MEV Bot buy executed successfully for token {token_mint[:8]}...")
                 return {
                     'success': True,
-                    'signature': result.get('signature'),
+                    'signature': result.signature,
                     'dex': 'advanced_mev'
                 }
             else:
-                logger.error(f"❌ Advanced MEV Bot buy execution failed for token {token_mint[:8]}: {result.get('error') if result else 'Unknown error'}")
+                logger.error(f"❌ Advanced MEV Bot buy execution failed for token {token_mint[:8]}: {result.error if result else 'Unknown error'}")
                 # Fallback to direct copy if Advanced MEV Bot fails
                 logger.info(f"🔄 Falling back to direct copy for token {token_mint[:8]}...")
                 return await self._execute_direct_copy_buy(token_mint, source_wallet, **kwargs)
@@ -732,15 +790,15 @@ class ExecutionCoordinator:
             
             result = await self.advanced_mev_executor.execute_sell_all(params)
             
-            if result and result.get('success'):
+            if result and result.success:  # Use dot notation for dataclass
                 logger.info(f"✅ Advanced MEV Bot sell executed successfully for token {token_mint[:8]}...")
                 return {
                     'success': True,
-                    'signature': result.get('signature'),
+                    'signature': result.signature,
                     'dex': 'advanced_mev'
                 }
             else:
-                logger.error(f"❌ Advanced MEV Bot sell execution failed for token {token_mint[:8]}: {result.get('error') if result else 'Unknown error'}")
+                logger.error(f"❌ Advanced MEV Bot sell execution failed for token {token_mint[:8]}: {result.error if result else 'Unknown error'}")
                 # Fallback to generic sell if Advanced MEV Bot fails
                 logger.info(f"🔄 Falling back to generic sell for token {token_mint[:8]}...")
                 return await self._execute_copy_sell(token_mint, source_wallet=source_wallet, **kwargs)
@@ -765,7 +823,14 @@ class ExecutionCoordinator:
             from mev_meteora_executor import mev_meteora_copy_trade
             # Execute the MEV-protected buy
             amount_sol = kwargs.get('amount_sol', 0.001)  # Default amount matches MEV minimum
-            original_signature = kwargs.get('original_signature', '')
+            
+            # Extract source transaction signature from trade_info or kwargs
+            trade_info = kwargs.get('trade_info', {})
+            original_signature = trade_info.get('signature') if trade_info else kwargs.get('original_signature', '')
+            
+            if not original_signature:
+                logger.warning(f"⚠️ [METEORA_BUY] No source transaction signature provided - may affect execution")
+            
             # Extract keypair with proper validation
             wallet_keypair = self._get_keypair()
             self.logger.info(f"Using wallet keypair for mev_meteora_copy_trade: {type(wallet_keypair)}")
@@ -1007,8 +1072,10 @@ class ExecutionCoordinator:
             
         try:
             from mev_advanced_bot_executor import MEVAdvancedBotExecutor
-            self.logger.info(f"Initializing MEVAdvancedBotExecutor with wallet type: {type(self.wallet)}")
-            self.advanced_mev_executor = MEVAdvancedBotExecutor(self.wallet, self.rpc_client, self.jito_service)
+            # MEVAdvancedBotExecutor requires a proper Keypair, extract it from wallet
+            wallet_keypair = self._get_keypair()
+            self.logger.info(f"Initializing MEVAdvancedBotExecutor with wallet type: {type(wallet_keypair)}")
+            self.advanced_mev_executor = MEVAdvancedBotExecutor(wallet_keypair, self.rpc_client, self.jito_service)
         except ImportError:
             self.logger.warning("⚠️ MEVAdvancedBotExecutor not available")
             self.advanced_mev_executor = None
