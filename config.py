@@ -383,6 +383,27 @@ class CopyTradeConfig:
         
         logger.info("✅ All executor config fields validated successfully")
         return True
+    
+    # Dict-like methods for executor compatibility (Jupiter executor needs these)
+    def get(self, key, default=None):
+        """Get config value with default fallback (dict-like behavior)"""
+        return getattr(self, key, default)
+    
+    def __getitem__(self, key):
+        """Allow dict-style access config['key']"""
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(f"Config key '{key}' not found")
+    
+    def __setitem__(self, key, value):
+        """Allow dict-style assignment config['key'] = value"""
+        setattr(self, key, value)
+    
+    def setdefault(self, key, default=None):
+        """Set default value if key doesn't exist (dict-like behavior)"""
+        if not hasattr(self, key):
+            setattr(self, key, default)
+        return getattr(self, key)
 
 __all__ = [
     "WALLET",
