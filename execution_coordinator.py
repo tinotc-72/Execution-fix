@@ -196,11 +196,8 @@ class ExecutionCoordinator:
                 self.logger.warning(f"⚠️ Unknown executor: {label}")
                 continue
             
-            # Use standardized success check
-            if result and result.get("ok") and isinstance(result.get("signature"), str):
-                self.logger.info("✅ EXECUTED via %s — signature: %s", label, result["signature"])
-                return result
-            elif result and result.get("success") and isinstance(result.get("signature"), str):
+            # Use standardized success check - support both "ok" and "success" formats
+            if result and (result.get("ok") or result.get("success")) and isinstance(result.get("signature"), str):
                 self.logger.info("✅ EXECUTED via %s — signature: %s", label, result["signature"])
                 return result
             self.logger.warning("⏭️ Skipped %s: %s", label, result and result.get("error"))
@@ -208,27 +205,7 @@ class ExecutionCoordinator:
         logger.error("❌ All executors failed")
         return exec_err("all_executors", "All executors failed")
 
-    async def _execute_direct_copy_buy(self, token_mint: str, source_wallet: str, *, amount_sol: float = 0.001, trade_info: dict = None, **kwargs) -> dict:
-        try:
-            if not trade_info or not trade_info.get("signature"):
-                return {"success": False, "error": "no signature for direct_copy"}
-            from transaction_cloner import TransactionCloner
-            cloner = TransactionCloner(self.rpc_client, self.wallet)
-            tx = await cloner.clone_transaction(
-                signature=trade_info["signature"],
-                override_accounts={"payer": str(self._get_wallet_pubkey())}
-            )
-            if not tx:
-                return {"success": False, "error": "clone failed"}
-            ok = await self._preflight_check(tx)
-            if not ok:
-                return {"success": False, "error": "preflight failed"}
-            sig = await cloner.send_cloned_transaction(tx)
-            return {"success": True, "signature": sig} if sig else {"success": False, "error": "send failed"}
-        except Exception as e:
-            self.logger.exception("direct_copy buy failed")
-            return {"success": False, "error": str(e)}
-
+    
     async def _preflight_check(self, transaction):
         """Simulate transaction and check account status before submission."""
         try:
@@ -594,7 +571,7 @@ class ExecutionCoordinator:
             logger.error(f"❌ Error detecting token platform: {e}")
             return None  # Do not fallback, skip execution
     
-    async def _execute_direct_copy_buy(self, token_mint: str, source_wallet: str, trade_info: dict = None, **kwargs):
+    async def _execute_direct_copy_buy(self, token_mint: str, source_wallet: str, *, amount_sol: float = 0.001, trade_info: dict = None, **kwargs):
         """Execute direct copy buy using MEVDirectCopyExecutor (copies transaction structure directly)"""
         try:
             from mev_direct_copy_executor import MEVDirectCopyExecutor, MEVDirectCopyConfig
