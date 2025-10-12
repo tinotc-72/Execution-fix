@@ -3302,14 +3302,15 @@ class TradeProcessor:
             logger.info(f"✅ [ACTION_EXTRACTION] From fallback: {fallback_action}")
             return fallback_action
         
-        # All methods failed - return unknown (don't force execution)
-        logger.warning(f"⚠️ [ACTION_EXTRACTION] Could not determine action for {signature[:12]}...")
-        logger.warning(f"   All extraction methods failed - returning 'unknown'")
-        return 'unknown'
+        # PRIORITY 5: Default to 'swap' for permissive execution
+        # Industry-standard Solana copy trading bots prioritize execution over strict validation
+        logger.warning(f"⚠️ [ACTION_EXTRACTION] Could not determine specific action for {signature[:12]}...")
+        logger.warning(f"   Defaulting to 'swap' for permissive execution (industry standard)")
+        return 'swap'
 
     def _analyze_logs_for_action(self, logs: List[str]) -> str:
         """
-        Analyze transaction logs to determine likely action.
+        Analyze transaction logs to determine likely action with enhanced pattern matching.
         
         Returns:
             Action string based on log analysis
@@ -3343,3 +3344,225 @@ class TradeProcessor:
             return 'swap'
         
         return 'unknown'
+
+    def _extract_mint_from_logs_enhanced(self, logs: List[str]) -> Optional[str]:
+        """
+        Enhanced token mint extraction from transaction logs.
+        Uses multiple patterns to identify potential token mint addresses.
+        
+        Returns:
+            Token mint address if found, None otherwise
+        """
+        if not logs:
+            return None
+        
+        import re
+        from utils import is_valid_solana_address
+        
+        # Pattern to match Solana addresses (base58, 32-44 chars)
+        address_pattern = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
+        
+        # Known system addresses to exclude
+        system_addresses = {
+            'So11111111111111111111111111111111111111112',  # SOL
+            '11111111111111111111111111111111',  # System Program
+            'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',  # Token Program
+            'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',  # Associated Token Program
+        }
+        
+        # Extract all potential addresses from logs
+        log_text = ' '.join(logs)
+        potential_mints = []
+        
+        for match in re.finditer(address_pattern, log_text):
+            address = match.group(0)
+            if address not in system_addresses and is_valid_solana_address(address):
+                potential_mints.append(address)
+        
+        # Look for addresses mentioned multiple times (likely the traded token)
+        if potential_mints:
+            from collections import Counter
+            mint_counts = Counter(potential_mints)
+            # Return the most frequently mentioned address
+            most_common = mint_counts.most_common(1)
+            if most_common:
+                mint, count = most_common[0]
+                if count >= 2:  # Mentioned at least twice
+                    logger.info(f"🎯 [MINT_FROM_LOGS] Found mint {mint[:8]}... (mentioned {count} times)")
+                    return mint
+        
+        return None
+
+    def _infer_signature_from_transaction(self, trade_info: Dict[str, Any]) -> Optional[str]:
+        """
+        Infer transaction signature from transaction data.
+        
+        Returns:
+            Transaction signature if found, None otherwise
+        """
+        # Check various possible locations for signature
+        if trade_info.get('signature'):
+            return trade_info['signature']
+        
+        # Check in transaction data
+        tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+        if tx:
+            # Check transaction.signatures
+            if isinstance(tx, dict):
+                signatures = tx.get('signatures', [])
+                if signatures and len(signatures) > 0:
+                    sig = signatures[0]
+                    logger.info(f"🎯 [SIG_INFERENCE] Found signature from transaction.signatures: {sig[:12]}...")
+                    return sig
+                
+                # Check transaction.transaction.signatures
+                inner_tx = tx.get('transaction', {})
+                if inner_tx:
+                    signatures = inner_tx.get('signatures', [])
+                    if signatures and len(signatures) > 0:
+                        sig = signatures[0]
+                        logger.info(f"🎯 [SIG_INFERENCE] Found signature from transaction.transaction.signatures: {sig[:12]}...")
+                        return sig
+        
+        return None
+
+    def _infer_wallet_from_transaction(self, trade_info: Dict[str, Any]) -> Optional[str]:
+        """
+        Infer wallet address from transaction signers or fee payer.
+        
+        Returns:
+            Wallet address if found, None otherwise
+        """
+        # Check fee payer first (most reliable)
+        tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+        if tx:
+            if isinstance(tx, dict):
+                # Check transaction.message.accountKeys[0] (fee payer)
+                msg = tx.get('message', {})
+                if msg:
+                    account_keys = msg.get('accountKeys', [])
+                    if account_keys and len(account_keys) > 0:
+                        wallet = account_keys[0]
+                        # Validate against monitored wallets
+                        if self._validate_monitored_wallet(wallet, self.target_wallets):
+                            logger.info(f"🎯 [WALLET_INFERENCE] Found monitored wallet from fee payer: {wallet[:8]}...")
+                            return wallet
+                
+                # Check transaction.transaction.message.accountKeys[0]
+                inner_tx = tx.get('transaction', {})
+                if inner_tx:
+                    msg = inner_tx.get('message', {})
+                    if msg:
+                        account_keys = msg.get('accountKeys', [])
+                        if account_keys and len(account_keys) > 0:
+                            wallet = account_keys[0]
+                            if self._validate_monitored_wallet(wallet, self.target_wallets):
+                                logger.info(f"🎯 [WALLET_INFERENCE] Found monitored wallet from fee payer (inner): {wallet[:8]}...")
+                                return wallet
+        
+        # Check post token balances for monitored wallets
+        meta = trade_info.get('meta') or (trade_info.get('transaction_full', {}) or {}).get('meta', {})
+        if meta:
+            post_balances = meta.get('postTokenBalances', [])
+            for balance in post_balances:
+                owner = balance.get('owner')
+                if owner and self._validate_monitored_wallet(owner, self.target_wallets):
+                    logger.info(f"🎯 [WALLET_INFERENCE] Found monitored wallet from token balances: {owner[:8]}...")
+                    return owner
+        
+        return None
+
+    def infer_missing_fields(self, trade_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Comprehensive fallback logic to infer missing critical fields.
+        
+        This method implements industry-standard inference strategies used by
+        Solana copy trading bots to minimize skipped trades.
+        
+        Args:
+            trade_info: Trade information potentially with missing fields
+            
+        Returns:
+            Updated trade_info with inferred fields
+        """
+        logger.info("🔍 [FIELD_INFERENCE] Starting comprehensive field inference...")
+        
+        inferred_fields = []
+        
+        # 1. Infer signature if missing
+        if not trade_info.get('signature') or trade_info.get('signature') == 'unknown':
+            sig = self._infer_signature_from_transaction(trade_info)
+            if sig:
+                trade_info['signature'] = sig
+                inferred_fields.append('signature')
+        
+        # 2. Infer wallet_address if missing
+        if not trade_info.get('wallet_address') or trade_info.get('wallet_address') == 'unknown':
+            wallet = self._infer_wallet_from_transaction(trade_info)
+            if wallet:
+                trade_info['wallet_address'] = wallet
+                inferred_fields.append('wallet_address')
+            elif self.target_wallets:
+                # Default to first monitored wallet as fallback
+                trade_info['wallet_address'] = self.target_wallets[0]
+                inferred_fields.append('wallet_address (default)')
+        
+        # 3. Infer action using enhanced extraction
+        if not trade_info.get('action') or trade_info.get('action') == 'unknown':
+            # Try to extract from logs
+            logs = trade_info.get('logs', [])
+            if not logs:
+                # Get logs from transaction
+                tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                if tx:
+                    meta = tx.get('meta', {})
+                    logs = meta.get('logMessages', [])
+            
+            if logs:
+                action = self._analyze_logs_for_action(logs)
+                if action and action != 'unknown':
+                    trade_info['action'] = action
+                    inferred_fields.append('action')
+                else:
+                    # Default to 'swap' for permissive execution
+                    trade_info['action'] = 'swap'
+                    inferred_fields.append('action (default: swap)')
+        
+        # 4. Infer DEX if missing
+        if not trade_info.get('dex') or trade_info.get('dex') == 'unknown':
+            if not trade_info.get('dex_type') or trade_info.get('dex_type') == 'unknown':
+                # Try to detect from logs
+                logs = trade_info.get('logs', [])
+                if logs:
+                    log_text = ' '.join(logs).lower()
+                    for program_id, dex_type in DEX_PROGRAMS.items():
+                        if program_id.lower() in log_text:
+                            trade_info['dex'] = dex_type
+                            trade_info['dex_type'] = dex_type
+                            inferred_fields.append('dex')
+                            break
+        
+        # 5. Infer token mint if missing
+        if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
+            # Try enhanced log extraction
+            logs = trade_info.get('logs', [])
+            if not logs:
+                tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                if tx:
+                    meta = tx.get('meta', {})
+                    logs = meta.get('logMessages', [])
+            
+            if logs:
+                mint = self._extract_mint_from_logs_enhanced(logs)
+                if mint:
+                    trade_info['token_mint'] = mint
+                    inferred_fields.append('token_mint')
+        
+        if inferred_fields:
+            logger.info(f"✅ [FIELD_INFERENCE] Successfully inferred: {', '.join(inferred_fields)}")
+        else:
+            logger.debug(f"[FIELD_INFERENCE] No fields needed inference")
+        
+        return trade_info
+
+

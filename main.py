@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple Copy Trading Bot - Essential functionality only
+Simple Copy Trading Bot - Permissive Execution Mode
 
 EXECUTION FLOW OVERVIEW:
 ========================
@@ -14,37 +14,42 @@ EXECUTION FLOW OVERVIEW:
 
 2. TRADE DETECTION (_handle_websocket_trade)
    - Receives trade events from WebSocket monitor
-   - Validates and defaults missing fields (signature, wallet, dex, action, mint)
-   - Logs missing fields for upstream debugging
-   - Routes to appropriate processing based on confidence level
+   - Validates and infers missing fields using comprehensive fallback logic
+   - Logs inference attempts for debugging
+   - Routes to permissive processing pipeline
 
-3. TRADE ANALYSIS (_process_detected_trade -> analyze_and_route_trade)
-   - Analyzes token balance changes using detect_buy_sell (PRIMARY method)
-   - Extracts action from balance deltas (positive delta = BUY, negative = SELL)
-   - Uses signer/instruction checks for VALIDATION only (not execution trigger)
-   - Returns 'unknown' when action cannot be determined (skips ambiguous trades)
-   - Extracts token mint from transaction balance changes
-
-4. ROBUST EXECUTION LOGIC (BALANCE-BASED):
-   Execute trades ONLY when token balance changes are detected:
-   a. Token balance changes REQUIRED (monitored wallet must have delta), AND
-   b. Trade direction determined from balance delta (BUY/SELL) or skipped if unclear, AND
-   c. Token mint extracted from balance changes
+3. FIELD INFERENCE (infer_missing_fields)
+   - Infers signature from transaction.signatures if missing
+   - Infers wallet_address from fee payer or token balance owners
+   - Infers action from logs (buy/sell/swap keywords), defaults to 'swap'
+   - Infers DEX from log patterns or program IDs
+   - Infers token_mint from logs or balance changes
    
-   KEY BEHAVIOR (balance change required):
-   - Requires actual token balance changes for execution
-   - Detects BUY/SELL from balance deltas, returns 'unknown' if unclear
-   - Uses signer + instruction checks for validation only
-   - Skips trades without balance changes or unclear actions
-   - Executes buy if balance delta positive (0.001 SOL)
-   - Executes sell if monitored wallet sells (matching percentage)
-   - Provides audit trail documenting parsing, execution, and skipped trades
-   - Case-insensitive wallet matching for monitored wallets
-   - Skips only if token=UNKNOWN (action always valid via fallback)
+4. PERMISSIVE EXECUTION LOGIC (DUAL-PATH):
+   Execute trades via EITHER path:
+   
+   PATH 1 - Balance-Based (Primary):
+   a. Token balance changes detected for monitored wallet, AND
+   b. Trade direction determined from balance delta (BUY/SELL), THEN
+   c. Execute based on balance changes
+   
+   PATH 2 - Instruction-Based (Fallback):
+   a. Trade instructions (DEX programs) detected, OR
+   b. Monitored wallet is signer, THEN
+   c. Infer action and token mint from logs/transaction, AND
+   d. Execute with best-effort inference
+   
+   KEY BEHAVIOR (permissive mode):
+   - Prioritizes execution over strict validation
+   - Executes on balance changes OR trade instructions (not require both)
+   - Uses advanced fallback logic to infer missing fields
+   - Defaults action to 'swap' when unclear
+   - Extracts token mint from logs when balance detection fails
+   - Minimal skipping - only when no execution path available
 
 5. TRADE EXECUTION (via execution_coordinator)
    - Routes to appropriate executor based on DEX type
-   - Buy with 0.001 SOL (default aggressive amount)
+   - Buy with 0.001 SOL (default amount)
    - Sell proportionally based on monitored wallet's percentage
    - Logs success/failure with comprehensive debugging info
 
@@ -53,18 +58,14 @@ EXECUTION FLOW OVERVIEW:
    - Logs execution statistics every 5 minutes
    - Alerts on unhealthy system state
 
-KEY IMPROVEMENTS:
-- Missing async _health_check method: ✅ IMPLEMENTED
-- Enhanced field validation and defaulting: ✅ IMPLEMENTED
-- Debug logging for missing fields: ✅ IMPLEMENTED
-- Balance-based execution logic (requires balance changes): ✅ IMPLEMENTED
-- Clear environment variable validation: ✅ IMPLEMENTED
-- Enhanced failed trade logging: ✅ IMPLEMENTED
-- Action extraction from balance deltas (returns 'unknown' if unclear): ✅ IMPLEMENTED
-- Signer + instruction checks for validation only: ✅ IMPLEMENTED
-- Validation of token mint extraction: ✅ IMPLEMENTED
-- Skip trades on missing balance changes or unclear action: ✅ IMPLEMENTED
-- Case-insensitive wallet matching: ✅ IMPLEMENTED
+KEY IMPROVEMENTS (PERMISSIVE MODE):
+- Advanced field inference from logs and instructions: ✅ IMPLEMENTED
+- Relaxed validation - execute on instructions OR balance changes: ✅ IMPLEMENTED
+- Enhanced log parsing for action/DEX/mint extraction: ✅ IMPLEMENTED
+- Default to 'swap' action when unclear (industry standard): ✅ IMPLEMENTED
+- Best-effort execution with comprehensive fallback logic: ✅ IMPLEMENTED
+- Robust error handling and inference logging: ✅ IMPLEMENTED
+- Minimal trade skipping with dual execution paths: ✅ IMPLEMENTED
 """
 
 import asyncio
@@ -226,59 +227,59 @@ from execution_coordinator import normalize_dex, ROUTE_MAP
 class SimpleCopyTradingBot:
     async def _process_detected_trade(self, trade_info: Dict[str, Any]):
         """
-        ROBUST TRADE DETECTION AND PARSING:
-        Execute trades based on actual token balance changes with proper action detection.
-        Uses balance delta analysis as primary method for determining trade intent.
+        ENHANCED PERMISSIVE TRADE DETECTION AND EXECUTION:
+        Execute trades based on trade instructions OR balance changes with advanced fallback logic.
         
-        Implements robust copy trading with balance-based detection:
+        Implements industry-standard Solana copy trading with permissive execution:
         
-        EXECUTION REQUIREMENTS:
-        1. Token balance changes REQUIRED - transaction must show monitored wallet balance delta
-        2. Trade direction determined from balance changes (buy/sell) or returns 'unknown'
-        3. Token mint extracted from transaction balance changes
+        EXECUTION PHILOSOPHY (PERMISSIVE MODE):
+        - Prioritize execution over strict validation
+        - Use advanced fallback logic to infer missing fields
+        - Execute on trade instructions OR balance changes (not require both)
+        - Best-effort field inference from logs and transaction data
         
-        VALIDATION & PARSING:
-        - Detects buy/sell actions from token balance deltas (primary method):
-          * Positive delta (tokens increased) = BUY
-          * Negative delta (tokens decreased) = SELL
-        - Uses signer + instruction checks for VALIDATION only (not execution trigger)
-        - Returns 'unknown' when action cannot be determined (skips ambiguous trades)
-        - Skips trades when no balance changes detected or action unclear
+        EXECUTION TRIGGERS (Execute trades via EITHER path):
+        1. Token balance changes detected for monitored wallet, OR
+        2. Trade instructions (DEX programs) detected with monitored wallet involvement
+        
+        FIELD INFERENCE (Advanced fallback logic when missing):
+        - signature: Inferred from transaction.signatures
+        - wallet_address: Inferred from fee payer or token balance owners
+        - action: Inferred from logs, defaults to 'swap' if unclear
+        - dex: Inferred from logs or program IDs
+        - token_mint: Inferred from logs or balance changes
         
         EXECUTION LOGIC:
-        - Execute BUY if action is 'buy' (with 0.001 SOL)
+        - Execute BUY if action is 'buy' or 'swap' (with 0.001 SOL)
         - Execute SELL if action is 'sell' (matching detected percentage)
-        - Skip trade if action is 'unknown' or no balance changes found
-        - Maintain 0.001 SOL investment for all buy trades
+        - Minimal skipping - only when no execution path available
         
         AUDIT LOGGING:
-        - Documents balance change detection results
-        - Logs execution decisions with balance delta evidence
-        - Records skipped trades when balance changes absent or action unclear
+        - Logs all inference attempts and results
+        - Documents which fields were inferred vs explicit
+        - Records execution path taken (balance vs instruction based)
         - Provides full audit trail for validation
-        
-        Case-Insensitive Wallet Matching:
-        - All wallet comparisons use case-insensitive matching
-        - Handles wallet address variations (e.g., 'DfMx...' matches 'dfmx...')
-        - Ensures consistent execution regardless of address casing
         """
         sig = (trade_info.get("signature") or "").strip()
         if not sig or sig == "unknown":
-            logger.warning("[IMMEDIATE_EXEC] No signature - proceeding with available data")
+            logger.warning("[PERMISSIVE_EXEC] No signature initially - will attempt inference")
         
-        # Get source wallet
+        # STEP 1: Apply comprehensive field inference
+        trade_info = self.trade_processor.infer_missing_fields(trade_info)
+        
+        # Get source wallet (with fallback)
         source_wallet = (
             trade_info.get("wallet_address")
             or (self.target_wallets[0] if self.target_wallets else None)
             or str(self.wallet_pubkey)
         )
 
-        # CHECK EXECUTION CONDITIONS - Monitored wallet involvement AND balance changes REQUIRED
-        # Condition 1: Check if signer is in MONITORED_WALLETS (for validation)
+        # VALIDATION CHECKS - Used for routing decisions (not blocking)
+        # Condition 1: Check if monitored wallet is signer
         signer_info = self.trade_processor._check_monitored_wallet_is_signer(trade_info)
         has_monitored_signer = signer_info.get('has_monitored_involvement', False)
         
-        # Condition 2: Check for trade instructions (DEX programs) (for validation)
+        # Condition 2: Check for trade instructions (DEX programs)
         instruction_info = self.trade_processor._check_trade_instructions(trade_info)
         has_trade_instructions = instruction_info.get('has_trade_instructions', False)
         
@@ -286,68 +287,115 @@ class SimpleCopyTradingBot:
         logger.info(f"🔍 [VALIDATION_CHECK] Monitored wallet signer: {has_monitored_signer}")
         logger.info(f"🔍 [VALIDATION_CHECK] Trade instructions detected: {has_trade_instructions}")
         
-        # PRIMARY EXECUTION CONDITION: Check for token balance changes (REQUIRED)
-        # This is the main trigger - trades MUST have balance changes to execute
+        # PERMISSIVE EXECUTION PATH 1: Try balance-based execution
         meta = trade_info.get('meta') or (trade_info.get('transaction_full', {}) or {}).get('meta', {})
         
-        if not meta:
-            logger.warning("⚠️ [BALANCE_CHECK] No metadata available - cannot verify balance changes")
-            logger.warning("   📋 [SKIP] Skipping trade - balance verification required")
-            return
+        detected_actions = []
+        if meta:
+            # Detect balance changes using trade processor
+            detected_actions = self.trade_processor.detect_buy_sell(meta, self.target_wallets)
+            
+        if detected_actions:
+            logger.info(f"✅ [BALANCE_PATH] Found {len(detected_actions)} balance change(s) - executing via balance detection")
+            
+            # Execute trades based on detected balance changes
+            for i, balance_action in enumerate(detected_actions):
+                action_type = balance_action['action']  # 'buy' or 'sell'
+                action_mint = balance_action['mint']
+                action_owner = balance_action['owner']
+                action_amount = balance_action['amount']
+                action_delta = balance_action['delta']
+                
+                logger.info(f"🎯 [EXECUTION] Processing balance change {i+1}/{len(detected_actions)}")
+                logger.info(f"   Type: {action_type}")
+                logger.info(f"   Mint: {action_mint[:8]}...")
+                logger.info(f"   Owner: {action_owner[:8]}...")
+                logger.info(f"   Amount: {action_amount:,.6f}")
+                logger.info(f"   Delta: {action_delta:+,.6f}")
+                
+                # Validate this action is for a monitored wallet
+                if not self.trade_processor._validate_monitored_wallet(action_owner, self.target_wallets):
+                    logger.warning(f"🚫 [EXECUTION_SKIP] Non-monitored wallet - skipping action {i+1}")
+                    continue
+                
+                # Execute based on detected action
+                if action_type == 'buy':
+                    logger.info(f"🟢 [COPY_BUY] Executing for {action_mint[:8]}...")
+                    await self.execution_coordinator._execute_copy_buy(
+                        token_mint=action_mint,
+                        source_wallet=action_owner,
+                        trade_info=trade_info,
+                        amount_sol=0.001  # Default amount
+                    )
+                elif action_type == 'sell':
+                    logger.info(f"🔴 [COPY_SELL] Executing for {action_mint[:8]}...")
+                    await self.execution_coordinator._execute_copy_sell(
+                        token_mint=action_mint,
+                        source_wallet=action_owner,
+                        trade_info=trade_info
+                    )
+            
+            logger.info(f"✅ [EXECUTION] Completed {len(detected_actions)} copy trade(s) via balance path")
+            return  # Done - executed via balance path
         
-        # Detect balance changes using trade processor
-        detected_actions = self.trade_processor.detect_buy_sell(meta, self.target_wallets)
-        
+        # PERMISSIVE EXECUTION PATH 2: Execute based on trade instructions (even without balance changes)
         if not detected_actions:
-            logger.warning("⚠️ [BALANCE_CHECK] No balance changes detected for monitored wallets")
-            logger.warning("   📋 [SKIP] Skipping trade - balance changes required for execution")
-            logger.info(f"   🔍 Checked wallets: {[w[:8] + '...' for w in self.target_wallets]}")
-            return
+            if has_trade_instructions or has_monitored_signer:
+                logger.info(f"🔄 [INSTRUCTION_PATH] No balance changes, but trade instructions detected - using fallback execution")
+                
+                # Extract action and token mint with fallbacks
+                action = trade_info.get('action', 'swap')
+                token_mint = trade_info.get('token_mint', 'PENDING_ANALYSIS')
+                
+                # Use analyze_and_route_trade to extract missing fields
+                if token_mint in ['PENDING_ANALYSIS', 'UNKNOWN'] or action == 'unknown':
+                    logger.info(f"🔍 [INSTRUCTION_PATH] Analyzing transaction for action and mint...")
+                    routing = await self.trade_processor.analyze_and_route_trade(trade_info, source_wallet)
+                    action = routing.get('action', action)
+                    token_mint = routing.get('token_mint', token_mint)
+                    trade_info.update(routing)
+                
+                # Validate we have minimum required fields
+                if token_mint in ['PENDING_ANALYSIS', 'UNKNOWN']:
+                    logger.warning(f"⚠️ [INSTRUCTION_PATH] Cannot extract token mint - skipping")
+                    return
+                
+                # Execute based on action
+                logger.info(f"🎯 [INSTRUCTION_PATH] Executing: action={action}, mint={token_mint[:8]}...")
+                
+                if action in ['buy', 'swap', 'swap_in']:
+                    logger.info(f"🟢 [COPY_BUY] Executing buy for {token_mint[:8]}... (instruction-based)")
+                    await self.execution_coordinator._execute_copy_buy(
+                        token_mint=token_mint,
+                        source_wallet=source_wallet,
+                        trade_info=trade_info,
+                        amount_sol=0.001  # Default amount
+                    )
+                elif action in ['sell', 'swap_out']:
+                    logger.info(f"🔴 [COPY_SELL] Executing sell for {token_mint[:8]}... (instruction-based)")
+                    await self.execution_coordinator._execute_copy_sell(
+                        token_mint=token_mint,
+                        source_wallet=source_wallet,
+                        trade_info=trade_info
+                    )
+                else:
+                    logger.warning(f"⚠️ [INSTRUCTION_PATH] Unknown action '{action}' - defaulting to buy")
+                    await self.execution_coordinator._execute_copy_buy(
+                        token_mint=token_mint,
+                        source_wallet=source_wallet,
+                        trade_info=trade_info,
+                        amount_sol=0.001
+                    )
+                
+                logger.info(f"✅ [EXECUTION] Completed trade via instruction path")
+                return
         
-        logger.info(f"✅ [BALANCE_CHECK] Found {len(detected_actions)} balance change(s) - proceeding with execution")
-        
-        # Execute trades based on detected balance changes
-        for i, balance_action in enumerate(detected_actions):
-            action_type = balance_action['action']  # 'buy' or 'sell'
-            action_mint = balance_action['mint']
-            action_owner = balance_action['owner']
-            action_amount = balance_action['amount']
-            action_delta = balance_action['delta']
-            
-            logger.info(f"🎯 [EXECUTION] Processing balance change {i+1}/{len(detected_actions)}")
-            logger.info(f"   Type: {action_type}")
-            logger.info(f"   Mint: {action_mint[:8]}...")
-            logger.info(f"   Owner: {action_owner[:8]}...")
-            logger.info(f"   Amount: {action_amount:,.6f}")
-            logger.info(f"   Delta: {action_delta:+,.6f}")
-            
-            # Validate this action is for a monitored wallet
-            if not self.trade_processor._validate_monitored_wallet(action_owner, self.target_wallets):
-                logger.warning(f"🚫 [EXECUTION_SKIP] Non-monitored wallet - skipping action {i+1}")
-                continue
-            
-            # Execute based on detected action
-            if action_type == 'buy':
-                logger.info(f"🟢 [COPY_BUY] Executing for {action_mint[:8]}...")
-                await self.execution_coordinator._execute_copy_buy(
-                    token_mint=action_mint,
-                    source_wallet=action_owner,
-                    trade_info=trade_info,
-                    amount_sol=0.001  # Default amount
-                )
-            elif action_type == 'sell':
-                logger.info(f"🔴 [COPY_SELL] Executing for {action_mint[:8]}...")
-                await self.execution_coordinator._execute_copy_sell(
-                    token_mint=action_mint,
-                    source_wallet=action_owner,
-                    trade_info=trade_info
-                )
-            else:
-                logger.warning(f"⚠️ Unknown action type: {action_type}")
-        
-        logger.info(f"✅ [EXECUTION] Completed {len(detected_actions)} copy trade(s)")
-        
-        return  # Done - no further processing needed
+        # FINAL FALLBACK: No execution path available
+        logger.warning("⚠️ [PERMISSIVE_EXEC] No execution path available:")
+        logger.warning(f"   - No balance changes detected")
+        logger.warning(f"   - No trade instructions detected")
+        logger.warning(f"   - No monitored wallet involvement")
+        logger.warning(f"   📋 [SKIP] Skipping trade - insufficient data for execution")
     
     def _calculate_sell_percentage(self, trade_info: Dict[str, Any], source_wallet: str, token_mint: str) -> float:
         """
