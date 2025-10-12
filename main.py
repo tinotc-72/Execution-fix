@@ -238,11 +238,11 @@ class SimpleCopyTradingBot:
         - Execute on trade instructions OR balance changes (not require both)
         - Best-effort field inference from logs and transaction data
         
-        EXECUTION TRIGGERS (ANY of these):
+        EXECUTION TRIGGERS (Execute trades via EITHER path):
         1. Token balance changes detected for monitored wallet, OR
         2. Trade instructions (DEX programs) detected with monitored wallet involvement
         
-        FIELD INFERENCE (when missing):
+        FIELD INFERENCE (Advanced fallback logic when missing):
         - signature: Inferred from transaction.signatures
         - wallet_address: Inferred from fee payer or token balance owners
         - action: Inferred from logs, defaults to 'swap' if unclear
@@ -290,103 +290,105 @@ class SimpleCopyTradingBot:
         # PERMISSIVE EXECUTION PATH 1: Try balance-based execution
         meta = trade_info.get('meta') or (trade_info.get('transaction_full', {}) or {}).get('meta', {})
         
+        detected_actions = []
         if meta:
             # Detect balance changes using trade processor
             detected_actions = self.trade_processor.detect_buy_sell(meta, self.target_wallets)
             
-            if detected_actions:
-                logger.info(f"✅ [BALANCE_PATH] Found {len(detected_actions)} balance change(s) - executing via balance detection")
+        if detected_actions:
+            logger.info(f"✅ [BALANCE_PATH] Found {len(detected_actions)} balance change(s) - executing via balance detection")
+            
+            # Execute trades based on detected balance changes
+            for i, balance_action in enumerate(detected_actions):
+                action_type = balance_action['action']  # 'buy' or 'sell'
+                action_mint = balance_action['mint']
+                action_owner = balance_action['owner']
+                action_amount = balance_action['amount']
+                action_delta = balance_action['delta']
                 
-                # Execute trades based on detected balance changes
-                for i, balance_action in enumerate(detected_actions):
-                    action_type = balance_action['action']  # 'buy' or 'sell'
-                    action_mint = balance_action['mint']
-                    action_owner = balance_action['owner']
-                    action_amount = balance_action['amount']
-                    action_delta = balance_action['delta']
-                    
-                    logger.info(f"🎯 [EXECUTION] Processing balance change {i+1}/{len(detected_actions)}")
-                    logger.info(f"   Type: {action_type}")
-                    logger.info(f"   Mint: {action_mint[:8]}...")
-                    logger.info(f"   Owner: {action_owner[:8]}...")
-                    logger.info(f"   Amount: {action_amount:,.6f}")
-                    logger.info(f"   Delta: {action_delta:+,.6f}")
-                    
-                    # Validate this action is for a monitored wallet
-                    if not self.trade_processor._validate_monitored_wallet(action_owner, self.target_wallets):
-                        logger.warning(f"🚫 [EXECUTION_SKIP] Non-monitored wallet - skipping action {i+1}")
-                        continue
-                    
-                    # Execute based on detected action
-                    if action_type == 'buy':
-                        logger.info(f"🟢 [COPY_BUY] Executing for {action_mint[:8]}...")
-                        await self.execution_coordinator._execute_copy_buy(
-                            token_mint=action_mint,
-                            source_wallet=action_owner,
-                            trade_info=trade_info,
-                            amount_sol=0.001  # Default amount
-                        )
-                    elif action_type == 'sell':
-                        logger.info(f"🔴 [COPY_SELL] Executing for {action_mint[:8]}...")
-                        await self.execution_coordinator._execute_copy_sell(
-                            token_mint=action_mint,
-                            source_wallet=action_owner,
-                            trade_info=trade_info
-                        )
+                logger.info(f"🎯 [EXECUTION] Processing balance change {i+1}/{len(detected_actions)}")
+                logger.info(f"   Type: {action_type}")
+                logger.info(f"   Mint: {action_mint[:8]}...")
+                logger.info(f"   Owner: {action_owner[:8]}...")
+                logger.info(f"   Amount: {action_amount:,.6f}")
+                logger.info(f"   Delta: {action_delta:+,.6f}")
                 
-                logger.info(f"✅ [EXECUTION] Completed {len(detected_actions)} copy trade(s) via balance path")
-                return  # Done - executed via balance path
+                # Validate this action is for a monitored wallet
+                if not self.trade_processor._validate_monitored_wallet(action_owner, self.target_wallets):
+                    logger.warning(f"🚫 [EXECUTION_SKIP] Non-monitored wallet - skipping action {i+1}")
+                    continue
+                
+                # Execute based on detected action
+                if action_type == 'buy':
+                    logger.info(f"🟢 [COPY_BUY] Executing for {action_mint[:8]}...")
+                    await self.execution_coordinator._execute_copy_buy(
+                        token_mint=action_mint,
+                        source_wallet=action_owner,
+                        trade_info=trade_info,
+                        amount_sol=0.001  # Default amount
+                    )
+                elif action_type == 'sell':
+                    logger.info(f"🔴 [COPY_SELL] Executing for {action_mint[:8]}...")
+                    await self.execution_coordinator._execute_copy_sell(
+                        token_mint=action_mint,
+                        source_wallet=action_owner,
+                        trade_info=trade_info
+                    )
+            
+            logger.info(f"✅ [EXECUTION] Completed {len(detected_actions)} copy trade(s) via balance path")
+            return  # Done - executed via balance path
         
         # PERMISSIVE EXECUTION PATH 2: Execute based on trade instructions (even without balance changes)
-        if has_trade_instructions or has_monitored_signer:
-            logger.info(f"🔄 [INSTRUCTION_PATH] No balance changes, but trade instructions detected - using fallback execution")
-            
-            # Extract action and token mint with fallbacks
-            action = trade_info.get('action', 'swap')
-            token_mint = trade_info.get('token_mint', 'PENDING_ANALYSIS')
-            
-            # Use analyze_and_route_trade to extract missing fields
-            if token_mint in ['PENDING_ANALYSIS', 'UNKNOWN'] or action == 'unknown':
-                logger.info(f"🔍 [INSTRUCTION_PATH] Analyzing transaction for action and mint...")
-                routing = await self.trade_processor.analyze_and_route_trade(trade_info, source_wallet)
-                action = routing.get('action', action)
-                token_mint = routing.get('token_mint', token_mint)
-                trade_info.update(routing)
-            
-            # Validate we have minimum required fields
-            if token_mint in ['PENDING_ANALYSIS', 'UNKNOWN']:
-                logger.warning(f"⚠️ [INSTRUCTION_PATH] Cannot extract token mint - skipping")
+        if not detected_actions:
+            if has_trade_instructions or has_monitored_signer:
+                logger.info(f"🔄 [INSTRUCTION_PATH] No balance changes, but trade instructions detected - using fallback execution")
+                
+                # Extract action and token mint with fallbacks
+                action = trade_info.get('action', 'swap')
+                token_mint = trade_info.get('token_mint', 'PENDING_ANALYSIS')
+                
+                # Use analyze_and_route_trade to extract missing fields
+                if token_mint in ['PENDING_ANALYSIS', 'UNKNOWN'] or action == 'unknown':
+                    logger.info(f"🔍 [INSTRUCTION_PATH] Analyzing transaction for action and mint...")
+                    routing = await self.trade_processor.analyze_and_route_trade(trade_info, source_wallet)
+                    action = routing.get('action', action)
+                    token_mint = routing.get('token_mint', token_mint)
+                    trade_info.update(routing)
+                
+                # Validate we have minimum required fields
+                if token_mint in ['PENDING_ANALYSIS', 'UNKNOWN']:
+                    logger.warning(f"⚠️ [INSTRUCTION_PATH] Cannot extract token mint - skipping")
+                    return
+                
+                # Execute based on action
+                logger.info(f"🎯 [INSTRUCTION_PATH] Executing: action={action}, mint={token_mint[:8]}...")
+                
+                if action in ['buy', 'swap', 'swap_in']:
+                    logger.info(f"🟢 [COPY_BUY] Executing buy for {token_mint[:8]}... (instruction-based)")
+                    await self.execution_coordinator._execute_copy_buy(
+                        token_mint=token_mint,
+                        source_wallet=source_wallet,
+                        trade_info=trade_info,
+                        amount_sol=0.001  # Default amount
+                    )
+                elif action in ['sell', 'swap_out']:
+                    logger.info(f"🔴 [COPY_SELL] Executing sell for {token_mint[:8]}... (instruction-based)")
+                    await self.execution_coordinator._execute_copy_sell(
+                        token_mint=token_mint,
+                        source_wallet=source_wallet,
+                        trade_info=trade_info
+                    )
+                else:
+                    logger.warning(f"⚠️ [INSTRUCTION_PATH] Unknown action '{action}' - defaulting to buy")
+                    await self.execution_coordinator._execute_copy_buy(
+                        token_mint=token_mint,
+                        source_wallet=source_wallet,
+                        trade_info=trade_info,
+                        amount_sol=0.001
+                    )
+                
+                logger.info(f"✅ [EXECUTION] Completed trade via instruction path")
                 return
-            
-            # Execute based on action
-            logger.info(f"🎯 [INSTRUCTION_PATH] Executing: action={action}, mint={token_mint[:8]}...")
-            
-            if action in ['buy', 'swap', 'swap_in']:
-                logger.info(f"🟢 [COPY_BUY] Executing buy for {token_mint[:8]}... (instruction-based)")
-                await self.execution_coordinator._execute_copy_buy(
-                    token_mint=token_mint,
-                    source_wallet=source_wallet,
-                    trade_info=trade_info,
-                    amount_sol=0.001  # Default amount
-                )
-            elif action in ['sell', 'swap_out']:
-                logger.info(f"🔴 [COPY_SELL] Executing sell for {token_mint[:8]}... (instruction-based)")
-                await self.execution_coordinator._execute_copy_sell(
-                    token_mint=token_mint,
-                    source_wallet=source_wallet,
-                    trade_info=trade_info
-                )
-            else:
-                logger.warning(f"⚠️ [INSTRUCTION_PATH] Unknown action '{action}' - defaulting to buy")
-                await self.execution_coordinator._execute_copy_buy(
-                    token_mint=token_mint,
-                    source_wallet=source_wallet,
-                    trade_info=trade_info,
-                    amount_sol=0.001
-                )
-            
-            logger.info(f"✅ [EXECUTION] Completed trade via instruction path")
-            return
         
         # FINAL FALLBACK: No execution path available
         logger.warning("⚠️ [PERMISSIVE_EXEC] No execution path available:")
