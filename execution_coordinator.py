@@ -151,6 +151,14 @@ class ExecutionCoordinator:
         trade_info = trade_info or {}
         dex_key = normalize_dex(trade_info.get("dex_type") or "unknown")
         
+        # Log trade info summary for debugging
+        self.logger.info(f"📊 [EXECUTION] Trade info summary:")
+        self.logger.info(f"   - Token: {token_mint[:8] if token_mint else 'N/A'}...")
+        self.logger.info(f"   - Signature: {trade_info.get('signature', 'N/A')[:12] if trade_info.get('signature') else 'N/A'}...")
+        self.logger.info(f"   - DEX: {dex_key}")
+        self.logger.info(f"   - Action: {trade_info.get('action', 'N/A')}")
+        self.logger.info(f"   - Amount: {amount_sol} SOL")
+        
         # E) Enhanced signature-based routing: Use specific plan when signature is present
         signature = (trade_info.get("signature") or "").strip()
         if signature:
@@ -164,27 +172,32 @@ class ExecutionCoordinator:
             self.logger.debug(f"[COPY BUY] Plan: {plan}")
         self.logger.info(f"[COPY BUY] detected_dex={dex_key} plan={plan}")
         
-        for label in plan:
-            self.logger.info("🎯 Trying executor: %s", label)
+        for idx, label in enumerate(plan, 1):
+            self.logger.info(f"🎯 [{idx}/{len(plan)}] Attempting executor: {label}")
             
             # Use standardized executor routing
             result = None
             if label == "jupiter":
+                self.logger.info(f"   → Calling Jupiter executor...")
                 result = await self._execute_jupiter_buy(token_mint, amount_sol, trade_info)
             elif label == "direct_copy":
+                self.logger.info(f"   → Calling Direct Copy executor...")
                 result = await self._execute_direct_copy_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
             elif label == "raydium":
+                self.logger.info(f"   → Calling Raydium executor...")
                 result = await self._execute_raydium_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
             elif label == "meteora":
+                self.logger.info(f"   → Calling Meteora executor...")
                 result = await self._execute_meteora_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
             elif label == "advanced_mev":
+                self.logger.info(f"   → Calling Advanced MEV executor...")
                 result = await self._execute_advanced_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
             else:
                 self.logger.warning(f"⚠️ Unknown executor: {label}")
                 continue
             
-            # Use standardized success check
-            if result and result.get("ok") and isinstance(result.get("signature"), str):
+            # Use standardized success check - support both "ok" and "success" formats
+            if result and (result.get("ok") or result.get("success")) and isinstance(result.get("signature"), str):
                 self.logger.info("✅ EXECUTED via %s — signature: %s", label, result["signature"])
                 return result
             self.logger.warning("⏭️ Skipped %s: %s", label, result and result.get("error"))
@@ -192,27 +205,7 @@ class ExecutionCoordinator:
         logger.error("❌ All executors failed")
         return exec_err("all_executors", "All executors failed")
 
-    async def _execute_direct_copy_buy(self, token_mint: str, source_wallet: str, *, amount_sol: float = 0.001, trade_info: dict = None, **kwargs) -> dict:
-        try:
-            if not trade_info or not trade_info.get("signature"):
-                return {"success": False, "error": "no signature for direct_copy"}
-            from transaction_cloner import TransactionCloner
-            cloner = TransactionCloner(self.rpc_client, self.wallet)
-            tx = await cloner.clone_transaction(
-                signature=trade_info["signature"],
-                override_accounts={"payer": str(self._get_wallet_pubkey())}
-            )
-            if not tx:
-                return {"success": False, "error": "clone failed"}
-            ok = await self._preflight_check(tx)
-            if not ok:
-                return {"success": False, "error": "preflight failed"}
-            sig = await cloner.send_cloned_transaction(tx)
-            return {"success": True, "signature": sig} if sig else {"success": False, "error": "send failed"}
-        except Exception as e:
-            self.logger.exception("direct_copy buy failed")
-            return {"success": False, "error": str(e)}
-
+    
     async def _preflight_check(self, transaction):
         """Simulate transaction and check account status before submission."""
         try:
@@ -578,7 +571,7 @@ class ExecutionCoordinator:
             logger.error(f"❌ Error detecting token platform: {e}")
             return None  # Do not fallback, skip execution
     
-    async def _execute_direct_copy_buy(self, token_mint: str, source_wallet: str, trade_info: dict = None, **kwargs):
+    async def _execute_direct_copy_buy(self, token_mint: str, source_wallet: str, *, amount_sol: float = 0.001, trade_info: dict = None, **kwargs):
         """Execute direct copy buy using MEVDirectCopyExecutor (copies transaction structure directly)"""
         try:
             from mev_direct_copy_executor import MEVDirectCopyExecutor, MEVDirectCopyConfig

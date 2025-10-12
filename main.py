@@ -793,7 +793,12 @@ class SimpleCopyTradingBot:
                         logger.error(f"[DEBUG] Exception in simple_trade_analysis: {e}")
                         return
 
-            # Validate and process
+            # STEP 1: Infer missing fields before validation
+            logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
+            trade_info = self.trade_processor.infer_missing_fields(trade_info)
+            logger.debug(f"[DEBUG] After infer_missing_fields: {json.dumps(trade_info, default=str)}")
+            
+            # STEP 2: Validate and process
             logger.debug(f"[DEBUG] Before validate_trade_info: {json.dumps(trade_info, default=str)}")
             is_valid = self.trade_processor.validate_trade_info(trade_info)
             logger.debug(f"[DEBUG] validate_trade_info result: {is_valid}")
@@ -805,6 +810,8 @@ class SimpleCopyTradingBot:
         except asyncio.TimeoutError:
             logger.warning("⏰ Trade handling timeout - processing anyway")
             logger.debug(f"[DEBUG] Timeout trade_info: {json.dumps(trade_info, default=str)}")
+            # Infer missing fields before validation (timeout case)
+            trade_info = self.trade_processor.infer_missing_fields(trade_info)
             # Process with available info
             is_valid = self.trade_processor.validate_trade_info(trade_info)
             logger.debug(f"[DEBUG] validate_trade_info (timeout) result: {is_valid}")
