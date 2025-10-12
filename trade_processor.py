@@ -1488,115 +1488,87 @@ class TradeProcessor:
 
     def _try_signer_instruction_fallback(self, trade_info: Dict[str, Any]) -> str:
         """
-        ENHANCED fallback method to determine trade action using signer and instruction analysis.
+        Fallback method to help determine trade action when balance delta detection is inconclusive.
         
-        This method is called when primary token balance delta detection fails to determine
-        the trade action. It implements a more permissive approach to handle incomplete 
-        upstream data while still ensuring monitored wallets are involved.
+        This method provides ADDITIONAL validation and context for action detection.
+        It does NOT bypass balance change requirements.
         
-        Fallback Conditions (OR logic - either condition triggers execution):
-        1. Monitored Wallet Involvement: A monitored wallet is the transaction signer/fee payer
-        2. Trade Instructions: Transaction contains recognized DEX/swap program instructions
+        Usage: Called when balance detection has identified changes but action is ambiguous.
+        
+        Validation Checks:
+        1. Monitored Wallet Involvement: Verifies a monitored wallet is the transaction signer/fee payer
+        2. Trade Instructions: Confirms transaction contains recognized DEX/swap program instructions
         
         Action Determination Strategy:
         1. Analyze transaction logs for explicit action indicators (buy/sell/swap)
-        2. If logs are inconclusive, infer action from detected program types
-        3. Default to 'swap' action to enable DEX routing in execution coordinator
-        
-        The 'swap' default is safe because:
-        - The execution coordinator will determine exact action from balance changes
-        - DEX routing logic can handle generic swap actions
-        - It prevents unnecessary trade skipping when action is determinable later
+        2. If logs are inconclusive, return 'unknown' (don't force execution)
         
         Args:
             trade_info (Dict[str, Any]): Trade information containing transaction data
         
         Returns:
             str: Action string - 'buy', 'sell', 'swap', or 'unknown'
-                'unknown' is only returned if neither fallback condition is met
+                'unknown' is returned when action cannot be determined with confidence
         
         Note:
-            This method prioritizes execution over precision. If conditions indicate a trade
-            is happening (monitored wallet + DEX programs), it allows execution to proceed
-            with a generic 'swap' action, trusting downstream logic to refine the action.
+            This method is used for ACTION DETECTION ONLY, not execution gating.
+            Balance changes are still required for execution - this just helps determine
+            what type of action (buy/sell/swap) occurred.
         """
         try:
             signature = trade_info.get('signature', 'N/A')
-            logger.debug(f"🔄 [SIGNER_FALLBACK] Analyzing {signature[:12]}... for signer + instruction patterns")
+            logger.debug(f"🔄 [ACTION_FALLBACK] Analyzing {signature[:12]}... for action determination")
             
-            # Check if monitored wallet is signer/fee payer
+            # Check if monitored wallet is signer/fee payer (for validation)
             signer_info = self._check_monitored_wallet_is_signer(trade_info)
             
-            # Check for trade instructions
+            # Check for trade instructions (for validation)
             instruction_info = self._check_trade_instructions(trade_info)
             
             has_monitored_involvement = signer_info.get('has_monitored_involvement', False)
             has_trade_instructions = instruction_info.get('has_trade_instructions', False)
             
-            logger.debug(f"🔍 [SIGNER_FALLBACK] Monitored involvement: {has_monitored_involvement}")
-            logger.debug(f"🔍 [SIGNER_FALLBACK] Trade instructions: {has_trade_instructions}")
+            logger.debug(f"🔍 [ACTION_FALLBACK] Monitored involvement: {has_monitored_involvement}")
+            logger.debug(f"🔍 [ACTION_FALLBACK] Trade instructions: {has_trade_instructions}")
             
-            # ENHANCED: More permissive condition - allow execution if EITHER condition is met
-            # This helps handle cases where upstream data is incomplete but a trade is clearly happening
-            if has_monitored_involvement or has_trade_instructions:
-                logger.info(f"✅ [SIGNER_FALLBACK] At least one fallback condition met (signer or trade instruction)")
+            # Both conditions should be present for confident action detection
+            if has_monitored_involvement and has_trade_instructions:
+                logger.info(f"✅ [ACTION_FALLBACK] Validation conditions met - attempting action detection")
                 
-                # Log which condition triggered execution for debugging
+                # Log validation details
                 if has_monitored_involvement:
                     monitored_wallets = signer_info.get('monitored_wallets', [])
-                    logger.info(f"   ✅ Condition 1: Monitored wallet involvement detected ({len(monitored_wallets)} wallet(s))")
+                    logger.info(f"   ✅ Monitored wallet involvement: {len(monitored_wallets)} wallet(s)")
                 if has_trade_instructions:
                     detected_programs = instruction_info.get('detected_programs', [])
-                    logger.info(f"   ✅ Condition 2: Trade instructions found ({len(detected_programs)} program(s))")
+                    logger.info(f"   ✅ Trade instructions found: {len(detected_programs)} program(s)")
                 
-                # Strategy 1: Try to determine specific action from transaction logs
+                # Try to determine specific action from transaction logs
                 relevant_logs = instruction_info.get('relevant_logs', [])
                 action_from_logs = self._analyze_logs_for_action(relevant_logs)
                 
                 if action_from_logs and action_from_logs != 'unknown':
-                    logger.info(f"🎯 [SIGNER_FALLBACK] Specific action detected from logs: {action_from_logs}")
+                    logger.info(f"🎯 [ACTION_FALLBACK] Action detected from logs: {action_from_logs}")
                     return action_from_logs
                 
-                # Strategy 2: Infer action from detected program types
-                # Even if we can't determine specific action from logs,
-                # we can infer action type from program type
-                detected_programs = instruction_info.get('detected_programs', [])
-                if detected_programs:
-                    primary_program = detected_programs[0]
-                    program_name = primary_program.get('program_name', 'unknown')
-                    
-                    # Map program types to likely actions
-                    # Most DEX swaps involve buying when monitored wallet is involved
-                    logger.info(f"🎯 [SIGNER_FALLBACK] Inferring action from program: {program_name}")
-                    
-                    # Default to 'swap' to allow execution with DEX routing
-                    # The execution coordinator will determine the exact action based on balance changes
-                    logger.info(f"🎯 [SIGNER_FALLBACK] Defaulting to 'swap' for {program_name} (allows DEX routing)")
-                    return 'swap'
-                
-                # Strategy 3: If we have monitored involvement but no trade instructions,
-                # still allow execution with 'swap' default
-                if has_monitored_involvement:
-                    logger.info(f"🎯 [SIGNER_FALLBACK] Monitored wallet involvement confirmed - defaulting to 'swap'")
-                    return 'swap'
+                # If logs are inconclusive, return unknown
+                # Don't force a default action - let balance detection handle it
+                logger.debug(f"🔍 [ACTION_FALLBACK] Logs inconclusive - returning unknown")
+                return 'unknown'
                     
             else:
-                # Neither condition met - provide detailed debugging info
-                logger.debug(f"🚫 [SIGNER_FALLBACK] Neither fallback condition met - skipping fallback")
+                # Validation failed - return unknown
+                logger.debug(f"🚫 [ACTION_FALLBACK] Validation conditions not met")
                 if not has_monitored_involvement:
                     logger.debug(f"   - No monitored wallet involvement")
-                    logger.debug(f"     Fee payer: {signer_info.get('fee_payer', 'None')[:8] if signer_info.get('fee_payer') else 'None'}...")
-                    logger.debug(f"     Signers: {len(signer_info.get('signers', []))}")
                 if not has_trade_instructions:
                     logger.debug(f"   - No trade instructions detected")
-                    logger.debug(f"     Total instructions: {instruction_info.get('total_instructions', 0)}")
-            
-            return 'unknown'
+                return 'unknown'
             
         except Exception as e:
-            logger.error(f"❌ [SIGNER_FALLBACK] Error in fallback analysis: {e}")
+            logger.error(f"❌ [ACTION_FALLBACK] Error in fallback analysis: {e}")
             import traceback
-            logger.debug(f"[SIGNER_FALLBACK] Stack trace: {traceback.format_exc()}")
+            logger.debug(f"[ACTION_FALLBACK] Stack trace: {traceback.format_exc()}")
             return 'unknown'
     
     async def _determine_execution_strategy(self, trade_info: Dict[str, Any], action: str) -> Dict[str, Any]:
@@ -3285,33 +3257,55 @@ class TradeProcessor:
 
     def _extract_action_with_fallback(self, trade_info: Dict[str, Any]) -> str:
         """
-        ULTRA-AGGRESSIVE: Always return a valid action for immediate execution.
+        Enhanced action extraction with proper fallback to balance delta detection.
         
-        Priority:
-        1. Use existing action if available
-        2. Default to 'swap' for ANY trade
+        Priority order:
+        1. Token balance delta detection (primary method - from detect_buy_sell)
+        2. Existing action field if valid
+        3. Basic analysis fields
+        4. Signer + instruction fallback (validation only)
+        5. Return 'unknown' if all methods fail
         
-        Never returns 'unknown' - always provides executable action.
+        Returns:
+            Action string: 'buy', 'sell', 'swap', or 'unknown'
         """
         signature = trade_info.get('signature', 'N/A')
+        logger.info(f"🧠 [ACTION_EXTRACTION] Starting for {signature[:12]}...")
         
-        # Try existing action first
+        # PRIORITY 1: Use balance delta detection results if available
+        detected_actions = trade_info.get('detected_balance_actions', [])
+        if detected_actions:
+            primary_action = detected_actions[0]
+            action = primary_action['action']
+            logger.info(f"✅ [ACTION_EXTRACTION] From balance delta: {action}")
+            return action
+        
+        # PRIORITY 2: Check existing action field
         action = trade_info.get('action')
         if action and action.lower() in ['buy', 'sell', 'swap', 'swap_in', 'swap_out']:
-            logger.info(f"⚡ [ACTION] Using existing action: {action.lower()}")
-            return action.lower()
+            # Validate it's not from ultra_aggressive assumption
+            if trade_info.get('method') != 'ultra_aggressive_assumption':
+                logger.info(f"✅ [ACTION_EXTRACTION] From existing field: {action.lower()}")
+                return action.lower()
         
-        # Try basic analysis
+        # PRIORITY 3: Try basic analysis
         if 'basic_analysis' in trade_info:
             basic_action = trade_info['basic_analysis'].get('likely_action')
             if basic_action and basic_action.lower() in ['buy', 'sell', 'swap']:
-                logger.info(f"⚡ [ACTION] From basic_analysis: {basic_action.lower()}")
+                logger.info(f"✅ [ACTION_EXTRACTION] From basic_analysis: {basic_action.lower()}")
                 return basic_action.lower()
         
-        # AGGRESSIVE MODE: Default to 'swap' even without DEX detection
-        logger.warning(f"⚠️ [ACTION_EXTRACTION] NO DEX PROGRAMS DETECTED - but executing anyway")
-        logger.info(f"🚀 AGGRESSIVE EXECUTION: Defaulting to 'swap' for immediate execution")
-        return 'swap'
+        # PRIORITY 4: Try signer + instruction fallback (validation only)
+        logger.debug(f"🔄 [ACTION_EXTRACTION] Trying fallback method...")
+        fallback_action = self._try_signer_instruction_fallback(trade_info)
+        if fallback_action and fallback_action != 'unknown':
+            logger.info(f"✅ [ACTION_EXTRACTION] From fallback: {fallback_action}")
+            return fallback_action
+        
+        # All methods failed - return unknown (don't force execution)
+        logger.warning(f"⚠️ [ACTION_EXTRACTION] Could not determine action for {signature[:12]}...")
+        logger.warning(f"   All extraction methods failed - returning 'unknown'")
+        return 'unknown'
 
     def _analyze_logs_for_action(self, logs: List[str]) -> str:
         """
