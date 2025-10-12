@@ -151,6 +151,14 @@ class ExecutionCoordinator:
         trade_info = trade_info or {}
         dex_key = normalize_dex(trade_info.get("dex_type") or "unknown")
         
+        # Log trade info summary for debugging
+        self.logger.info(f"📊 [EXECUTION] Trade info summary:")
+        self.logger.info(f"   - Token: {token_mint[:8] if token_mint else 'N/A'}...")
+        self.logger.info(f"   - Signature: {trade_info.get('signature', 'N/A')[:12] if trade_info.get('signature') else 'N/A'}...")
+        self.logger.info(f"   - DEX: {dex_key}")
+        self.logger.info(f"   - Action: {trade_info.get('action', 'N/A')}")
+        self.logger.info(f"   - Amount: {amount_sol} SOL")
+        
         # E) Enhanced signature-based routing: Use specific plan when signature is present
         signature = (trade_info.get("signature") or "").strip()
         if signature:
@@ -164,20 +172,25 @@ class ExecutionCoordinator:
             self.logger.debug(f"[COPY BUY] Plan: {plan}")
         self.logger.info(f"[COPY BUY] detected_dex={dex_key} plan={plan}")
         
-        for label in plan:
-            self.logger.info("🎯 Trying executor: %s", label)
+        for idx, label in enumerate(plan, 1):
+            self.logger.info(f"🎯 [{idx}/{len(plan)}] Attempting executor: {label}")
             
             # Use standardized executor routing
             result = None
             if label == "jupiter":
+                self.logger.info(f"   → Calling Jupiter executor...")
                 result = await self._execute_jupiter_buy(token_mint, amount_sol, trade_info)
             elif label == "direct_copy":
+                self.logger.info(f"   → Calling Direct Copy executor...")
                 result = await self._execute_direct_copy_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
             elif label == "raydium":
+                self.logger.info(f"   → Calling Raydium executor...")
                 result = await self._execute_raydium_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
             elif label == "meteora":
+                self.logger.info(f"   → Calling Meteora executor...")
                 result = await self._execute_meteora_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
             elif label == "advanced_mev":
+                self.logger.info(f"   → Calling Advanced MEV executor...")
                 result = await self._execute_advanced_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
             else:
                 self.logger.warning(f"⚠️ Unknown executor: {label}")
@@ -185,6 +198,9 @@ class ExecutionCoordinator:
             
             # Use standardized success check
             if result and result.get("ok") and isinstance(result.get("signature"), str):
+                self.logger.info("✅ EXECUTED via %s — signature: %s", label, result["signature"])
+                return result
+            elif result and result.get("success") and isinstance(result.get("signature"), str):
                 self.logger.info("✅ EXECUTED via %s — signature: %s", label, result["signature"])
                 return result
             self.logger.warning("⏭️ Skipped %s: %s", label, result and result.get("error"))

@@ -3506,7 +3506,22 @@ class TradeProcessor:
                 trade_info['signature'] = sig
                 inferred_fields.append('signature')
         
-        # 2. Infer wallet_address if missing
+        # 2. Fetch transaction data if we have signature but no transaction
+        sig = trade_info.get('signature')
+        if sig and sig != 'unknown' and not trade_info.get('transaction'):
+            try:
+                logger.info(f"🔄 [FIELD_INFERENCE] Fetching transaction data for signature {sig[:12]}...")
+                from utils import get_transaction_with_logs
+                tx_data = get_transaction_with_logs(sig)
+                if tx_data:
+                    trade_info['transaction'] = tx_data
+                    trade_info['transaction_full'] = tx_data
+                    inferred_fields.append('transaction (fetched)')
+                    logger.info(f"✅ [FIELD_INFERENCE] Successfully fetched transaction data")
+            except Exception as e:
+                logger.warning(f"⚠️ [FIELD_INFERENCE] Failed to fetch transaction: {e}")
+        
+        # 3. Infer wallet_address if missing
         if not trade_info.get('wallet_address') or trade_info.get('wallet_address') == 'unknown':
             wallet = self._infer_wallet_from_transaction(trade_info)
             if wallet:
@@ -3517,7 +3532,7 @@ class TradeProcessor:
                 trade_info['wallet_address'] = self.target_wallets[0]
                 inferred_fields.append('wallet_address (default)')
         
-        # 3. Infer action using enhanced extraction
+        # 4. Infer action using enhanced extraction
         if not trade_info.get('action') or trade_info.get('action') == 'unknown':
             # Try to extract from logs
             logs = trade_info.get('logs', [])
@@ -3537,12 +3552,22 @@ class TradeProcessor:
                     # Default to 'swap' for permissive execution
                     trade_info['action'] = 'swap'
                     inferred_fields.append('action (default: swap)')
+            else:
+                # No logs available, default to swap
+                trade_info['action'] = 'swap'
+                inferred_fields.append('action (default: swap, no logs)')
         
-        # 4. Infer DEX if missing
+        # 5. Infer DEX if missing
         if not trade_info.get('dex') or trade_info.get('dex') == 'unknown':
             if not trade_info.get('dex_type') or trade_info.get('dex_type') == 'unknown':
                 # Try to detect from logs
                 logs = trade_info.get('logs', [])
+                if not logs:
+                    tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                    if tx:
+                        meta = tx.get('meta', {})
+                        logs = meta.get('logMessages', [])
+                
                 if logs:
                     log_text = ' '.join(logs).lower()
                     for program_id, dex_type in DEX_PROGRAMS.items():
@@ -3551,8 +3576,25 @@ class TradeProcessor:
                             trade_info['dex_type'] = dex_type
                             inferred_fields.append('dex')
                             break
+                    
+                    # If still not found, try to detect from program invocations in transaction
+                    if not trade_info.get('dex') or trade_info.get('dex') == 'unknown':
+                        tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                        if tx and isinstance(tx, dict):
+                            instructions = tx.get('transaction', {}).get('message', {}).get('instructions', [])
+                            account_keys = tx.get('transaction', {}).get('message', {}).get('accountKeys', [])
+                            
+                            for ix in instructions:
+                                prog_idx = ix.get('programIdIndex')
+                                if prog_idx is not None and prog_idx < len(account_keys):
+                                    prog_id = account_keys[prog_idx]
+                                    if prog_id in DEX_PROGRAMS:
+                                        trade_info['dex'] = DEX_PROGRAMS[prog_id]
+                                        trade_info['dex_type'] = DEX_PROGRAMS[prog_id]
+                                        inferred_fields.append('dex (from instructions)')
+                                        break
         
-        # 5. Infer token mint if missing
+        # 6. Infer token mint if missing
         if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
             # Try enhanced log extraction
             logs = trade_info.get('logs', [])
