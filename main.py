@@ -227,37 +227,35 @@ from execution_coordinator import normalize_dex, ROUTE_MAP
 class SimpleCopyTradingBot:
     async def _process_detected_trade(self, trade_info: Dict[str, Any]):
         """
-        ROBUST TRADE EXECUTION WITH FALLBACK MECHANISM:
-        Execute trades using robust fallback logic that ensures actionable results.
-        Uses proven fallback patterns to maximize execution while maintaining safety.
+        ROBUST TRADE DETECTION AND PARSING:
+        Execute trades based on actual token balance changes with proper action detection.
+        Uses balance delta analysis as primary method for determining trade intent.
         
-        Implements robust copy trading with fallback mechanism:
+        Implements robust copy trading with balance-based detection:
         
         EXECUTION REQUIREMENTS:
-        1. Transaction must contain DEX instructions OR be signed by monitored wallet
-        2. Trade direction guaranteed via robust fallback (defaults to 'swap' if ambiguous)
-        3. Token mint must be extractable from transaction data
+        1. Token balance changes REQUIRED - transaction must show monitored wallet balance delta
+        2. Trade direction determined from balance changes (buy/sell) or returns 'unknown'
+        3. Token mint extracted from transaction balance changes
         
-        VALIDATION & PARSING WITH FALLBACK:
-        - Extracts action using robust fallback mechanism (_extract_action_with_fallback):
-          * Primary: Uses existing action field if valid
-          * Secondary: Uses basic analysis fields
-          * Fallback: Defaults to 'swap' (NEVER returns 'unknown')
-        - Extracts token mint from transaction data/balances
-        - Validates token mint is extractable before execution
-        - Skips ONLY if token cannot be extracted (action always valid via fallback)
+        VALIDATION & PARSING:
+        - Detects buy/sell actions from token balance deltas (primary method):
+          * Positive delta (tokens increased) = BUY
+          * Negative delta (tokens decreased) = SELL
+        - Uses signer + instruction checks for VALIDATION only (not execution trigger)
+        - Returns 'unknown' when action cannot be determined (skips ambiguous trades)
+        - Skips trades when no balance changes detected or action unclear
         
         EXECUTION LOGIC:
-        - Execute BUY if action is 'buy' or 'swap_in' (with 0.001 SOL)
-        - Execute SELL if action is 'sell' or 'swap_out' (matching percentage)
-        - Execute SWAP if action is 'swap' (defaults to buy with 0.001 SOL)
+        - Execute BUY if action is 'buy' (with 0.001 SOL)
+        - Execute SELL if action is 'sell' (matching detected percentage)
+        - Skip trade if action is 'unknown' or no balance changes found
         - Maintain 0.001 SOL investment for all buy trades
-        - Skip trades ONLY if token mint cannot be extracted
         
         AUDIT LOGGING:
-        - Documents trade parsing results
-        - Logs execution decisions with reasoning
-        - Records skipped trades with specific reasons (token extraction failures only)
+        - Documents balance change detection results
+        - Logs execution decisions with balance delta evidence
+        - Records skipped trades when balance changes absent or action unclear
         - Provides full audit trail for validation
         
         Case-Insensitive Wallet Matching:
