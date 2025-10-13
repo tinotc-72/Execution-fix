@@ -613,12 +613,13 @@ class ExecutionCoordinator:
                 max_copy_time_ms=500.0,
                 jito_tip_amount=100_000
             )
-            # Get private key
+            # Get env_keys object and private key
             import env_keys
             env = env_keys.EnvKeys()
             private_key = env.PHANTOM_PRIVATE_KEY
             self.logger.info(f"Creating MEVDirectCopyExecutor with private key from env_keys")
-            executor = MEVDirectCopyExecutor(private_key, config, jito_service=self.jito_service)
+            # Pass env_keys object to executor
+            executor = MEVDirectCopyExecutor(private_key, config, jito_service=self.jito_service, env_keys=env)
             # Fetch original transaction data
             original_signature = None
             if trade_info:
