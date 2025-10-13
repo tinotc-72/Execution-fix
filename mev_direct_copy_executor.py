@@ -232,8 +232,18 @@ class MEVDirectCopyExecutor:
             for i, account_index in enumerate(accounts_list):
                 logger.info(f"[ORIG IX {ix_idx}]   idx {i}: {account_keys[account_index]}")
             if program_id_str == str(ATA_PROGRAM_ID):
-                if len(accounts_list) > 1:
+                # Add bounds checks for ATA instruction accounts
+                if len(accounts_list) > 1 and accounts_list[1] < len(account_keys):
                     mint_pubkey = Pubkey.from_string(account_keys[accounts_list[1]])
+                else:
+                    logger.warning(f"[COPY EXECUTOR] Skipping ATA instruction {ix_idx}: insufficient accounts or out of bounds")
+                    continue
+                
+                if accounts_list[0] >= len(account_keys):
+                    logger.warning(f"[COPY EXECUTOR] Skipping ATA instruction {ix_idx}: account[0] index out of bounds")
+                    continue
+                
+                if True:  # Continue with ATA processing
                     ata_address, _ = Pubkey.find_program_address(
                         [bytes(user_wallet), bytes(TOKEN_PROGRAM_ID), bytes(mint_pubkey)],
                         ATA_PROGRAM_ID
@@ -258,6 +268,10 @@ class MEVDirectCopyExecutor:
                 accounts_list = ix_data.get('accounts', [])
                 logger.info(f"[PATCH IX {ix_idx}] Program: {program_id_str}")
                 for i, account_index in enumerate(accounts_list):
+                    # Add bounds check for account_index
+                    if account_index >= len(account_keys):
+                        logger.warning(f"[PATCH IX {ix_idx}] Skipping account {i}: index {account_index} out of bounds (len={len(account_keys)})")
+                        continue
                     logger.info(f"[PATCH IX {ix_idx}]   idx {i}: {account_keys[account_index]}")
                 # Check ATA creation: only create if ATA doesn't already exist
                 if program_id_str == str(ATA_PROGRAM_ID):
@@ -453,6 +467,10 @@ class MEVDirectCopyExecutor:
                 # Log all original instruction accounts
                 logger.info(f"[ORIG IX {ix_idx}] Program: {program_id_str}")
                 for i, account_index in enumerate(accounts_list):
+                    # Add bounds check for account_index
+                    if account_index >= len(account_keys):
+                        logger.warning(f"[ORIG IX {ix_idx}] Skipping account {i}: index {account_index} out of bounds (len={len(account_keys)})")
+                        continue
                     logger.info(f"[ORIG IX {ix_idx}]   idx {i}: {account_keys[account_index]}")
                 logger.info(f"[DEBUG:IX] User wallet: {user_wallet}")
                 logger.info(f"[DEBUG:IX] Derived ATA map: {derived_ata_map}")
@@ -689,25 +707,53 @@ class MEVDirectCopyExecutor:
     ) -> Dict[str, Any]:
         """
         Generic direct copy for any DEX transaction
+        
+        Implements comprehensive transaction validation:
+        - Validates transaction structure before processing
+        - Adds bounds checks for all list/array accesses
+        - Logs and skips trades with insufficient instruction/account data
+        - Prevents list index out of range runtime errors
         """
         start_time = asyncio.get_event_loop().time()
         
         try:
             logger.info("🚀 MEV Direct Copy: Generic transaction")
             
+            # Validate transaction structure before processing
+            if not original_tx_data:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: original_tx_data is None or empty")
+                return {"success": False, "error": "Invalid transaction data"}
+            
             # Extract the original transaction data
             if 'transaction' in original_tx_data:
                 tx_data = original_tx_data['transaction']
             else:
                 tx_data = original_tx_data
+            
+            if not tx_data:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: tx_data is None or empty")
+                return {"success": False, "error": "Invalid transaction data structure"}
                 
-            # Get the original message and instructions
+            # Get the original message and instructions with validation
             message = tx_data.get('message', {})
+            if not message:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: message is None or empty")
+                return {"success": False, "error": "No message found in transaction"}
+            
             original_instructions = message.get('instructions', [])
             account_keys = message.get('accountKeys', [])
             
+            # Validate instructions exist
             if not original_instructions:
+                logger.error("[DIRECT_COPY] ❌ Skipping trade: No instructions found in original transaction")
                 return {"success": False, "error": "No instructions found in original transaction"}
+            
+            # Validate account keys exist
+            if not account_keys:
+                logger.error("[DIRECT_COPY] ❌ Skipping trade: No account keys found in transaction")
+                return {"success": False, "error": "No account keys found in transaction"}
+            
+            logger.info(f"[DIRECT_COPY] ✅ Transaction validation passed: {len(original_instructions)} instructions, {len(account_keys)} account keys")
             
             # Build MEV-optimized instruction list
             all_instructions = []
@@ -767,25 +813,53 @@ class MEVDirectCopyExecutor:
         """
         Copy Jupiter transaction using direct instruction copying with MEV optimizations
         This is the FAST method - no API calls
+        
+        Implements comprehensive transaction validation:
+        - Validates transaction structure before processing
+        - Adds bounds checks for all list/array accesses
+        - Logs and skips trades with insufficient instruction/account data
+        - Prevents list index out of range runtime errors
         """
         start_time = asyncio.get_event_loop().time()
         
         try:
             logger.info("🚀 MEV Direct Copy: Jupiter transaction")
             
+            # Validate transaction structure before processing
+            if not original_tx_data:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: original_tx_data is None or empty")
+                return {"success": False, "error": "Invalid transaction data"}
+            
             # Extract the original transaction data
             if 'transaction' in original_tx_data:
                 tx_data = original_tx_data['transaction']
             else:
                 tx_data = original_tx_data
+            
+            if not tx_data:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: tx_data is None or empty")
+                return {"success": False, "error": "Invalid transaction data structure"}
                 
-            # Get the original message and instructions
+            # Get the original message and instructions with validation
             message = tx_data.get('message', {})
+            if not message:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: message is None or empty")
+                return {"success": False, "error": "No message found in transaction"}
+            
             original_instructions = message.get('instructions', [])
             account_keys = message.get('accountKeys', [])
             
+            # Validate instructions exist
             if not original_instructions:
+                logger.error("[DIRECT_COPY] ❌ Skipping trade: No instructions found in original transaction")
                 return {"success": False, "error": "No instructions found in original transaction"}
+            
+            # Validate account keys exist
+            if not account_keys:
+                logger.error("[DIRECT_COPY] ❌ Skipping trade: No account keys found in transaction")
+                return {"success": False, "error": "No account keys found in transaction"}
+            
+            logger.info(f"[DIRECT_COPY] ✅ Transaction validation passed: {len(original_instructions)} instructions, {len(account_keys)} account keys")
             
             # Build MEV-optimized instruction list
             all_instructions = []
