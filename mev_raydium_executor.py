@@ -413,15 +413,54 @@ class ExecOptions:
 
 class MEVRaydiumExecutor:
     def __init__(self, rpc_url: Optional[str] = None, keypair: Optional[Keypair] = None, jito_service=None):
-        rpc_url = rpc_url or os.getenv("HELIUS_RPC_URL") or os.getenv("RPC_URL")
-        if not rpc_url:
-            raise ValueError("RPC URL not provided. Set HELIUS_RPC_URL or pass rpc_url explicitly.")
-        self.rpc = SimpleRPC(RPCConfig(rpc_url))
-        self.kp = keypair or self._load_keypair_from_env()
-        self.owner = self.kp.pubkey()
-        self.ata = ATAManager(self.rpc)
-        self.pool_resolver = None  # Will be set with trade_info when needed
-        self.jito_service = jito_service  # Add JitoClient support
+        """Initialize Raydium executor with comprehensive logging"""
+        import traceback
+        
+        logger.info(f"[RAYDIUM] 🚀 Initializing MEV Raydium Executor...")
+        logger.debug(f"[RAYDIUM] RPC URL provided: {rpc_url is not None}")
+        logger.debug(f"[RAYDIUM] Keypair provided: {keypair is not None}")
+        logger.debug(f"[RAYDIUM] Jito service available: {jito_service is not None}")
+        
+        try:
+            # Validate and set RPC URL
+            rpc_url = rpc_url or os.getenv("HELIUS_RPC_URL") or os.getenv("RPC_URL")
+            if not rpc_url:
+                error_msg = "RPC URL not provided. Set HELIUS_RPC_URL or pass rpc_url explicitly."
+                logger.error(f"[RAYDIUM] ❌ {error_msg}")
+                raise ValueError(error_msg)
+            
+            logger.debug(f"[RAYDIUM] Using RPC URL: {rpc_url[:50]}...")
+            
+            # Initialize RPC client
+            self.rpc = SimpleRPC(RPCConfig(rpc_url))
+            logger.info(f"[RAYDIUM] ✅ RPC client initialized")
+            
+            # Load or use provided keypair
+            self.kp = keypair or self._load_keypair_from_env()
+            self.owner = self.kp.pubkey()
+            logger.info(f"[RAYDIUM] ✅ Keypair loaded: {self.owner}")
+            
+            # Initialize ATA manager
+            self.ata = ATAManager(self.rpc)
+            logger.info(f"[RAYDIUM] ✅ ATA manager initialized")
+            
+            # Pool resolver will be set later with trade_info
+            self.pool_resolver = None
+            logger.debug(f"[RAYDIUM] Pool resolver: None (will be set with trade_info)")
+            
+            # Set Jito service
+            self.jito_service = jito_service
+            if jito_service:
+                logger.info(f"[RAYDIUM] ✅ Jito service configured for MEV protection")
+            else:
+                logger.info(f"[RAYDIUM] ℹ️  No Jito service - using RPC only")
+            
+            logger.info(f"[RAYDIUM] 🎉 Executor initialization complete")
+            
+        except Exception as e:
+            logger.error(f"[RAYDIUM] ❌ Failed to initialize executor: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
     # ---------- Wallet loader ----------
     def _load_keypair_from_env(self) -> Keypair:
@@ -446,43 +485,75 @@ class MEVRaydiumExecutor:
         min_out: int,
         opts: Optional[ExecOptions] = None,
     ) -> Signature:
+        """Execute Raydium swap with comprehensive logging"""
+        import traceback
+        
+        logger.info(f"[RAYDIUM_SWAP] 🔄 Starting Raydium swap...")
+        logger.debug(f"[RAYDIUM_SWAP] Mint in: {mint_in}")
+        logger.debug(f"[RAYDIUM_SWAP] Mint out: {mint_out}")
+        logger.debug(f"[RAYDIUM_SWAP] Amount in: {amount_in}")
+        logger.debug(f"[RAYDIUM_SWAP] Min out: {min_out}")
+        
         opts = opts or ExecOptions()
+        logger.debug(f"[RAYDIUM_SWAP] Exec options: compute_limit={opts.compute_unit_limit}, price={opts.compute_unit_price_micro_lamports}")
 
         # Validate pool_resolver is set
         if not self.pool_resolver:
-            raise ValueError("pool_resolver not initialized. Set executor.pool_resolver = PoolResolver(rpc, trade_info)")
+            error_msg = "pool_resolver not initialized. Set executor.pool_resolver = PoolResolver(rpc, trade_info)"
+            logger.error(f"[RAYDIUM_SWAP] ❌ {error_msg}")
+            raise ValueError(error_msg)
         
-        # 1) Resolve pool & accounts
-        pool = self.pool_resolver.resolve(mint_in, mint_out, self.owner)
+        logger.info(f"[RAYDIUM_SWAP] ✅ Pool resolver validated")
+        
+        try:
+            # 1) Resolve pool & accounts
+            logger.info(f"[RAYDIUM_SWAP] Resolving pool for {mint_in} -> {mint_out}...")
+            pool = self.pool_resolver.resolve(mint_in, mint_out, self.owner)
+            logger.info(f"[RAYDIUM_SWAP] ✅ Pool resolved: {pool}")
 
-        # 2) Ensure user ATAs (and WSOL handling if needed)
-        # Input
-        in_ata, in_ata_ix = self.ata.ensure_ata_ix_if_missing(self.owner, mint_in)
-        out_ata, out_ata_ix = self.ata.ensure_ata_ix_if_missing(self.owner, mint_out)
+            # 2) Ensure user ATAs (and WSOL handling if needed)
+            logger.info(f"[RAYDIUM_SWAP] Ensuring ATAs...")
+            # Input
+            in_ata, in_ata_ix = self.ata.ensure_ata_ix_if_missing(self.owner, mint_in)
+            logger.debug(f"[RAYDIUM_SWAP] Input ATA: {in_ata}, instruction: {in_ata_ix is not None}")
+            
+            out_ata, out_ata_ix = self.ata.ensure_ata_ix_if_missing(self.owner, mint_out)
+            logger.debug(f"[RAYDIUM_SWAP] Output ATA: {out_ata}, instruction: {out_ata_ix is not None}")
 
-        # 3) Build compute budget ixs
-        cu_ix = set_compute_unit_limit(opts.compute_unit_limit)
-        cup_ix = set_compute_unit_price(opts.compute_unit_price_micro_lamports)
+            # 3) Build compute budget ixs
+            logger.debug(f"[RAYDIUM_SWAP] Building compute budget instructions...")
+            cu_ix = set_compute_unit_limit(opts.compute_unit_limit)
+            cup_ix = set_compute_unit_price(opts.compute_unit_price_micro_lamports)
 
-        # 4) Build Raydium swap ix
-        # Supply the discovered user ATAs to the builder
-        swap_ix = RaydiumCPMMSwapBuilder(pool).build_swap_ix(
-            owner=self.owner,
-            amount_in=amount_in,
-            min_out=min_out,
-            user_input_ata=in_ata,
-            user_output_ata=out_ata,
-        )
+            # 4) Build Raydium swap ix
+            logger.info(f"[RAYDIUM_SWAP] Building Raydium swap instruction...")
+            # Supply the discovered user ATAs to the builder
+            swap_ix = RaydiumCPMMSwapBuilder(pool).build_swap_ix(
+                owner=self.owner,
+                amount_in=amount_in,
+                min_out=min_out,
+                user_input_ata=in_ata,
+                user_output_ata=out_ata,
+            )
+            logger.info(f"[RAYDIUM_SWAP] ✅ Swap instruction built")
 
-        # 5) Collect ixs in a sane order
-        ixs: List[Instruction] = [cu_ix, cup_ix]
-        if in_ata_ix:
-            ixs.append(in_ata_ix)
-        if out_ata_ix:
-            ixs.append(out_ata_ix)
-        ixs.append(swap_ix)
+            # 5) Collect ixs in a sane order
+            ixs: List[Instruction] = [cu_ix, cup_ix]
+            if in_ata_ix:
+                ixs.append(in_ata_ix)
+            if out_ata_ix:
+                ixs.append(out_ata_ix)
+            ixs.append(swap_ix)
+            
+            logger.info(f"[RAYDIUM_SWAP] ✅ All instructions prepared, total: {len(ixs)}")
+            
+        except Exception as e:
+            logger.error(f"[RAYDIUM_SWAP] ❌ Failed to prepare swap: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
         # 6) Compile & sign
+        logger.info(f"[RAYDIUM_SWAP] Compiling and signing transaction...")
         recent_hash, _ = self.rpc.get_latest_blockhash()
         msg = MessageV0.try_compile(
             payer=self.owner,
@@ -491,6 +562,7 @@ class MEVRaydiumExecutor:
             recent_blockhash=recent_hash,
         )
         txn = VersionedTransaction(msg, [self.kp])
+        logger.debug(f"[RAYDIUM_SWAP] Transaction compiled and signed")
 
         # 7) Dual-path execution: Jito first, RPC fallback
         sig = None

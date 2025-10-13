@@ -62,8 +62,26 @@ RPC_URL = EnvKeys().HELIUS_RPC_URL
 
 
 def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 300) -> Optional[dict]:
-    """Get best route with official error handling"""
+    """Get best route with comprehensive error logging"""
+    import traceback
+    
+    logger.info(f"[JUPITER_QUOTE] 🔍 Requesting quote...")
+    logger.debug(f"[JUPITER_QUOTE] Input mint: {input_mint}")
+    logger.debug(f"[JUPITER_QUOTE] Output mint: {output_mint}")
+    logger.debug(f"[JUPITER_QUOTE] Amount: {amount} lamports ({amount/1e9:.6f} SOL)")
+    logger.debug(f"[JUPITER_QUOTE] Slippage: {slippage_bps} BPS ({slippage_bps/100}%)")
+    
     try:
+        # Validate and sanitize token mint
+        try:
+            # Ensure mints are valid Pubkey strings
+            Pubkey.from_string(input_mint)
+            Pubkey.from_string(output_mint)
+            logger.debug(f"[JUPITER_QUOTE] ✅ Token mints validated")
+        except Exception as mint_err:
+            logger.error(f"[JUPITER_QUOTE] ❌ Invalid token mint: {mint_err}")
+            return exec_err("jupiter", f"invalid token mint: {str(mint_err)}")
+        
         params = {
             "inputMint": input_mint,
             "outputMint": output_mint,
@@ -73,35 +91,55 @@ def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps:
             "restrictIntermediateTokens": "false",
             "maxAccounts": "64",
         }
+        logger.debug(f"[JUPITER_QUOTE] Request params: {params}")
         
         # Add API key to headers if available
         headers = {}
         if JUPITER_API_KEY:
             headers['Authorization'] = f'Bearer {JUPITER_API_KEY}'
             headers['x-api-key'] = JUPITER_API_KEY
+            logger.debug(f"[JUPITER_QUOTE] Using API key authentication")
         
+        logger.info(f"[JUPITER_QUOTE] Sending request to {JUPITER_QUOTE_URL}...")
         response = requests.get(JUPITER_QUOTE_URL, params=params, headers=headers, timeout=15)
+        logger.debug(f"[JUPITER_QUOTE] Response status: {response.status_code}")
+        
         response.raise_for_status()  # Official: Raise for HTTP errors
         
         data = response.json()
+        logger.debug(f"[JUPITER_QUOTE] Response data keys: {list(data.keys())}")
+        
         if 'error' in data:
-            logger.error(f"❌ Jupiter quote error: {data['error']}")
+            logger.error(f"[JUPITER_QUOTE] ❌ API returned error: {data['error']}")
             return exec_err("jupiter", f"quote error: {data['error']}")
+        
+        if 'inAmount' in data and 'outAmount' in data:
+            logger.info(f"[JUPITER_QUOTE] ✅ Quote received: {data['inAmount']} → {data['outAmount']}")
+        else:
+            logger.warning(f"[JUPITER_QUOTE] ⚠️  Quote response missing amounts")
             
         return data
         
     except requests.exceptions.Timeout:
-        logger.warning(f"⏰ Jupiter quote timeout")
+        logger.error(f"[JUPITER_QUOTE] ❌ Request timeout after 15 seconds")
         return exec_err("jupiter", "quote timeout")
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Jupiter quote request error: {e}")
+        logger.error(f"[JUPITER_QUOTE] ❌ Request error: {e}")
+        logger.error(traceback.format_exc())
         return exec_err("jupiter", f"quote request error: {str(e)}")
     except Exception as e:
-        logger.error(f"❌ Jupiter quote unexpected error: {e}")
+        logger.error(f"[JUPITER_QUOTE] ❌ Unexpected error: {e}")
+        logger.error(traceback.format_exc())
         return exec_err("jupiter", f"quote unexpected error: {str(e)}")
 
 def get_swap_transaction(route: dict, user_pubkey: Pubkey) -> Optional[str]:
-    """Get swap transaction with official error handling"""
+    """Get swap transaction with comprehensive error logging"""
+    import traceback
+    
+    logger.info(f"[JUPITER_SWAP] 🔄 Requesting swap transaction...")
+    logger.debug(f"[JUPITER_SWAP] User pubkey: {user_pubkey}")
+    logger.debug(f"[JUPITER_SWAP] Route keys: {list(route.keys())}")
+    
     try:
         payload = {
             "quoteResponse": route,
@@ -110,31 +148,46 @@ def get_swap_transaction(route: dict, user_pubkey: Pubkey) -> Optional[str]:
             "dynamicComputeUnitLimit": True,  # Official: Let Jupiter optimize compute
             "prioritizationFeeLamports": "auto"  # Official: Auto priority fees
         }
+        logger.debug(f"[JUPITER_SWAP] Payload keys: {list(payload.keys())}")
         
         # Add API key to headers if available
         headers = {'Content-Type': 'application/json'}
         if JUPITER_API_KEY:
             headers['Authorization'] = f'Bearer {JUPITER_API_KEY}'
             headers['x-api-key'] = JUPITER_API_KEY
+            logger.debug(f"[JUPITER_SWAP] Using API key authentication")
         
+        logger.info(f"[JUPITER_SWAP] Sending request to {JUPITER_SWAP_URL}...")
         response = requests.post(JUPITER_SWAP_URL, json=payload, headers=headers, timeout=15)
+        logger.debug(f"[JUPITER_SWAP] Response status: {response.status_code}")
+        
         response.raise_for_status()  # Official: Raise for HTTP errors
         
         data = response.json()
+        logger.debug(f"[JUPITER_SWAP] Response data keys: {list(data.keys())}")
+        
         if 'error' in data:
-            logger.error(f"❌ Jupiter swap error: {data['error']}")
+            logger.error(f"[JUPITER_SWAP] ❌ API returned error: {data['error']}")
             return exec_err("jupiter", f"swap error: {data['error']}")
-            
-        return data.get("swapTransaction")
+        
+        swap_tx = data.get("swapTransaction")
+        if swap_tx:
+            logger.info(f"[JUPITER_SWAP] ✅ Swap transaction received (length: {len(swap_tx)})")
+            return swap_tx
+        else:
+            logger.error(f"[JUPITER_SWAP] ❌ No swapTransaction in response")
+            return exec_err("jupiter", "no swapTransaction in response")
         
     except requests.exceptions.Timeout:
-        logger.warning(f"⏰ Jupiter swap timeout")
+        logger.error(f"[JUPITER_SWAP] ❌ Request timeout after 15 seconds")
         return exec_err("jupiter", "swap timeout")
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Jupiter swap request error: {e}")
+        logger.error(f"[JUPITER_SWAP] ❌ Request error: {e}")
+        logger.error(traceback.format_exc())
         return exec_err("jupiter", f"swap request error: {str(e)}")
     except Exception as e:
-        logger.error(f"❌ Jupiter swap unexpected error: {e}")
+        logger.error(f"[JUPITER_SWAP] ❌ Unexpected error: {e}")
+        logger.error(traceback.format_exc())
         return exec_err("jupiter", f"swap unexpected error: {str(e)}")
     res.raise_for_status()
     route = res.json()
@@ -221,21 +274,43 @@ class MEVJupiterExecutor:
     """
     
     def __init__(self, wallet_keypair: Keypair, rpc_url: str, config=None, jito_service=None):
-        # Initialize executor with official patterns
-        self.wallet_keypair = wallet_keypair
-        self.wallet_pubkey = wallet_keypair.pubkey()
-        self.client = RPCClient(rpc_url)
-        self.config = config or {}
-        self.jito_service = jito_service  # Add JitoClient support
+        """Initialize Jupiter executor with comprehensive logging"""
+        import traceback
         
-        # Set configuration defaults
-        self.config.setdefault('min_sol_amount', 0.001)
-        self.config.setdefault('default_slippage', 0.01)
-        self.config.setdefault('max_slippage', 0.1)
+        logger.info(f"[JUPITER] 🚀 Initializing MEV Jupiter Executor...")
+        logger.debug(f"[JUPITER] Wallet pubkey: {wallet_keypair.pubkey()}")
+        logger.debug(f"[JUPITER] RPC URL: {rpc_url}")
+        logger.debug(f"[JUPITER] Config type: {type(config)}")
+        logger.debug(f"[JUPITER] Jito service available: {jito_service is not None}")
         
-        logger.info(f"✅ Jupiter executor initialized with official Solana best practices")
-        if jito_service:
-            logger.info(f"🚀 Jupiter executor configured with Jito MEV protection")
+        try:
+            # Initialize executor with official patterns
+            self.wallet_keypair = wallet_keypair
+            self.wallet_pubkey = wallet_keypair.pubkey()
+            logger.debug(f"[JUPITER] Wallet pubkey extracted: {self.wallet_pubkey}")
+            
+            self.client = RPCClient(rpc_url)
+            logger.info(f"[JUPITER] ✅ RPC client initialized")
+            
+            self.config = config or {}
+            logger.debug(f"[JUPITER] Config dict: {self.config}")
+            
+            self.jito_service = jito_service
+            if jito_service:
+                logger.info(f"[JUPITER] ✅ Jito MEV protection configured")
+            
+            # Set configuration defaults
+            self.config.setdefault('min_sol_amount', 0.001)
+            self.config.setdefault('default_slippage', 0.01)
+            self.config.setdefault('max_slippage', 0.1)
+            logger.debug(f"[JUPITER] Config after defaults: {self.config}")
+            
+            logger.info(f"[JUPITER] 🎉 Jupiter executor initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"[JUPITER] ❌ Failed to initialize executor: {e}")
+            logger.error(traceback.format_exc())
+            raise
     
     async def validate_sol_balance(self, amount_sol: float) -> bool:
         """Validate sufficient SOL balance"""

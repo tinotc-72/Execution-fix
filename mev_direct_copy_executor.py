@@ -57,47 +57,122 @@ def jito_is_configured(jito_service) -> bool:
 
 class MEVDirectCopyExecutor:
     async def _submit_mev_transaction(self, instructions):
+        """Submit MEV transaction with comprehensive logging"""
+        import traceback
+        
         try:
-            logger.info("[LIVE] Submitting MEV direct copy transaction...")
+            logger.info("[DIRECT_COPY] 🚀 Starting MEV transaction submission...")
+            logger.debug(f"[DIRECT_COPY] Input instructions count: {len(instructions)}")
+            
             # Filter out duplicate ComputeBudget instructions
             filtered = [ix for ix in instructions if str(ix.program_id) != "ComputeBudget111111111111111111111111111111"]
+            logger.debug(f"[DIRECT_COPY] After filtering ComputeBudget: {len(filtered)} instructions")
+            
             # Prepend only the bot's ComputeBudget instructions
             bot_limit_ix = set_compute_unit_limit(self.config.compute_limit)
             bot_price_ix = set_compute_unit_price(self.config.pumpfun_priority_fee // 1000)
             final_instructions = [bot_limit_ix, bot_price_ix] + filtered
+            logger.info(f"[DIRECT_COPY] Final instruction count: {len(final_instructions)}")
+            logger.debug(f"[DIRECT_COPY] Compute limit: {self.config.compute_limit}")
+            logger.debug(f"[DIRECT_COPY] Priority fee: {self.config.pumpfun_priority_fee} lamports")
             
             # Dual-path execution: Jito first, RPC fallback
             if jito_is_configured(self.jito_service):
                 try:
-                    logger.info("🚀 Using Jito for MEV protection...")
+                    logger.info("[DIRECT_COPY] 🔄 Attempting Jito submission for MEV protection...")
+                    logger.debug(f"[DIRECT_COPY] Building signed transaction...")
+                    
                     signed_tx = await self.mev_bot._build_signed_transaction(final_instructions)
                     if signed_tx:
+                        logger.debug(f"[DIRECT_COPY] Signed transaction built successfully")
+                        logger.info(f"[DIRECT_COPY] Sending transaction via Jito...")
+                        
                         result = await self.jito_service.send_transaction(signed_tx)
+                        logger.debug(f"[DIRECT_COPY] Jito response: {result}")
+                        
                         signature = result.get("signature")
                         if signature:
-                            logger.info(f"✅ EXECUTED via direct_copy (jito) — signature: {signature}")
+                            logger.info(f"[DIRECT_COPY] ✅ EXECUTED via Jito — signature: {signature}")
                             return signature
                         else:
-                            logger.warning(f"⏭️ Skipped direct_copy (jito): {result}")
+                            logger.warning(f"[DIRECT_COPY] ⏭️ Jito submission returned no signature: {result}")
+                    else:
+                        logger.warning(f"[DIRECT_COPY] ⏭️ Failed to build signed transaction for Jito")
+                        
                 except Exception as jito_error:
-                    logger.warning(f"⏭️ Skipped direct_copy (jito): {jito_error}")
+                    logger.error(f"[DIRECT_COPY] ❌ Jito submission failed: {jito_error}")
+                    logger.debug(traceback.format_exc())
+            else:
+                logger.info(f"[DIRECT_COPY] ℹ️  Jito not configured, using RPC directly")
             
             # RPC fallback (must exist)
-            result_signature = await self.mev_bot._send_transaction(final_instructions, "MEV Direct Copy", skip_priority_instructions=True)
+            logger.info(f"[DIRECT_COPY] 🔄 Attempting RPC submission...")
+            result_signature = await self.mev_bot._send_transaction(
+                final_instructions, 
+                "MEV Direct Copy", 
+                skip_priority_instructions=True
+            )
+            
             if result_signature:
-                logger.info(f"✅ EXECUTED via direct_copy (rpc) — signature: {result_signature}")
+                logger.info(f"[DIRECT_COPY] ✅ EXECUTED via RPC — signature: {result_signature}")
                 return result_signature
             else:
-                logger.error("❌ MEV transaction submission failed")
+                logger.error("[DIRECT_COPY] ❌ RPC submission failed - no signature returned")
                 return None
+                
         except Exception as e:
-            logger.error(f"❌ MEV direct copy submission failed: {e}")
+            logger.error(f"[DIRECT_COPY] ❌ MEV transaction submission failed: {e}")
+            logger.error(traceback.format_exc())
             return None
     def __init__(self, private_key: str, config=None, jito_service=None):
-        self.config = config or MEVDirectCopyConfig()
-        self.keypair = Keypair.from_base58_string(private_key)
-        self.mev_bot = CompleteMEVBot(private_key, self.config)
-        self.jito_service = jito_service  # Add JitoClient support
+        """Initialize Direct Copy Executor with comprehensive error logging"""
+        import traceback
+        
+        logger.info(f"[DIRECT_COPY] 🚀 Initializing MEV Direct Copy Executor...")
+        logger.debug(f"[DIRECT_COPY] Config type: {type(config)}")
+        logger.debug(f"[DIRECT_COPY] Jito service available: {jito_service is not None}")
+        
+        try:
+            # Validate and set config
+            self.config = config or MEVDirectCopyConfig()
+            logger.debug(f"[DIRECT_COPY] Config attributes: {vars(self.config)}")
+            logger.info(f"[DIRECT_COPY] ✅ Config validated successfully")
+            
+            # Validate private key type
+            if not isinstance(private_key, str):
+                error_msg = f"PHANTOM_PRIVATE_KEY must be string, got {type(private_key)}"
+                logger.error(f"[DIRECT_COPY] ❌ Type error: {error_msg}")
+                raise TypeError(error_msg)
+            
+            logger.debug(f"[DIRECT_COPY] Private key length: {len(private_key)} chars")
+            
+            # Create keypair
+            logger.info(f"[DIRECT_COPY] Creating keypair from private key...")
+            self.keypair = Keypair.from_base58_string(private_key)
+            logger.info(f"[DIRECT_COPY] ✅ Keypair created: {self.keypair.pubkey()}")
+            
+            # Initialize MEV bot
+            logger.info(f"[DIRECT_COPY] Initializing CompleteMEVBot...")
+            self.mev_bot = CompleteMEVBot(private_key, self.config)
+            logger.info(f"[DIRECT_COPY] ✅ CompleteMEVBot initialized")
+            
+            # Set Jito service
+            self.jito_service = jito_service
+            if jito_service:
+                logger.info(f"[DIRECT_COPY] ✅ Jito service configured for MEV protection")
+            else:
+                logger.info(f"[DIRECT_COPY] ℹ️  No Jito service - using RPC only")
+                
+            logger.info(f"[DIRECT_COPY] 🎉 Executor initialization complete")
+            
+        except TypeError as te:
+            logger.error(f"[DIRECT_COPY] ❌ Type error during initialization: {te}")
+            logger.error(traceback.format_exc())
+            raise
+        except Exception as e:
+            logger.error(f"[DIRECT_COPY] ❌ Unexpected error during initialization: {e}")
+            logger.error(traceback.format_exc())
+            raise
     async def _copy_and_modify_instructions(self, original_instructions, account_keys, original_wallet):
         """
         Detect router program for Pump.fun and rebuild router instruction with user's wallet and derived ATA.

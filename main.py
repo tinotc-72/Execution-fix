@@ -635,19 +635,27 @@ class SimpleCopyTradingBot:
             This method implements graceful degradation - missing fields don't halt execution,
             but rather trigger fallback analysis and extraction logic downstream.
         """
+        import traceback
+        
+        logger.info(f"[PIPELINE_ENTRY] 🚨 Trade event received from WebSocket")
+        logger.debug(f"[PIPELINE_ENTRY] Trade info keys: {list(trade_info.keys())}")
+        
         # Step 3: Parse and decode transaction using wallet_tx_parser
         try:
             if 'transaction' in trade_info:
                 # Parse and decode transaction before analysis/execution
+                logger.debug(f"[PIPELINE_ENTRY] Parsing transaction with wallet_tx_parser...")
                 parsed_tx = self.tx_parser.parse_transaction(trade_info['transaction'])
                 trade_info['parsed_tx'] = parsed_tx
+                logger.debug(f"[PIPELINE_ENTRY] ✅ Transaction parsed successfully")
         except Exception as e:
-            logger.error(f"[TX PARSER] Error parsing transaction: {e}")
+            logger.error(f"[PIPELINE_ENTRY] ❌ Error parsing transaction: {e}")
             logger.error(traceback.format_exc())
-        logger.debug(f"[DEBUG] Received trade_info: {json.dumps(trade_info, default=str)}")
+            
+        logger.debug(f"[PIPELINE_ENTRY] Received trade_info: {json.dumps(trade_info, default=str)[:500]}...")
         """🚀 ENHANCED: Handle trades with MAXIMUM SPEED - Copy ALL transactions immediately"""
         try:
-            logger.info(f"🚨 ⚡ SPEED TRADE DETECTION: {trade_info}")
+            logger.info(f"[PIPELINE_ENTRY] ⚡ SPEED TRADE DETECTION: Processing trade...")
 
             # === ENHANCED UPSTREAM DATA FIX: Ensure required fields are present with debug logging ===
             # This section validates and defaults missing fields to prevent execution failures
@@ -659,44 +667,56 @@ class SimpleCopyTradingBot:
             sig = (trade_info.get("signature") or "").strip()
             if not sig or sig == "unknown":
                 missing_fields.append("signature")
-                logger.warning("ℹ️ [FIELD_DEBUG] No signature in trade_info; proceeding with parsed trade data.")
+                logger.warning("[PIPELINE_ENTRY] ℹ️  No signature in trade_info; proceeding with parsed trade data.")
                 # Continue processing instead of returning - signature may be available in transaction data
+            else:
+                logger.debug(f"[PIPELINE_ENTRY] Signature: {sig[:12]}...")
             
             # Check and fix wallet_address
             # Critical for determining which wallet triggered the trade
             if not trade_info.get('wallet_address'):
                 missing_fields.append("wallet_address")
-                logger.warning("[FIELD_DEBUG] Missing 'wallet_address' in trade_info, setting to first target wallet.")
+                logger.warning("[PIPELINE_ENTRY] Missing 'wallet_address', setting to first target wallet.")
                 trade_info['wallet_address'] = self.target_wallets[0] if self.target_wallets else 'unknown'
+            else:
+                logger.debug(f"[PIPELINE_ENTRY] Wallet: {trade_info.get('wallet_address')[:12]}...")
             
             # Check and default DEX type
             # DEX identification helps route to the correct executor
             if not trade_info.get('dex') and not trade_info.get('dex_type'):
                 missing_fields.append("dex/dex_type")
-                logger.debug("[FIELD_DEBUG] Missing 'dex' field - will be inferred during analysis")
+                logger.debug("[PIPELINE_ENTRY] Missing 'dex' field - will be inferred during analysis")
                 trade_info['dex'] = 'unknown'
+            else:
+                logger.debug(f"[PIPELINE_ENTRY] DEX: {trade_info.get('dex') or trade_info.get('dex_type')}")
             
             # Check and default action
             # Action (buy/sell/swap) determines execution strategy
             if not trade_info.get('action'):
                 missing_fields.append("action")
-                logger.debug("[FIELD_DEBUG] Missing 'action' field - will be inferred during analysis")
+                logger.debug("[PIPELINE_ENTRY] Missing 'action' field - will be inferred during analysis")
                 trade_info['action'] = 'unknown'
+            else:
+                logger.debug(f"[PIPELINE_ENTRY] Action: {trade_info.get('action')}")
             
             # Check and default mint
             # Token mint is essential for execution but can be extracted from transaction
             if not trade_info.get('mint') and not trade_info.get('token_mint'):
                 missing_fields.append("mint/token_mint")
-                logger.debug("[FIELD_DEBUG] Missing 'mint'/'token_mint' field - will be extracted during analysis")
+                logger.debug("[PIPELINE_ENTRY] Missing 'mint'/'token_mint' field - will be extracted during analysis")
                 trade_info['token_mint'] = 'PENDING_ANALYSIS'
+            else:
+                mint = trade_info.get('mint') or trade_info.get('token_mint')
+                logger.debug(f"[PIPELINE_ENTRY] Mint: {mint[:12] if mint else 'None'}...")
             
             # Log summary of missing fields for debugging
             # This helps identify patterns in upstream data issues
             if missing_fields:
-                logger.info(f"📋 [FIELD_DEBUG] Missing/defaulted fields: {', '.join(missing_fields)}")
-                logger.debug(f"[FIELD_DEBUG] Full trade_info keys: {list(trade_info.keys())}")
+                logger.info(f"[PIPELINE_ENTRY] 📋 Missing/defaulted fields: {', '.join(missing_fields)}")
+            else:
+                logger.info(f"[PIPELINE_ENTRY] ✅ All expected fields present")
             
-            logger.debug(f"[DEBUG] After upstream fix: {json.dumps(trade_info, default=str)}")
+            logger.debug(f"[PIPELINE_ENTRY] After upstream fix: {json.dumps(trade_info, default=str)[:500]}...")
 
             # 🚀 SPEED OPTIMIZATION: Skip lengthy analysis if basic analysis suggests immediate copy
             if trade_info.get('basic_analysis', {}).get('copy_immediately'):

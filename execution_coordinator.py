@@ -144,66 +144,95 @@ class ExecutionCoordinator:
         """
         Canonical copy buy: route by normalized DEX and plan, try each executor in order.
         """
+        import traceback
+        import time
+        
+        start_time = time.time()
+        
         # Debug logging controlled by config flags
         if getattr(self.config, "execution_debug", False):
             self.logger.debug(f"[COPY BUY] Input: token_mint={token_mint}, source_wallet={source_wallet}, amount_sol={amount_sol}, trade_info={trade_info}, kwargs={kwargs}")
+        
+        self.logger.info(f"[EXECUTION_START] 🚀 Starting copy buy execution...")
         
         trade_info = trade_info or {}
         dex_key = normalize_dex(trade_info.get("dex_type") or "unknown")
         
         # Log trade info summary for debugging
-        self.logger.info(f"📊 [EXECUTION] Trade info summary:")
+        self.logger.info(f"[EXECUTION_SUMMARY] 📊 Trade details:")
         self.logger.info(f"   - Token: {token_mint[:8] if token_mint else 'N/A'}...")
         self.logger.info(f"   - Signature: {trade_info.get('signature', 'N/A')[:12] if trade_info.get('signature') else 'N/A'}...")
         self.logger.info(f"   - DEX: {dex_key}")
         self.logger.info(f"   - Action: {trade_info.get('action', 'N/A')}")
         self.logger.info(f"   - Amount: {amount_sol} SOL")
+        self.logger.info(f"   - Source wallet: {source_wallet[:12] if source_wallet else 'N/A'}...")
         
         # E) Enhanced signature-based routing: Use specific plan when signature is present
         signature = (trade_info.get("signature") or "").strip()
         if signature:
             plan = ["direct_copy", "jupiter", "raydium", "meteora"]
-            self.logger.info(f"[SIGNATURE ROUTING] ✅ Signature present - using signature plan: {signature[:12]}...")
+            self.logger.info(f"[ROUTING] ✅ Signature present - using signature plan: {signature[:12]}...")
         else:
             plan = ROUTE_MAP.get(dex_key, ROUTE_MAP["unknown"])
-            self.logger.info(f"[DEX ROUTING] No signature - using DEX plan for {dex_key}")
+            self.logger.info(f"[ROUTING] No signature - using DEX plan for {dex_key}")
         
         if getattr(self.config, "execution_debug", False):
             self.logger.debug(f"[COPY BUY] Plan: {plan}")
-        self.logger.info(f"[COPY BUY] detected_dex={dex_key} plan={plan}")
+        self.logger.info(f"[ROUTING] Execution plan: {plan}")
+        
+        executors_attempted = []
+        last_error = None
         
         for idx, label in enumerate(plan, 1):
-            self.logger.info(f"🎯 [{idx}/{len(plan)}] Attempting executor: {label}")
+            self.logger.info(f"[EXECUTOR_ATTEMPT] 🎯 [{idx}/{len(plan)}] Attempting: {label}")
+            executors_attempted.append(label)
             
-            # Use standardized executor routing
-            result = None
-            if label == "jupiter":
-                self.logger.info(f"   → Calling Jupiter executor...")
-                result = await self._execute_jupiter_buy(token_mint, amount_sol, trade_info)
-            elif label == "direct_copy":
-                self.logger.info(f"   → Calling Direct Copy executor...")
-                result = await self._execute_direct_copy_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
-            elif label == "raydium":
-                self.logger.info(f"   → Calling Raydium executor...")
-                result = await self._execute_raydium_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
-            elif label == "meteora":
-                self.logger.info(f"   → Calling Meteora executor...")
-                result = await self._execute_meteora_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
-            elif label == "advanced_mev":
-                self.logger.info(f"   → Calling Advanced MEV executor...")
-                result = await self._execute_advanced_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
-            else:
-                self.logger.warning(f"⚠️ Unknown executor: {label}")
-                continue
-            
-            # Use standardized success check - support both "ok" and "success" formats
-            if result and (result.get("ok") or result.get("success")) and isinstance(result.get("signature"), str):
-                self.logger.info("✅ EXECUTED via %s — signature: %s", label, result["signature"])
-                return result
-            self.logger.warning("⏭️ Skipped %s: %s", label, result and result.get("error"))
+            try:
+                # Use standardized executor routing
+                result = None
+                if label == "jupiter":
+                    self.logger.info(f"[EXECUTOR_ATTEMPT] → Calling Jupiter executor...")
+                    result = await self._execute_jupiter_buy(token_mint, amount_sol, trade_info)
+                elif label == "direct_copy":
+                    self.logger.info(f"[EXECUTOR_ATTEMPT] → Calling Direct Copy executor...")
+                    result = await self._execute_direct_copy_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                elif label == "raydium":
+                    self.logger.info(f"[EXECUTOR_ATTEMPT] → Calling Raydium executor...")
+                    result = await self._execute_raydium_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                elif label == "meteora":
+                    self.logger.info(f"[EXECUTOR_ATTEMPT] → Calling Meteora executor...")
+                    result = await self._execute_meteora_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                elif label == "advanced_mev":
+                    self.logger.info(f"[EXECUTOR_ATTEMPT] → Calling Advanced MEV executor...")
+                    result = await self._execute_advanced_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                else:
+                    self.logger.warning(f"[EXECUTOR_ATTEMPT] ⚠️ Unknown executor: {label}")
+                    continue
                 
-        logger.error("❌ All executors failed")
-        return exec_err("all_executors", "All executors failed")
+                # Use standardized success check - support both "ok" and "success" formats
+                if result and (result.get("ok") or result.get("success")) and isinstance(result.get("signature"), str):
+                    execution_time = time.time() - start_time
+                    self.logger.info(f"[EXECUTION_SUCCESS] ✅ EXECUTED via {label}")
+                    self.logger.info(f"   - Signature: {result['signature']}")
+                    self.logger.info(f"   - Execution time: {execution_time:.2f}s")
+                    self.logger.info(f"   - Executors attempted: {', '.join(executors_attempted)}")
+                    return result
+                    
+                error_msg = result.get("error") if result else "No result returned"
+                last_error = error_msg
+                self.logger.warning(f"[EXECUTOR_ATTEMPT] ⏭️ Skipped {label}: {error_msg}")
+                
+            except Exception as e:
+                last_error = str(e)
+                self.logger.error(f"[EXECUTOR_ATTEMPT] ❌ Exception in {label}: {e}")
+                self.logger.error(traceback.format_exc())
+        
+        execution_time = time.time() - start_time
+        logger.error(f"[EXECUTION_FAILED] ❌ All executors failed")
+        logger.error(f"   - Executors attempted: {', '.join(executors_attempted)}")
+        logger.error(f"   - Last error: {last_error}")
+        logger.error(f"   - Total execution time: {execution_time:.2f}s")
+        return exec_err("all_executors", f"All executors failed. Last error: {last_error}")
 
     
     async def _preflight_check(self, transaction):
