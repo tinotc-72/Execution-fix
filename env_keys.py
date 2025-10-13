@@ -129,6 +129,10 @@ def clean_rpc_url(url: str) -> str:
 
 class EnvKeys:
     def __init__(self):
+        # Validate critical environment variables exist
+        if not os.getenv("PHANTOM_PRIVATE_KEY"):
+            raise ValueError("PHANTOM_PRIVATE_KEY not found in environment variables. Please check your .env file.")
+        
         # === Phantom Private Key ===
         self.PHANTOM_PRIVATE_KEY = os.getenv("PHANTOM_PRIVATE_KEY").strip()
 
@@ -195,7 +199,9 @@ class EnvKeys:
         self.JITO_BUNDLE_ENDPOINT = os.getenv('JITO_BUNDLE_ENDPOINT')
 
         # === Jupiter API Settings ===
+        # Updated to use current working Jupiter API v6 endpoints
         self.JUPITER_API_KEY = os.getenv('JUPITER_API_KEY', '')
+        # Primary endpoint is quote-api.jup.ag (official Jupiter v6 API)
         self.JUPITER_QUOTE_URL = os.getenv('JUPITER_QUOTE_URL', 'https://quote-api.jup.ag/v6/quote')
         self.JUPITER_SWAP_URL = os.getenv('JUPITER_SWAP_URL', 'https://quote-api.jup.ag/v6/swap')
 

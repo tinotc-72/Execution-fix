@@ -124,7 +124,7 @@ class MEVDirectCopyExecutor:
             logger.error(f"[DIRECT_COPY] ❌ MEV transaction submission failed: {e}")
             logger.error(traceback.format_exc())
             return None
-    def __init__(self, private_key: str, config=None, jito_service=None):
+    def __init__(self, private_key: str, config=None, jito_service=None, env_keys=None):
         """Initialize Direct Copy Executor with comprehensive error logging"""
         import traceback
         
@@ -161,9 +161,23 @@ class MEVDirectCopyExecutor:
             self.keypair = Keypair.from_base58_string(private_key)
             logger.info(f"[DIRECT_COPY] ✅ Keypair created: {self.keypair.pubkey()}")
             
-            # Initialize MEV bot
+            # Initialize MEV bot - needs EnvKeys object, not private_key string
             logger.info(f"[DIRECT_COPY] Initializing CompleteMEVBot...")
-            self.mev_bot = CompleteMEVBot(private_key, self.config)
+            # If env_keys not provided, create one
+            if env_keys is None:
+                from env_keys import EnvKeys
+                env_keys = EnvKeys()
+                logger.debug(f"[DIRECT_COPY] Created new EnvKeys instance")
+            # Create CompleteMEVConfig from MEVDirectCopyConfig
+            from complete_mev_bot import CompleteMEVConfig
+            mev_bot_config = CompleteMEVConfig(
+                priority_fee=self.config.pumpfun_priority_fee,
+                compute_limit=self.config.compute_limit,
+                max_slippage=0.06,  # Default from CompleteMEVConfig
+                timeout=30.0,  # Default from CompleteMEVConfig
+                verify_transactions=True  # Default from CompleteMEVConfig
+            )
+            self.mev_bot = CompleteMEVBot(env_keys, mev_bot_config)
             logger.info(f"[DIRECT_COPY] ✅ CompleteMEVBot initialized")
             
             # Set Jito service

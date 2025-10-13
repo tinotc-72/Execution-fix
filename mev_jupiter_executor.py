@@ -54,16 +54,17 @@ JUPITER_SWAP_URL = env_keys.JUPITER_SWAP_URL
 JUPITER_API_KEY = env_keys.JUPITER_API_KEY
 
 # Alternate Jupiter endpoints for robustness
+# Updated to use current working Jupiter API v6 endpoints
 JUPITER_QUOTE_ENDPOINTS = [
-    JUPITER_QUOTE_URL,
-    "https://quote-api.jup.ag/v6/quote",  # Alternate endpoint
-    "https://api.jup.ag/quote/v6",  # Another alternate
+    JUPITER_QUOTE_URL,  # From env (defaults to quote-api.jup.ag)
+    "https://quote-api.jup.ag/v6/quote",  # Primary official endpoint
+    "https://public.jupiterapi.com/quote/v6",  # Public fallback endpoint
 ]
 
 JUPITER_SWAP_ENDPOINTS = [
-    JUPITER_SWAP_URL,
-    "https://quote-api.jup.ag/v6/swap",  # Alternate endpoint
-    "https://api.jup.ag/swap/v6",  # Another alternate
+    JUPITER_SWAP_URL,  # From env (defaults to quote-api.jup.ag)
+    "https://quote-api.jup.ag/v6/swap",  # Primary official endpoint
+    "https://public.jupiterapi.com/swap/v6",  # Public fallback endpoint
 ]
 
 SOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
@@ -140,7 +141,14 @@ def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps:
                     continue
                     
             except Exception as endpoint_error:
-                logger.warning(f"[JUPITER_QUOTE] ⚠️  Endpoint {endpoint_idx} failed: {endpoint_error}")
+                error_str = str(endpoint_error)
+                # Provide more context for common errors
+                if "nodename nor servname provided" in error_str or "Failed to resolve" in error_str:
+                    logger.warning(f"[JUPITER_QUOTE] ⚠️  Endpoint {endpoint_idx} DNS resolution failed - network connectivity issue")
+                elif "404" in error_str or "Not Found" in error_str:
+                    logger.warning(f"[JUPITER_QUOTE] ⚠️  Endpoint {endpoint_idx} returned 404 - API endpoint may have changed")
+                else:
+                    logger.warning(f"[JUPITER_QUOTE] ⚠️  Endpoint {endpoint_idx} failed: {endpoint_error}")
                 last_error = endpoint_error
                 continue
         
