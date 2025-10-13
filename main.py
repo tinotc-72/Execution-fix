@@ -781,7 +781,47 @@ class SimpleCopyTradingBot:
             if is_valid:
                 await self._process_detected_trade(trade_info)
             else:
+                # Enhanced logging for skipped trades per problem statement requirements
                 logger.warning(f"⚠️ Trade validation failed - skipping")
+                
+                # Log full context for debugging (per problem statement: log raw tx and reason)
+                sig = trade_info.get('signature', 'unknown')
+                logger.error(f"❌ [SKIPPED_TRADE] Signature: {sig}")
+                logger.error(f"❌ [SKIPPED_TRADE] Reason: Validation failed - missing or invalid required fields")
+                
+                # Log what fields failed validation
+                mint = trade_info.get('token_mint') or trade_info.get('mint')
+                action = trade_info.get('action')
+                dex = trade_info.get('dex') or trade_info.get('dex_type')
+                
+                validation_issues = []
+                if not sig or sig == 'unknown':
+                    validation_issues.append("missing signature")
+                if not mint or mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
+                    validation_issues.append(f"invalid/missing mint (got: {mint})")
+                if not action or action == 'unknown':
+                    validation_issues.append(f"invalid/missing action (got: {action})")
+                if not dex or dex == 'unknown':
+                    validation_issues.append(f"unknown DEX (got: {dex})")
+                
+                logger.error(f"❌ [SKIPPED_TRADE] Validation issues: {', '.join(validation_issues)}")
+                
+                # Log raw transaction data for offline analysis (per problem statement)
+                if 'transaction' in trade_info or 'transaction_full' in trade_info:
+                    tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                    logger.error(f"❌ [SKIPPED_TRADE] Raw transaction keys: {list(tx.keys()) if tx else 'None'}")
+                    if 'logs' in trade_info:
+                        logger.error(f"❌ [SKIPPED_TRADE] Log count: {len(trade_info['logs'])} messages")
+                else:
+                    logger.error(f"❌ [SKIPPED_TRADE] No transaction data available for analysis")
+                
+                # Log to failed_trade_analysis.log for offline debugging
+                log_failed_trade_analysis(
+                    trade_info,
+                    failure_reason=f"validation_failed: {', '.join(validation_issues)}",
+                    retry_count=0,
+                    routing_data=None
+                )
 
         except asyncio.TimeoutError:
             logger.warning("⏰ Trade handling timeout - processing anyway")

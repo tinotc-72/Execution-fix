@@ -54,17 +54,18 @@ JUPITER_SWAP_URL = env_keys.JUPITER_SWAP_URL
 JUPITER_API_KEY = env_keys.JUPITER_API_KEY
 
 # Alternate Jupiter endpoints for robustness
-# Updated to use current working Jupiter API v6 endpoints
+# Updated to use current working Jupiter API v6 endpoints per official docs:
+# https://station.jup.ag/docs/apis/swap-api
 JUPITER_QUOTE_ENDPOINTS = [
-    JUPITER_QUOTE_URL,  # From env (defaults to quote-api.jup.ag)
-    "https://quote-api.jup.ag/v6/quote",  # Primary official endpoint
-    "https://public.jupiterapi.com/quote/v6",  # Public fallback endpoint
+    "https://quote-api.jup.ag/v6/quote",  # Primary official endpoint (working)
+    "https://api.jup.ag/quote/v6",  # Alternative official endpoint
+    "https://public.jupiterapi.com/v6/quote",  # Public fallback (note: corrected path)
 ]
 
 JUPITER_SWAP_ENDPOINTS = [
-    JUPITER_SWAP_URL,  # From env (defaults to quote-api.jup.ag)
-    "https://quote-api.jup.ag/v6/swap",  # Primary official endpoint
-    "https://public.jupiterapi.com/swap/v6",  # Public fallback endpoint
+    "https://quote-api.jup.ag/v6/swap",  # Primary official endpoint (working)
+    "https://api.jup.ag/swap/v6",  # Alternative official endpoint
+    "https://public.jupiterapi.com/v6/swap",  # Public fallback (note: corrected path)
 ]
 
 SOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
@@ -77,7 +78,12 @@ RPC_URL = EnvKeys().HELIUS_RPC_URL
 
 
 def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 300) -> Optional[dict]:
-    """Get best route with comprehensive error logging and alternate endpoint support"""
+    """
+    Get best route with comprehensive error logging and alternate endpoint support.
+    
+    Returns quote dict on success, None on error.
+    Reference: https://station.jup.ag/docs/apis/swap-api
+    """
     import traceback
     
     logger.info(f"[JUPITER_QUOTE] 🔍 Requesting quote...")
@@ -95,7 +101,7 @@ def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps:
             logger.debug(f"[JUPITER_QUOTE] ✅ Token mints validated")
         except Exception as mint_err:
             logger.error(f"[JUPITER_QUOTE] ❌ Invalid token mint: {mint_err}")
-            return exec_err("jupiter", f"invalid token mint: {str(mint_err)}")
+            return None
         
         params = {
             "inputMint": input_mint,
@@ -164,27 +170,37 @@ def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps:
         # All endpoints failed
         error_msg = f"All {len(JUPITER_QUOTE_ENDPOINTS)} Jupiter quote endpoints failed. Last error: {last_error}"
         logger.error(f"[JUPITER_QUOTE] ❌ {error_msg}")
-        return exec_err("jupiter", error_msg)
+        return None
         
     except requests.exceptions.Timeout:
         logger.error(f"[JUPITER_QUOTE] ❌ Request timeout after 15 seconds")
-        return exec_err("jupiter", "quote timeout")
+        return None
     except requests.exceptions.RequestException as e:
         logger.error(f"[JUPITER_QUOTE] ❌ Request error: {e}")
         logger.error(traceback.format_exc())
-        return exec_err("jupiter", f"quote request error: {str(e)}")
+        return None
     except Exception as e:
         logger.error(f"[JUPITER_QUOTE] ❌ Unexpected error: {e}")
         logger.error(traceback.format_exc())
-        return exec_err("jupiter", f"quote unexpected error: {str(e)}")
+        return None
 
 def get_swap_transaction(route: dict, user_pubkey: Pubkey) -> Optional[str]:
-    """Get swap transaction with comprehensive error logging"""
+    """
+    Get swap transaction with comprehensive error logging.
+    
+    Returns base64-encoded transaction string on success, None on error.
+    Reference: https://station.jup.ag/docs/apis/swap-api
+    """
     import traceback
     
     logger.info(f"[JUPITER_SWAP] 🔄 Requesting swap transaction...")
     logger.debug(f"[JUPITER_SWAP] User pubkey: {user_pubkey}")
     logger.debug(f"[JUPITER_SWAP] Route keys: {list(route.keys())}")
+    
+    # Validate input - route must be a dict from successful quote
+    if not isinstance(route, dict) or 'success' in route and not route['success']:
+        logger.error(f"[JUPITER_SWAP] ❌ Invalid route input: received error dict instead of quote")
+        return None
     
     try:
         payload = {
@@ -203,45 +219,62 @@ def get_swap_transaction(route: dict, user_pubkey: Pubkey) -> Optional[str]:
             headers['x-api-key'] = JUPITER_API_KEY
             logger.debug(f"[JUPITER_SWAP] Using API key authentication")
         
-        logger.info(f"[JUPITER_SWAP] Sending request to {JUPITER_SWAP_URL}...")
-        response = requests.post(JUPITER_SWAP_URL, json=payload, headers=headers, timeout=15)
-        logger.debug(f"[JUPITER_SWAP] Response status: {response.status_code}")
+        # Try each endpoint until one succeeds
+        last_error = None
+        for endpoint_idx, endpoint_url in enumerate(JUPITER_SWAP_ENDPOINTS, 1):
+            try:
+                logger.info(f"[JUPITER_SWAP] Attempting endpoint {endpoint_idx}/{len(JUPITER_SWAP_ENDPOINTS)}: {endpoint_url}...")
+                response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
+                logger.debug(f"[JUPITER_SWAP] Response status: {response.status_code}")
+                
+                response.raise_for_status()  # Official: Raise for HTTP errors
+                
+                data = response.json()
+                logger.debug(f"[JUPITER_SWAP] Response data keys: {list(data.keys())}")
+                
+                if 'error' in data:
+                    logger.error(f"[JUPITER_SWAP] ❌ API returned error: {data['error']}")
+                    last_error = f"API error: {data['error']}"
+                    continue
+                
+                # Validate swap transaction field is present
+                swap_tx = data.get("swapTransaction")
+                if not swap_tx:
+                    # Try alternate field names for backward compatibility
+                    swap_tx = data.get("transaction") or data.get("data")
+                
+                if swap_tx:
+                    logger.info(f"[JUPITER_SWAP] ✅ Swap transaction received (length: {len(swap_tx)} chars)")
+                    logger.debug(f"[JUPITER_SWAP] Transaction starts with: {swap_tx[:50]}...")
+                    return swap_tx
+                else:
+                    logger.warning(f"[JUPITER_SWAP] ⚠️  Endpoint {endpoint_idx} returned no swapTransaction")
+                    last_error = "no swapTransaction in response"
+                    continue
+                    
+            except requests.exceptions.Timeout:
+                logger.warning(f"[JUPITER_SWAP] ⚠️  Endpoint {endpoint_idx} timeout")
+                last_error = "request timeout"
+                continue
+            except requests.exceptions.RequestException as e:
+                error_str = str(e)
+                if "nodename nor servname provided" in error_str or "Failed to resolve" in error_str:
+                    logger.warning(f"[JUPITER_SWAP] ⚠️  Endpoint {endpoint_idx} DNS resolution failed")
+                elif "404" in error_str or "Not Found" in error_str:
+                    logger.warning(f"[JUPITER_SWAP] ⚠️  Endpoint {endpoint_idx} returned 404")
+                else:
+                    logger.warning(f"[JUPITER_SWAP] ⚠️  Endpoint {endpoint_idx} failed: {e}")
+                last_error = str(e)
+                continue
+                
+        # All endpoints failed
+        logger.error(f"[JUPITER_SWAP] ❌ All {len(JUPITER_SWAP_ENDPOINTS)} swap endpoints failed. Last error: {last_error}")
+        return None
         
-        response.raise_for_status()  # Official: Raise for HTTP errors
-        
-        data = response.json()
-        logger.debug(f"[JUPITER_SWAP] Response data keys: {list(data.keys())}")
-        
-        if 'error' in data:
-            logger.error(f"[JUPITER_SWAP] ❌ API returned error: {data['error']}")
-            return exec_err("jupiter", f"swap error: {data['error']}")
-        
-        # Validate swap transaction field is present
-        swap_tx = data.get("swapTransaction")
-        if not swap_tx:
-            # Try alternate field names for backward compatibility
-            swap_tx = data.get("transaction") or data.get("data")
-        
-        if swap_tx:
-            logger.info(f"[JUPITER_SWAP] ✅ Swap transaction received (length: {len(swap_tx)} chars)")
-            logger.debug(f"[JUPITER_SWAP] Transaction starts with: {swap_tx[:50]}...")
-            return swap_tx
-        else:
-            logger.error(f"[JUPITER_SWAP] ❌ No swapTransaction in response")
-            logger.error(f"[JUPITER_SWAP] Available keys: {list(data.keys())}")
-            return exec_err("jupiter", "no swapTransaction in response")
-        
-    except requests.exceptions.Timeout:
-        logger.error(f"[JUPITER_SWAP] ❌ Request timeout after 15 seconds")
-        return exec_err("jupiter", "swap timeout")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"[JUPITER_SWAP] ❌ Request error: {e}")
-        logger.error(traceback.format_exc())
-        return exec_err("jupiter", f"swap request error: {str(e)}")
     except Exception as e:
         logger.error(f"[JUPITER_SWAP] ❌ Unexpected error: {e}")
         logger.error(traceback.format_exc())
-        return exec_err("jupiter", f"swap unexpected error: {str(e)}")
+        return None
 
 
 def get_swap_transaction_duplicate(route: dict, wallet_pubkey: Pubkey) -> Optional[str]:
@@ -317,8 +350,21 @@ def build_sell_tx(token_mint: str, wallet: Keypair, slippage: float = 3.0) -> Ve
 
 class MEVJupiterExecutor:
     """
-    Jupiter aggregator executor implementing official Solana best practices
-    Standalone executor for consistent transaction handling
+    Jupiter aggregator executor implementing official Solana best practices.
+    Standalone executor for consistent transaction handling.
+    
+    Official Documentation References:
+    - Jupiter API Documentation: https://station.jup.ag/docs/apis/swap-api
+    - Jupiter Quote API: https://quote-api.jup.ag/v6/quote
+    - Jupiter Swap API: https://quote-api.jup.ag/v6/swap
+    - Solana Transaction Signing: https://docs.solana.com/developing/clients/javascript-api#transaction
+    - VersionedTransaction: https://docs.solana.com/developing/versioned-transactions
+    
+    Implementation follows Jupiter's recommended patterns:
+    1. Get quote from Jupiter API with slippage
+    2. Get swap transaction (unsigned) from Jupiter
+    3. Sign transaction with wallet keypair
+    4. Send with retry logic and MEV protection (Jito optional)
     """
     
     def __init__(self, wallet_keypair: Keypair, rpc_url: str, config=None, jito_service=None):
