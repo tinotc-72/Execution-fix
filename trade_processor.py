@@ -454,7 +454,7 @@ class TradeProcessor:
     
     def validate_trade_info(self, trade: dict) -> bool:
         """
-        Permissive validation allowing inferred fields.
+        Permissive validation allowing inferred fields with comprehensive logging.
         
         Allow either:
           (a) signature present, OR
@@ -462,30 +462,53 @@ class TradeProcessor:
         
         This method now accepts inferred/default values to enable permissive execution.
         """
+        logger.info(f"[VALIDATION] 🔍 Starting trade validation...")
+        logger.debug(f"[VALIDATION] Trade keys: {list(trade.keys())}")
+        
         sig = (trade.get("signature") or "").strip()
         if sig and sig != "unknown":
+            logger.info(f"[VALIDATION] ✅ Signature present: {sig[:12]}... - trade approved")
             return True
 
         # Check for actionable fields (including inferred/default values)
         dex = (trade.get("dex") or trade.get("dex_type") or "").strip().lower()
         action = (trade.get("action") or "").strip().lower()
         mint = (trade.get("mint") or trade.get("token_mint") or "").strip()
+        
+        logger.debug(f"[VALIDATION] DEX: {dex}")
+        logger.debug(f"[VALIDATION] Action: {action}")
+        logger.debug(f"[VALIDATION] Mint: {mint[:12] if mint else 'None'}...")
 
         # Accept known DEXes (including 'unknown' for fallback routing)
         valid_dexes = {"pumpfun", "raydium", "jupiter", "meteora", "unknown"}
         # Accept all actionable actions (including 'swap' from inference)
         valid_actions = {"buy", "sell", "swap", "swap_in", "swap_out"}
         
+        if dex in valid_dexes:
+            logger.debug(f"[VALIDATION] ✅ DEX '{dex}' is valid")
+        else:
+            logger.warning(f"[VALIDATION] ❌ DEX '{dex}' not in valid set: {valid_dexes}")
+        
+        if action in valid_actions:
+            logger.debug(f"[VALIDATION] ✅ Action '{action}' is valid")
+        else:
+            logger.warning(f"[VALIDATION] ❌ Action '{action}' not in valid set: {valid_actions}")
+        
+        if mint and mint not in {"UNKNOWN", "PENDING_ANALYSIS"}:
+            logger.debug(f"[VALIDATION] ✅ Mint '{mint[:12]}...' is valid")
+        else:
+            logger.warning(f"[VALIDATION] ❌ Mint '{mint}' is placeholder or missing")
+        
         if dex in valid_dexes and action in valid_actions and mint and mint not in {"UNKNOWN", "PENDING_ANALYSIS"}:
-            logger.debug(f"[VALIDATION] ✅ Valid trade info - dex:{dex}, action:{action}, mint:{mint[:8]}...")
+            logger.info(f"[VALIDATION] ✅ Trade approved - dex:{dex}, action:{action}, mint:{mint[:12]}...")
             return True
 
-        # LOG why we're bailing for visibility
-        import logging
-        logging.getLogger("trade_processor").warning(
-            "[VALIDATION] ❌ Insufficient data - has_sig:%s, dex:%s, action:%s, mint:%s",
-            bool(sig), dex, action, mint or None
-        )
+        # LOG why we're rejecting for visibility
+        logger.warning(f"[VALIDATION] ❌ Trade rejected - insufficient data:")
+        logger.warning(f"   - Has signature: {bool(sig)}")
+        logger.warning(f"   - DEX: {dex} (valid: {dex in valid_dexes})")
+        logger.warning(f"   - Action: {action} (valid: {action in valid_actions})")
+        logger.warning(f"   - Mint: {mint or 'None'} (valid: {mint and mint not in {'UNKNOWN', 'PENDING_ANALYSIS'}})")
         return False
     
     async def analyze_and_route_trade(self, trade_info: Dict[str, Any], source_wallet: str) -> Dict[str, Any]:

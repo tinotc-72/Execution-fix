@@ -383,56 +383,88 @@ class MEVMeteoraExecutor:
     
     def __init__(self, wallet_keypair: Keypair, rpc_client: SimpleRPC, jito_service=None):
         """
-        Initialize the MEV Meteora executor.
+        Initialize the MEV Meteora executor with comprehensive logging.
         
         Args:
             wallet_keypair: Wallet keypair for signing transactions
             rpc_client: Async RPC client for Solana
             jito_service: Optional external JitoClient for MEV protection
         """
-        self.wallet = wallet_keypair
-        self.client = rpc_client
-        self.jito_service = jito_service  # Use provided jito_service or None
+        import traceback
         
-        # Performance tracking
-        self.total_trades = 0
-        self.successful_trades = 0
-        self.failed_trades = 0
-        self.total_sol_spent = 0.0
-        self.total_tokens_received = 0
+        logger.info(f"[METEORA] 🚀 Initializing MEV Meteora Executor...")
+        logger.debug(f"[METEORA] Wallet pubkey: {wallet_keypair.pubkey()}")
+        logger.debug(f"[METEORA] RPC client type: {type(rpc_client)}")
+        logger.debug(f"[METEORA] Jito service available: {jito_service is not None}")
         
-        logger.info("🚀 MEV Meteora Executor initialized")
-        logger.info(f"   Wallet: {self.wallet.pubkey()}")
-        logger.info(f"   Target Program: {self.METEORA_DYNAMIC_BONDING_CURVE}")
+        try:
+            self.wallet = wallet_keypair
+            self.client = rpc_client
+            self.jito_service = jito_service  # Use provided jito_service or None
+            
+            logger.info(f"[METEORA] ✅ Wallet configured: {self.wallet.pubkey()}")
+            
+            # Performance tracking
+            self.total_trades = 0
+            self.successful_trades = 0
+            self.failed_trades = 0
+            self.total_sol_spent = 0.0
+            self.total_tokens_received = 0
+            logger.debug(f"[METEORA] Performance tracking initialized")
+            
+            logger.info(f"[METEORA] Target Program: {self.METEORA_DYNAMIC_BONDING_CURVE}")
+            
+            if jito_service:
+                logger.info(f"[METEORA] ✅ Jito MEV protection configured")
+            else:
+                logger.info(f"[METEORA] ℹ️  No Jito service - using RPC only")
+            
+            logger.info(f"[METEORA] 🎉 Executor initialization complete")
+            
+        except Exception as e:
+            logger.error(f"[METEORA] ❌ Failed to initialize executor: {e}")
+            logger.error(traceback.format_exc())
+            raise
     
     async def execute_buy(self, params: MeteoraTradeParams, trade_info: dict = None) -> dict:
         """
-        Execute a buy trade on Meteora Dynamic Bonding Curve.
+        Execute a buy trade on Meteora Dynamic Bonding Curve with comprehensive logging.
         
         Args:
             params: Trade parameters
+            trade_info: Optional trade information for context
             
         Returns:
             MeteoraTradeResult with execution details
         """
+        import traceback
+        
         start_time = time.time()
         self.total_trades += 1
         
+        logger.info(f"[METEORA_BUY] 🔄 Starting Meteora buy execution...")
+        logger.debug(f"[METEORA_BUY] Token mint: {params.token_mint}")
+        logger.debug(f"[METEORA_BUY] Amount: {params.amount_sol} SOL")
+        logger.debug(f"[METEORA_BUY] Slippage: {params.slippage_percent}%")
+        logger.debug(f"[METEORA_BUY] Use Jito: {params.use_jito}")
+        
         try:
-            logger.info(f"🎯 Executing Meteora DBC buy for {params.token_mint}")
-            logger.info(f"   Amount: {params.amount_sol} SOL")
-            logger.info(f"   Slippage: {params.slippage_percent}%")
-            
             # Step 1: Get pool information
+            logger.info(f"[METEORA_BUY] Fetching pool information...")
             pool_info = await self._get_pool_info(params.token_mint)
             if not pool_info:
-                logger.warning(f"No Meteora pool found for {params.token_mint}. Skipping Meteora executor.")
+                error_msg = f"No Meteora pool found for {params.token_mint}"
+                logger.warning(f"[METEORA_BUY] ⚠️  {error_msg}")
                 return MeteoraTradeResult(
                     success=False,
                     error="No Meteora pool for token"
                 )
             
+            logger.info(f"[METEORA_BUY] ✅ Pool info retrieved: {pool_info.pool_address}")
+            logger.debug(f"[METEORA_BUY] Current price: {pool_info.current_price}")
+            
             # Step 2: Calculate expected tokens with slippage
+            logger.info(f"[METEORA_BUY] Calculating expected tokens out...")
             expected_tokens = await self._calculate_tokens_out(
                 pool_info, params.amount_sol, params.slippage_percent
             )
