@@ -133,8 +133,17 @@ def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps:
                     last_error = data['error']
                     continue
                 
+                # Validate all required fields are present before proceeding
+                required_fields = ['inAmount', 'outAmount', 'otherAmountThreshold']
+                missing_fields = [field for field in required_fields if field not in data]
+                
+                if missing_fields:
+                    logger.warning(f"[JUPITER_QUOTE] ⚠️  Endpoint {endpoint_idx} response missing required fields: {missing_fields}")
+                    continue
+                
                 if 'inAmount' in data and 'outAmount' in data:
                     logger.info(f"[JUPITER_QUOTE] ✅ Quote received from endpoint {endpoint_idx}: {data['inAmount']} → {data['outAmount']}")
+                    logger.info(f"[JUPITER_QUOTE] ✅ All required fields validated")
                     return data
                 else:
                     logger.warning(f"[JUPITER_QUOTE] ⚠️  Endpoint {endpoint_idx} response missing amounts")
@@ -207,12 +216,19 @@ def get_swap_transaction(route: dict, user_pubkey: Pubkey) -> Optional[str]:
             logger.error(f"[JUPITER_SWAP] ❌ API returned error: {data['error']}")
             return exec_err("jupiter", f"swap error: {data['error']}")
         
+        # Validate swap transaction field is present
         swap_tx = data.get("swapTransaction")
+        if not swap_tx:
+            # Try alternate field names for backward compatibility
+            swap_tx = data.get("transaction") or data.get("data")
+        
         if swap_tx:
-            logger.info(f"[JUPITER_SWAP] ✅ Swap transaction received (length: {len(swap_tx)})")
+            logger.info(f"[JUPITER_SWAP] ✅ Swap transaction received (length: {len(swap_tx)} chars)")
+            logger.debug(f"[JUPITER_SWAP] Transaction starts with: {swap_tx[:50]}...")
             return swap_tx
         else:
             logger.error(f"[JUPITER_SWAP] ❌ No swapTransaction in response")
+            logger.error(f"[JUPITER_SWAP] Available keys: {list(data.keys())}")
             return exec_err("jupiter", "no swapTransaction in response")
         
     except requests.exceptions.Timeout:
@@ -226,14 +242,9 @@ def get_swap_transaction(route: dict, user_pubkey: Pubkey) -> Optional[str]:
         logger.error(f"[JUPITER_SWAP] ❌ Unexpected error: {e}")
         logger.error(traceback.format_exc())
         return exec_err("jupiter", f"swap unexpected error: {str(e)}")
-    res.raise_for_status()
-    route = res.json()
-    if "inAmount" not in route or "outAmount" not in route:
-        raise Exception(f"Invalid Jupiter quote response: {route}")
-    return route
 
 
-def get_swap_transaction(route: dict, wallet_pubkey: Pubkey) -> Optional[str]:
+def get_swap_transaction_duplicate(route: dict, wallet_pubkey: Pubkey) -> Optional[str]:
     """Get swap transaction with better error handling"""
     try:
         body = {
@@ -429,6 +440,9 @@ class MEVJupiterExecutor:
                         signature = await self.send_transaction_with_retry(transaction)
                         
                         if signature:
+                            logger.info(f"✅ [JUPITER_BUY] SUCCESS: Bought {token_mint[:8]}... with {amount_sol} SOL")
+                            logger.info(f"   Signature: {signature}")
+                            logger.info(f"   Slippage: {slippage_bps/100}%")
                             return {
                                 'success': True,
                                 'signature': signature,
@@ -445,6 +459,7 @@ class MEVJupiterExecutor:
                     logger.warning(f"   ❌ Route error at {slippage_bps/100}%: {route_error}")
                     continue
             
+            logger.error(f"❌ [JUPITER_BUY] FAILED: All slippage levels exhausted for {token_mint[:8]}...")
             return {
                 'success': False,
                 'error': 'All Jupiter slippage levels failed',
@@ -452,7 +467,9 @@ class MEVJupiterExecutor:
             }
             
         except Exception as e:
-            logger.error(f"❌ Jupiter buy error: {e}")
+            logger.error(f"❌ [JUPITER_BUY] FAILED with exception: {e}")
+            logger.error(f"   Token: {token_mint[:8]}...")
+            logger.error(f"   Amount: {amount_sol} SOL")
             return {
                 'success': False,
                 'error': str(e),
