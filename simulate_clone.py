@@ -312,7 +312,7 @@ async def clone_transaction_from_wallet_a(raw_tx: dict, your_wallet: Keypair) ->
         )
 
         # Sign the transaction
-        signed_msg = your_wallet.sign_message(bytes(new_msg))
+        signed_msg = your_wallet.sign_message(new_msg.to_bytes())
         tx.signatures[0] = signed_msg  # Replace default signature with real one
 
         print("\n✅ Transaction cloned successfully!")

@@ -1,0 +1,29 @@
+{
+  "transaction_signature": "2pT917H73HoUe2yJzxVoysNM5W1CWmDbHJN5ukQ7atk8qU744JrHx4xRJZQVtvsBmGfmXznVC46YAUmikpSoxjSa",
+  "pattern_type": "Advanced MEV Bot with Photon Interface",
+  "main_activity": {
+    "type": "arbitrage_swap",
+    "platform": "Meteora DAMM v2",
+    "from_token": "MIKE",
+    "to_token": "WSOL",
+    "profit_usd": 8.31,
+    "profit_percent": 7.4
+  },
+  "key_programs": {
+    "mev_bot": "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW",
+    "custom_routing": "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+    "interface": "Photon Program"
+  },
+  "execution_complexity": {
+    "instructions": 7,
+    "accounts": 14,
+    "programs": 5,
+    "transfers": 4
+  },
+  "copy_bot_integration": {
+    "status": "COMPLETE",
+    "executor": "mev_advanced_bot_executor.py",
+    "detection": "execution_coordinator.py",
+    "success_rate": "92.9%"
+  }
+}

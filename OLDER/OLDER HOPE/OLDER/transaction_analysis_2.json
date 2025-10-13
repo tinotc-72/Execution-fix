@@ -1,0 +1,211 @@
+{
+  "signature": "4mewsLZNWxzHV9vRTN1ZLEhL4BiAaN4szrPgM3GvQzd3ebEUbyxfQAdjyash5ziv5yegNo72UtD5rhizVc1S5w7h",
+  "transaction_data": {
+    "blockTime": 1751290969,
+    "meta": {
+      "computeUnitsConsumed": 8813,
+      "costUnits": 11683,
+      "err": {
+        "InstructionError": [
+          1,
+          {
+            "Custom": 3012
+          }
+        ]
+      },
+      "fee": 5000,
+      "innerInstructions": [],
+      "loadedAddresses": {
+        "readonly": [],
+        "writable": []
+      },
+      "logMessages": [
+        "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+        "Program ComputeBudget111111111111111111111111111111 success",
+        "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]",
+        "Program log: Instruction: Sell",
+        "Program log: AnchorError caused by account: associated_user. Error Code: AccountNotInitialized. Error Number: 3012. Error Message: The program expected this account to be already initialized.",
+        "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P consumed 8663 of 74850 compute units",
+        "Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P failed: custom program error: 0xbc4"
+      ],
+      "postBalances": [
+        1269510851,
+        69277635635847,
+        100312066,
+        2039280,
+        4369240534,
+        0,
+        5304893380,
+        1,
+        301898467,
+        1141440,
+        1461600,
+        147104464,
+        1,
+        934087680
+      ],
+      "postTokenBalances": [
+        {
+          "accountIndex": 3,
+          "mint": "9ZhWtS1xH6nmCDqcnafbmxxor4QdVrRPcN3BD7fZpump",
+          "owner": "QJ5GAui3oSwndYgYAx1xx4LpTML5Mm86ERbxd4XqdhQ",
+          "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "uiTokenAmount": {
+            "amount": "838821597142332",
+            "decimals": 6,
+            "uiAmount": 838821597.142332,
+            "uiAmountString": "838821597.142332"
+          }
+        }
+      ],
+      "preBalances": [
+        1269515851,
+        69277635635847,
+        100312066,
+        2039280,
+        4369240534,
+        0,
+        5304893380,
+        1,
+        301898467,
+        1141440,
+        1461600,
+        147104464,
+        1,
+        934087680
+      ],
+      "preTokenBalances": [
+        {
+          "accountIndex": 3,
+          "mint": "9ZhWtS1xH6nmCDqcnafbmxxor4QdVrRPcN3BD7fZpump",
+          "owner": "QJ5GAui3oSwndYgYAx1xx4LpTML5Mm86ERbxd4XqdhQ",
+          "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "uiTokenAmount": {
+            "amount": "838821597142332",
+            "decimals": 6,
+            "uiAmount": 838821597.142332,
+            "uiAmountString": "838821597.142332"
+          }
+        }
+      ],
+      "rewards": [],
+      "status": {
+        "Err": {
+          "InstructionError": [
+            1,
+            {
+              "Custom": 3012
+            }
+          ]
+        }
+      }
+    },
+    "slot": 350203042,
+    "transaction": {
+      "message": {
+        "accountKeys": [
+          "HzjAQUKjZcT3ESZ9WNbJeXqvzZYxvy3VGquwQ9mX2c92",
+          "62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",
+          "6MJ3Yh2k1jfxYjAnyrGtCTbWkoVyRCCWbA7fZREc1kmt",
+          "C6JPzfjtQnti7HmP2XrYm3PEj8DbViqbqjMqGeARcRrW",
+          "Cix2bHfqPcKcM233mzxbLk14kSggUUiz2A87fJtGivXr",
+          "EAvD9mBLnrS9PvHBp2sFcWFdJVoJKsGvQoM1JPESWdUk",
+          "QJ5GAui3oSwndYgYAx1xx4LpTML5Mm86ERbxd4XqdhQ",
+          "11111111111111111111111111111111",
+          "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+          "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "9ZhWtS1xH6nmCDqcnafbmxxor4QdVrRPcN3BD7fZpump",
+          "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
+          "ComputeBudget111111111111111111111111111111",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ],
+        "header": {
+          "numReadonlySignedAccounts": 0,
+          "numReadonlyUnsignedAccounts": 7,
+          "numRequiredSignatures": 1
+        },
+        "instructions": [
+          {
+            "accounts": [],
+            "data": "LRwgb1",
+            "programIdIndex": 12,
+            "stackHeight": 1
+          },
+          {
+            "accounts": [
+              8,
+              1,
+              10,
+              6,
+              3,
+              5,
+              0,
+              7,
+              2,
+              13,
+              11,
+              9
+            ],
+            "data": "5jRcjdixRUDN2qe8WfGENRsuR1du6mqt3",
+            "programIdIndex": 9,
+            "stackHeight": 1
+          },
+          {
+            "accounts": [
+              5,
+              0,
+              0,
+              0
+            ],
+            "data": "A",
+            "programIdIndex": 13,
+            "stackHeight": 1
+          },
+          {
+            "accounts": [
+              0,
+              4
+            ],
+            "data": "3Bxs4WQdtZ5t3SzK",
+            "programIdIndex": 7,
+            "stackHeight": 1
+          }
+        ],
+        "recentBlockhash": "4dREz2jQG42qmUxWVAUbFQcxyCBgUbn9waPEX9BKmuxr"
+      },
+      "signatures": [
+        "4mewsLZNWxzHV9vRTN1ZLEhL4BiAaN4szrPgM3GvQzd3ebEUbyxfQAdjyash5ziv5yegNo72UtD5rhizVc1S5w7h"
+      ]
+    },
+    "version": "legacy"
+  },
+  "pump_instructions": [
+    {
+      "accounts": [
+        "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+        "62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",
+        "9ZhWtS1xH6nmCDqcnafbmxxor4QdVrRPcN3BD7fZpump",
+        "QJ5GAui3oSwndYgYAx1xx4LpTML5Mm86ERbxd4XqdhQ",
+        "C6JPzfjtQnti7HmP2XrYm3PEj8DbViqbqjMqGeARcRrW",
+        "EAvD9mBLnrS9PvHBp2sFcWFdJVoJKsGvQoM1JPESWdUk",
+        "HzjAQUKjZcT3ESZ9WNbJeXqvzZYxvy3VGquwQ9mX2c92",
+        "11111111111111111111111111111111",
+        "6MJ3Yh2k1jfxYjAnyrGtCTbWkoVyRCCWbA7fZREc1kmt",
+        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
+        "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+      ],
+      "data_analysis": {
+        "discriminator": "33e685a4017f83ad",
+        "full_hex": "33e685a4017f83ad407d1f8cda0200000000000000000000",
+        "length": 24,
+        "parameters": {
+          "token_amount": 3137677000000,
+          "min_sol_out": 0
+        }
+      },
+      "raw_data": "5jRcjdixRUDN2qe8WfGENRsuR1du6mqt3",
+      "account_count": 12
+    }
+  ]
+}

@@ -1,0 +1,332 @@
+
+# Full implementation moved from jupiter_trade_executor.py
+import base64
+import logging
+import requests
+import asyncio
+
+from typing import Optional, Tuple, Dict, Any, List
+from solders.keypair import Keypair
+from solders.pubkey import Pubkey
+from solders.transaction import VersionedTransaction
+from solders.message import MessageV0
+from solders.instruction import Instruction, AccountMeta
+from solana.rpc.async_api import AsyncClient
+from solana.rpc.commitment import Processed
+from solana.rpc.types import TxOpts
+from solders.system_program import ID as SYS_PROGRAM_ID
+from solders.compute_budget import ID as COMPUTE_BUDGET_ID
+from spl.token.constants import TOKEN_PROGRAM_ID
+from spl.token.instructions import get_associated_token_address, create_associated_token_account
+
+from base_solana_executor import BaseSolanaExecutor, SolanaExecutorConfig
+				headers['Authorization'] = f'Bearer {JUPITER_API_KEY}'
+				headers['x-api-key'] = JUPITER_API_KEY
+			res = requests.post(url, json=body, headers=headers, timeout=15) asyncio
+
+from typing import Optional, Tuple, Dict, Any, List
+from solders.keypair import Keypair
+from solders.pubkey import Pubkey
+from solders.transaction import VersionedTransaction
+from solders.message import MessageV0
+from solders.instruction import Instruction, AccountMeta
+from solana.rpc.async_api import AsyncClient
+from solana.rpc.commitment import Processed
+from solana.rpc.types import TxOpts
+from solders.system_program import ID as SYS_PROGRAM_ID
+from solders.compute_budget import ID as COMPUTE_BUDGET_ID
+from spl.token.constants import TOKEN_PROGRAM_ID
+from spl.token.instructions import get_associated_token_address, create_associated_token_account
+
+from base_solana_executor import BaseSolanaExecutor, SolanaExecutorConfig
+from env_keys import EnvKeys
+
+# Load Jupiter API settings from environment
+env_keys = EnvKeys()
+JUPITER_QUOTE_URL = env_keys.JUPITER_QUOTE_URL
+JUPITER_SWAP_URL = env_keys.JUPITER_SWAP_URL
+JUPITER_API_KEY = env_keys.JUPITER_API_KEY
+# Alternative working URLs based on current documentation
+JUPITER_QUOTE_URL_FALLBACK = "https://api.jup.ag/quote/v1/quote"
+JUPITER_SWAP_URL_FALLBACK = "https://api.jup.ag/quote/v1/swap"
+SOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
+JUPITER_PROGRAM = Pubkey.from_string("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4")
+
+logger = logging.getLogger(__name__)
+RPC_URL = EnvKeys().HELIUS_RPC_URL
+
+
+def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 300) -> Optional[dict]:
+	"""Get Jupiter route with fallback URL support and better error handling"""
+	params = {
+		"inputMint": input_mint,
+		"outputMint": output_mint,
+		"amount": str(amount),
+		"slippageBps": str(slippage_bps),
+		"onlyDirectRoutes": "false",
+		"restrictIntermediateTokens": "false",
+		"maxAccounts": "64",
+	}
+	
+	# Try primary URL first
+	urls_to_try = [JUPITER_QUOTE_URL, JUPITER_QUOTE_URL_FALLBACK]
+	
+		for url in urls_to_try:
+		try:
+			logger.info(f"🔄 Trying Jupiter quote URL: {url}")
+			# Add API key to headers if available
+			headers = {}
+			if JUPITER_API_KEY:
+				headers['Authorization'] = f'Bearer {JUPITER_API_KEY}'
+				headers['x-api-key'] = JUPITER_API_KEY
+			response = requests.get(url, params=params, headers=headers, timeout=10)			# Handle specific status codes
+			if response.status_code == 401:
+				logger.warning(f"⚠️ Jupiter API requires authentication - {url} returned 401 Unauthorized")
+				continue
+			elif response.status_code == 429:
+				logger.warning(f"⚠️ Rate limited by Jupiter API - {url}")
+				continue
+			
+			response.raise_for_status()
+			data = response.json()
+			if 'error' in data:
+				logger.error(f"❌ Jupiter quote error from {url}: {data['error']}")
+				continue
+			logger.info(f"✅ Successfully got route from {url}")
+			return data
+		except requests.exceptions.ConnectionError as e:
+			logger.warning(f"⚠️ Connection/DNS error for {url}: {str(e)[:100]}...")
+			continue
+		except requests.exceptions.Timeout as e:
+			logger.warning(f"⚠️ Timeout error for {url}: {e}")
+			continue
+		except requests.exceptions.HTTPError as e:
+			if "401" in str(e):
+				logger.warning(f"⚠️ Jupiter API authentication required for {url}")
+			else:
+				logger.warning(f"⚠️ HTTP error with {url}: {e}")
+			continue
+		except Exception as e:
+			logger.warning(f"⚠️ Unexpected error with {url}: {str(e)[:100]}...")
+			continue
+	
+	logger.error("❌ All Jupiter quote URLs failed - Jupiter API may require authentication or be unavailable")
+	logger.info("💡 Consider using direct DEX executors (Raydium, Meteora) as alternatives")
+	return None
+
+def get_swap_transaction(route: dict, wallet_pubkey: Pubkey) -> Optional[str]:
+	"""Get Jupiter swap transaction with fallback URL support"""
+	body = {
+		"quoteResponse": route,
+		"userPublicKey": str(wallet_pubkey),
+		"wrapAndUnwrapSol": True,
+		"useSharedAccounts": True,
+		"asLegacyTransaction": False,
+		"dynamicComputeUnitLimit": True,
+		"prioritizationFeeLamports": 100000,
+	}
+	
+	# Try primary URL first, then fallback
+	urls_to_try = [JUPITER_SWAP_URL, JUPITER_SWAP_URL_FALLBACK]
+	
+	for url in urls_to_try:
+		try:
+			logger.info(f"🔄 Trying Jupiter swap URL: {url}")
+			res = requests.post(url, json=body, timeout=15)
+			res.raise_for_status()
+			tx_data = res.json()
+			
+			if "swapTransaction" in tx_data:
+				logger.info(f"✅ Successfully got swap transaction from {url}")
+				return tx_data["swapTransaction"]
+			elif "transaction" in tx_data:
+				logger.info(f"✅ Successfully got transaction from {url}")
+				return tx_data["transaction"]
+			elif "data" in tx_data:
+				logger.info(f"✅ Successfully got data from {url}")
+				return tx_data["data"]
+			else:
+				logger.error(f"Invalid Jupiter swap response format from {url}: {list(tx_data.keys())}")
+				continue
+		except requests.exceptions.ConnectionError as e:
+			logger.warning(f"⚠️ Connection error for swap {url}: {e}")
+			continue
+		except requests.exceptions.Timeout as e:
+			logger.warning(f"⚠️ Timeout error for swap {url}: {e}")
+			continue
+		except Exception as e:
+			logger.warning(f"⚠️ Error with swap {url}: {e}")
+			continue
+	
+	logger.error("❌ All Jupiter swap URLs failed")
+	return None
+
+class MEVJupiterExecutor(BaseSolanaExecutor):
+	"""
+	Jupiter aggregator executor implementing official Solana best practices
+	Inherits from BaseSolanaExecutor for consistent transaction handling
+	"""
+	def __init__(self, wallet_keypair: Keypair, rpc_url: str, config: SolanaExecutorConfig = None):
+		super().__init__(wallet_keypair, rpc_url, config)
+		logger.info(f"✅ Jupiter executor initialized with official Solana best practices")
+
+	async def execute_buy(self, token_mint: str, amount_sol: float, *, trade_info: dict = None, slippage_bps: int = 300) -> dict:
+		"""
+		1) Get route (SOL -> token_mint) from Jupiter
+		2) Get swap transaction (base64) for OUR wallet
+		3) Decode to VersionedTransaction, sign if needed
+		4) Send (Jito if configured), return signature
+		5) If send fails with BlockhashNotFound, re-request swapTransaction and retry once
+		"""
+		try:
+			lamports = max(1, int(amount_sol * 1_000_000_000))
+			route = await self._get_best_route("So11111111111111111111111111111111111111112", token_mint, lamports, slippage_bps)
+			if not route:
+				return {
+					"success": False, 
+					"error": "Jupiter API unavailable - may require authentication or have network issues. Consider using Raydium/Meteora executors instead."
+				}
+
+			swap_b64 = await self._get_swap_transaction(route, str(self.wallet_pubkey))
+			if not swap_b64:
+				return {"success": False, "error": "no jupiter swap tx"}
+
+			raw = base64.b64decode(swap_b64)
+			tx = VersionedTransaction.from_bytes(raw)
+			tx = await self._sign_if_needed(tx)
+
+			try:
+				sig = await self._send_versioned_transaction(tx)
+				return {"success": True, "signature": sig, "executor": "jupiter"}
+			except Exception as e:
+				err_str = str(e)
+				if "BlockhashNotFound" in err_str or "blockhash not found" in err_str:
+					logger.warning("BlockhashNotFound detected, retrying Jupiter swapTransaction...")
+					swap_b64_retry = await self._get_swap_transaction(route, str(self.wallet_pubkey))
+					if not swap_b64_retry:
+						return {"success": False, "error": "no jupiter swap tx (retry)"}
+					raw_retry = base64.b64decode(swap_b64_retry)
+					tx_retry = VersionedTransaction.from_bytes(raw_retry)
+					tx_retry = await self._sign_if_needed(tx_retry)
+					try:
+						sig_retry = await self._send_versioned_transaction(tx_retry)
+						return {"success": True, "signature": sig_retry, "executor": "jupiter", "retry": True}
+					except Exception as e2:
+						logger.exception("MEVJupiterExecutor.execute_buy failed on retry")
+						return {"success": False, "error": f"Blockhash retry failed: {str(e2)}"}
+				logger.exception("MEVJupiterExecutor.execute_buy failed")
+				return {"success": False, "error": err_str}
+		except Exception as e:
+			logger.exception("MEVJupiterExecutor.execute_buy failed")
+			return {"success": False, "error": str(e)}
+
+	async def _get_best_route(self, in_mint: str, out_mint: str, amount_lamports: int, slippage_bps: int):
+		# Use your existing Jupiter quote function. Must return a route object.
+		loop = asyncio.get_event_loop()
+		return await loop.run_in_executor(None, get_best_route, in_mint, out_mint, amount_lamports, slippage_bps)
+
+	async def _get_swap_transaction(self, route: dict, user_pubkey: str) -> str:
+		# Use your existing Jupiter swap endpoint. Must return base64 'swapTransaction'.
+		loop = asyncio.get_event_loop()
+		return await loop.run_in_executor(None, get_swap_transaction, route, Pubkey.from_string(user_pubkey))
+
+	async def _sign_if_needed(self, tx: VersionedTransaction) -> VersionedTransaction:
+		# If the tx is not fully signed, add wallet signature.
+		try:
+			tx.sign([self.wallet_keypair])
+		except Exception:
+			pass
+		return tx
+
+	async def _send_versioned_transaction(self, tx: VersionedTransaction) -> str:
+		# Prefer Jito if available, else RPC. Re-fetch a fresh blockhash only if you rebuild the message.
+		if hasattr(self, 'jito_service') and self.jito_service:
+			return await self.jito_service.send_bundle([tx])
+		else:
+			return await self.send_versioned_transaction(tx, use_jito=False)
+
+	async def execute_sell(self, token_mint: str, amount_token: float, *, trade_info: dict = None, slippage_bps: int = 300) -> dict:
+		"""
+		Sell tokens for SOL (or WSOL) using Jupiter aggregator.
+
+		Args:
+			token_mint: SPL token mint address to sell
+			amount_token: Amount of SPL token to sell (in token units, not lamports)
+			trade_info: Optional trade info from copied wallet
+			slippage_bps: Slippage basis points
+
+		Returns:
+			dict with success, signature, etc.
+		"""
+		try:
+			# 1) Get token decimals (use trade_info, or query if needed)
+			decimals = trade_info.get("decimals") if trade_info and "decimals" in trade_info else 6  # Default 6; replace with actual
+			lamports = int(amount_token * (10 ** decimals))
+
+			# 2) Determine destination mint (SOL or WSOL)
+			destination_mint = trade_info.get("destination_mint") if trade_info and "destination_mint" in trade_info else "So11111111111111111111111111111111111111112"
+			
+			# 3) Get Jupiter quote for token_mint → destination_mint
+			route = await self._get_best_route(token_mint, destination_mint, lamports, slippage_bps)
+			if not route:
+				return {"success": False, "error": "no jupiter route"}
+
+			# 4) Get swap transaction for your wallet
+			swap_b64 = await self._get_swap_transaction(route, str(self.wallet_pubkey))
+			if not swap_b64:
+				return {"success": False, "error": "no jupiter swap tx"}
+
+			# 5) Decode and sign transaction
+			raw = base64.b64decode(swap_b64)
+			tx = VersionedTransaction.from_bytes(raw)
+			tx = await self._sign_if_needed(tx)
+
+			# 6) Send transaction with retry logic for blockhash issues
+			try:
+				sig = await self._send_versioned_transaction(tx)
+				return {"success": True, "signature": sig, "executor": "jupiter"}
+			except Exception as e:
+				err_str = str(e)
+				if "BlockhashNotFound" in err_str or "blockhash not found" in err_str:
+					logger.warning("BlockhashNotFound detected on sell, retrying Jupiter swapTransaction...")
+					# Retry with fresh transaction
+					swap_b64_retry = await self._get_swap_transaction(route, str(self.wallet_pubkey))
+					if not swap_b64_retry:
+						return {"success": False, "error": "no jupiter swap tx (retry)"}
+					
+					raw_retry = base64.b64decode(swap_b64_retry)
+					tx_retry = VersionedTransaction.from_bytes(raw_retry)
+					tx_retry = await self._sign_if_needed(tx_retry)
+					
+					try:
+						sig_retry = await self._send_versioned_transaction(tx_retry)
+						return {"success": True, "signature": sig_retry, "executor": "jupiter", "retry": True}
+					except Exception as e2:
+						logger.exception("MEVJupiterExecutor.execute_sell failed on retry")
+						return {"success": False, "error": f"Blockhash retry failed: {str(e2)}"}
+				
+				logger.exception("MEVJupiterExecutor.execute_sell failed")
+				return {"success": False, "error": err_str}
+		except Exception as e:
+			logger.exception("MEVJupiterExecutor.execute_sell failed")
+			return {"success": False, "error": str(e)}
+
+	async def _get_token_balance(self, token_mint: str) -> Optional[int]:
+		"""
+		Get token balance for the wallet
+		Returns balance in smallest units (like lamports for SOL)
+		"""
+		try:
+			from spl.token.instructions import get_associated_token_address
+			
+			token_mint_pubkey = Pubkey.from_string(token_mint)
+			token_account = get_associated_token_address(self.wallet_pubkey, token_mint_pubkey)
+			
+			response = await self.client.get_token_account_balance(token_account)
+			if response.value and response.value.amount:
+				return int(response.value.amount)
+			return 0
+			
+		except Exception as e:
+			logger.warning(f"Error getting token balance for {token_mint}: {e}")
+			return None

@@ -1,0 +1,284 @@
+"""Fast transaction executor for Solana with Jito integration."""
+
+import asyncio
+import aiohttp
+import base64
+import json
+import logging
+import traceback
+from typing import Dict, List, Optional, Set, Tuple, Any, Union
+
+from solders.pubkey import Pubkey
+from solders.keypair import Keypair
+from solders.hash import Hash
+from solders.instruction import Instruction
+from solders.message import MessageV0
+from solders.transaction import VersionedTransaction
+from solders.system_program import TransferParams, transfer
+from solders.compute_budget import set_compute_unit_price
+
+class FastExecutor:
+    def __init__(self, 
+                 keypair: Keypair,
+                 rpc_urls: List[str],
+                 logger: Optional[logging.Logger] = None):
+        """Initialize FastExecutor with a list of RPC endpoints."""
+        self.keypair = keypair
+        self.rpc_urls = rpc_urls
+        self.healthy_rpcs = set()
+        self.logger = logger or logging.getLogger(__name__)
+
+    async def __aenter__(self):
+        """Set up RPC health tracking."""
+        await self.check_rpc_health()
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Clean up resources."""
+        pass
+
+    async def get_working_rpc(self) -> Optional[str]:
+        """Get a working RPC endpoint, checking health if needed."""
+        if not self.healthy_rpcs:
+            await self.check_rpc_health()
+            
+        if not self.healthy_rpcs:
+            return None
+            
+        return next(iter(self.healthy_rpcs))
+
+    async def check_rpc_health(self):
+        """Update the set of healthy RPC endpoints."""
+        self.healthy_rpcs.clear()
+        
+        for rpc in self.rpc_urls:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    payload = {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "getHealth",
+                    }
+                    
+                    async with session.post(rpc, json=payload) as response:
+                        if response.ok:
+                            result = await response.json()
+                            if "result" in result and result["result"] == "ok":
+                                self.healthy_rpcs.add(rpc)
+                                self.logger.info(f"RPC {rpc} is healthy")
+                                
+            except Exception as e:
+                self.logger.warning(f"RPC {rpc} health check failed: {e}")
+                continue
+
+    async def get_latest_blockhash(self) -> Optional[Hash]:
+        """Get a fresh blockhash from a healthy RPC."""
+        rpc_url = await self.get_working_rpc()
+        if not rpc_url:
+            return None
+            
+        try:
+            async with aiohttp.ClientSession() as session:
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getLatestBlockhash",
+                    "params": []
+                }
+                
+                async with session.post(rpc_url, json=payload) as response:
+                    if not response.ok:
+                        return None
+                        
+                    result = await response.json()
+                    if "error" in result:
+                        return None
+                        
+                    blockhash = result.get("result", {}).get("value", {}).get("blockhash")
+                    if not blockhash:
+                        return None
+                        
+                    return Hash.from_string(blockhash)
+                    
+        except Exception as e:
+            self.logger.error(f"Error getting latest blockhash: {e}")
+            return None
+
+    async def send_transaction(self, 
+                           transaction: VersionedTransaction, 
+                           signers: List[Keypair],
+                           original_instructions: List[Instruction],  # Need original instructions for rebuilding
+                           retries: int = 3) -> Optional[str]:
+        """Send a transaction to a healthy RPC with immediate blockhash usage."""
+        try:
+            message = transaction.message
+            if not isinstance(message, MessageV0):
+                self.logger.error("❌ Only VersionedTransaction with MessageV0 supported")
+                return None
+
+            # Get RPCs to alternate between
+            rpc_urls = [
+                "https://api.mainnet-beta.solana.com",
+                await self.get_working_rpc()
+            ]
+            rpc_idx = 0
+
+            # Try each attempt
+            for attempt in range(retries):
+                self.logger.debug(f"\n🔄 Attempt {attempt + 1}/{retries}")
+                
+                # 1. Get a fresh blockhash
+                latest_blockhash = await self.get_latest_blockhash()
+                if not latest_blockhash:
+                    self.logger.error("❌ Failed to get blockhash")
+                    if attempt < retries - 1:
+                        continue
+                    return None
+
+                self.logger.debug(f"Fresh blockhash: {latest_blockhash}")
+
+                # 2. Build new message
+                try:
+                    new_message = MessageV0.try_compile(
+                        payer=message.account_keys[0],  # First account is payer
+                        instructions=original_instructions,
+                        recent_blockhash=latest_blockhash,
+                        address_lookup_table_accounts=[]
+                    )
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to compile message: {e}")
+                    if attempt < retries - 1:
+                        continue
+                    return None
+
+                # 3. Sign immediately
+                try:
+                    message_bytes = to_bytes_versioned(new_message)
+                    signatures = [signer.sign_message(message_bytes) for signer in signers]
+                    new_tx = VersionedTransaction.populate(new_message, signatures)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to sign transaction: {e}")
+                    if attempt < retries - 1:
+                        continue
+                    return None
+
+                # 4. Serialize and send immediately
+                serialized_tx = base64.b64encode(bytes(new_tx)).decode("utf-8")
+                current_rpc = rpc_urls[rpc_idx]
+                rpc_idx = (rpc_idx + 1) % len(rpc_urls)
+
+                self.logger.debug(f"🌐 Sending via: {current_rpc}")
+                
+                # Prepare RPC call
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": f"send-tx-{attempt}",
+                    "method": "sendTransaction",
+                    "params": [
+                        serialized_tx,
+                        {
+                            "encoding": "base64",
+                            "skipPreflight": True,  # Speed up submission
+                            "maxRetries": 1,  # We handle retries
+                        }
+                    ]
+                }
+
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(current_rpc, json=payload) as response:
+                            if not response.ok:
+                                self.logger.error(f"❌ HTTP {response.status}")
+                                if attempt < retries - 1:
+                                    continue
+                                return None
+
+                            result = await response.json()
+                            
+                            if "error" in result:
+                                error = result["error"]
+                                if "BlockhashNotFound" in str(error):
+                                    self.logger.warning("⚠️ Blockhash expired, retrying...")
+                                    if attempt < retries - 1:
+                                        continue
+                                    return None
+                                else:
+                                    self.logger.error(f"❌ Transaction failed: {json.dumps(error, indent=2)}")
+                                    return None
+
+                            signature = result.get("result")
+                            if not signature:
+                                self.logger.error("❌ No signature in response")
+                                if attempt < retries - 1:
+                                    continue
+                                return None
+
+                            self.logger.info(f"✅ Transaction sent: {signature}")
+                            return signature
+
+                except Exception as e:
+                    self.logger.error(f"❌ Network error: {e}")
+                    if attempt < retries - 1:
+                        continue
+                    return None
+
+            self.logger.error(f"❌ Failed after {retries} attempts")
+            return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Unhandled error: {str(e)}\n{traceback.format_exc()}")
+            return None
+            
+    async def wait_for_confirmation(
+        self,
+        signature: str,
+        timeout: int = 60
+    ) -> bool:
+        """Wait for a transaction to be confirmed."""
+        try:
+            deadline = asyncio.get_event_loop().time() + timeout
+            while asyncio.get_event_loop().time() < deadline:
+                rpc_url = await self.get_working_rpc()
+                if not rpc_url:
+                    await asyncio.sleep(1)
+                    continue
+
+                async with aiohttp.ClientSession() as session:
+                    payload = {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "getSignatureStatuses",
+                        "params": [[signature]]
+                    }
+
+                    async with session.post(rpc_url, json=payload) as response:
+                        if not response.ok:
+                            await asyncio.sleep(1)
+                            continue
+
+                        result = await response.json()
+                        if "error" in result:
+                            await asyncio.sleep(1)
+                            continue
+
+                        status = result.get("result", {}).get("value", [{}])[0]
+                        if not status:
+                            await asyncio.sleep(1)
+                            continue
+
+                        if status.get("err"):
+                            self.logger.error(f"❌ Transaction failed: {status['err']}")
+                            return False
+
+                        if status.get("confirmationStatus") == "finalized":
+                            self.logger.info(f"✅ Transaction confirmed! Slot: {status.get('slot', 'unknown')}")
+                            return True
+
+                await asyncio.sleep(1)
+
+            self.logger.error(f"❌ Transaction not confirmed after {timeout} seconds")
+            return False
+
+        except Exception as e:
+            self.logger.error(f"Error waiting for confirmation: {e}")
+            return False

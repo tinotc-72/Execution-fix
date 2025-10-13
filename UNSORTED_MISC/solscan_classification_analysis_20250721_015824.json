@@ -1,0 +1,29 @@
+{
+  "timestamp": "2025-07-21T01:58:24.342775",
+  "analysis_type": "solscan_classification",
+  "target_wallets": [
+    "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK",
+    "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj"
+  ],
+  "overall_stats": {
+    "total_wallets": 2,
+    "successful_analyses": 0,
+    "total_trades": 0,
+    "total_buys": 0,
+    "total_sells": 0,
+    "dex_distribution": {},
+    "program_coverage": []
+  },
+  "wallet_analyses": {
+    "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK": {
+      "wallet": "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK",
+      "error": "No transactions found",
+      "trades": []
+    },
+    "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj": {
+      "wallet": "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj",
+      "error": "No transactions found",
+      "trades": []
+    }
+  }
+}

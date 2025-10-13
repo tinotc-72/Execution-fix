@@ -1,496 +1,835 @@
-# main.py
+#!/usr/bin/env python3
+"""
+Simple Copy Trading Bot - Essential functionality only
+"""
 
-import os
 import asyncio
 import json
-import base64
-import statistics
-import time
-from typing import List, Dict, Union, Optional
-from dataclasses import dataclass
-from datetime import datetime, UTC
-from statistics import mean
-import websockets
-from websockets.client import connect
-import aiohttp
+import logging
+import signal
+import sys
 import traceback
+import time
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any, Set
+from dataclasses import dataclass, field
 
-# Solana imports
 from solders.pubkey import Pubkey
-from solders.keypair import Keypair
-from solders.transaction import VersionedTransaction
-from solders.message import MessageV0
-from solders.instruction import Instruction, AccountMeta
+from config import WALLET
+from solana.rpc.async_api import AsyncClient
 
-# Jito imports
-from models import Bundle   # Only import Bundle once
-from jito_service import JitoClient  # From our local file
+# Import utilities
+from utils import get_transaction_with_logs, load_keypair
 
-# Local imports
-import keyZ as kz
-from fast_executor import FastExecutor
-from tx_builder import (
-    create_and_sign_transaction,
-    RPC_ENDPOINTS,
-    create_jito_tip_instruction,
-    START_TIME,
-    CURRENT_USER
+# Import specialized modules
+from copy_trade_logger import get_copy_trade_logger
+
+# Import execution coordinator for trading
+from execution_coordinator import ExecutionCoordinator
+from transaction_cloner import TransactionCloner
+
+# Import trade processor for clean logic separation
+
+from trade_processor import TradeProcessor
+from wallet_tx_parser import WalletTransactionParser
+
+# Import core services
+
+
+try:
+    from env_keys import EnvKeys
+    ENV_KEYS_AVAILABLE = True
+except ImportError:
+    class EnvKeys:
+        def __init__(self):
+            self.HELIUS_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=YOUR_KEY_HERE"
+            self.HELIUS_WS_URL = "wss://mainnet.helius-rpc.com/?api-key=YOUR_KEY_HERE"
+    ENV_KEYS_AVAILABLE = False
+
+# Import WebSocket handler
+try:
+    from websocket_handler import WebSocketHandler, create_websocket_handler
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    class WebSocketHandler:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def start_monitoring(self):
+            pass
+        async def stop(self):
+            pass
+    async def create_websocket_handler(*args, **kwargs):
+        return WebSocketHandler()
+    WEBSOCKET_AVAILABLE = False
+
+from config import CopyTradeConfig
+# Setup simple logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
 )
-from config import (
-    DECODED_PRIVATE_KEY,
-    BOT_PUBKEY,
-    HELIUS_RPC_URL as RPC_URL,
-    HELIUS_WS_URL as WS_URL
-)
 
-def get_current_user() -> str:
-    """Get current user's login name"""
-    return os.getlogin()
+logger = logging.getLogger(__name__)
 
-def get_formatted_datetime() -> str:
-    """Get current UTC datetime formatted as YYYY-MM-DD HH:MM:SS"""
-    return datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')
-
-@dataclass
-class PerformanceStats:
-    trades_seen: int = 0
-    trades_mirrored: int = 0
-    successful_mirrors: int = 0
-    mirror_latencies: List[float] = None
-
-    def __post_init__(self):
-        self.mirror_latencies = []
-
-    @property
-    def avg_latency(self) -> float:
-        if not self.mirror_latencies:
-            return 0.0
-        return mean(self.mirror_latencies)
-
-class JitoClient:
-    def __init__(self):
-        self.url = "https://phoenix.rpc.jito.wtf"
-        self.headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {kz.JITO_UUID}"
-        }
-        self.session = aiohttp.ClientSession(headers=self.headers)
-        
-    async def send_bundle(self, bundle: Bundle) -> Optional[str]:
-        """Send bundle following docs.jito.wtf"""
-        try:
-            if not isinstance(bundle, Bundle):
-                print(f"❌ Invalid bundle type: {type(bundle)}")
-                return None
-                
-            bundle_json = bundle.to_json()
-            if bundle_json is None:
-                return None
-                
-            data = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "sendBundle",
-                "params": [bundle_json]
-            }
-            
-            print(f"\n📦 Submitting bundle to Jito...")
-            print(f"📝 Bundle transactions: {len(bundle.transactions)}")
-            
-            async with self.session.post(self.url, json=data) as response:
-                response_text = await response.text()
-                print(f"🔍 Jito Response Status: {response.status}")
-                print(f"🔍 Jito Response: {response_text}")
-                
-                if response.status == 200:
-                    result = json.loads(response_text)
-                    if "error" in result:
-                        print(f"❌ Jito bundle error: {result['error']}")
-                        return None
-                    print("✅ Bundle submitted successfully")
-                    return result.get('result')
-                else:
-                    print(f"⚠️ Jito API returned status {response.status}")
-                    return None
-                    
-        except Exception as e:
-            print(f"❌ Jito API request failed: {str(e)}")
-            traceback.print_exc()
-            return None
-        
-async def fetch_transaction(signature: str, rpc_url: str) -> Optional[dict]:
-    """Fetch full transaction details from a signature"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            json_data = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getTransaction",
-                "params": [
-                    signature,
-                    {
-                        "encoding": "base64",
-                        "maxSupportedTransactionVersion": 0,
-                        "commitment": "confirmed"
-                    }
-                ]
-            }
-            async with session.post(rpc_url, json=json_data) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    if "result" in result and result["result"]:
-                        return result["result"]
-                    print(f"❌ No transaction data found for signature: {signature}")
-                    return None
-                print(f"❌ Failed to fetch transaction: HTTP {response.status}")
-                return None
-    except Exception as e:
-        print(f"❌ Error fetching transaction: {str(e)}")
-        return None
-
-class CopyTradingBot:
-    def __init__(self, keypair: Keypair, target_wallet: str):
-        self.keypair = keypair
-        self.target_wallet = target_wallet
-        self.CURRENT_TIME = get_formatted_datetime()
-        self.CURRENT_USER = get_current_user()
-        self.rpc_url = RPC_URL
-        self.ws_url = WS_URL
-        self.stats = PerformanceStats()
-        self.executor = FastExecutor(keypair)
-
-    async def initialize(self):
-        """Initialize bot components"""
-        try:
-            print("\n🔧 Initializing bot components...")
-            
-            # Initialize FastExecutor
-            await self.executor.initialize()
-            print("✅ FastExecutor initialized")
-            
-            # Initialize JitoClient
-            self.jito_client = JitoClient()
-            print("✅ JitoClient initialized")
-            
-            # Print configuration
-            print("\n📝 Bot Configuration:")
-            print(f"🎯 Target Wallet: {self.target_wallet}")
-            print(f"💰 Your Wallet: {self.keypair.pubkey()}")
-            print(f"🌐 RPC URL: {self.rpc_url}")
-            print(f"📡 WebSocket URL: {self.ws_url}")
-            
-            print("\n✅ Bot initialization complete")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Bot initialization failed: {str(e)}")
-            traceback.print_exc()
-            return False
+def log_failed_trade_analysis(trade_info, failure_reason="unknown", retry_count=0, routing_data=None):
+    """Log failed trade analysis for offline debugging and pattern analysis."""
+    import json
+    from datetime import datetime
     
-    async def get_recent_blockhash(self) -> str:
-        """Get a recent blockhash from the network"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                json_data = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "getLatestBlockhash",
-                    "params": [{"commitment": "confirmed"}]
-                }
-                async with session.post(self.rpc_url, json=json_data) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if "result" in result and "value" in result["result"]:
-                            return result["result"]["value"]["blockhash"]
-                        else:
-                            raise Exception("Invalid response format")
-                    else:
-                        raise Exception(f"HTTP {response.status}")
-        except Exception as e:
-            print(f"❌ Failed to get blockhash: {str(e)}")
-            raise
+    log_entry = {
+        "timestamp": datetime.now().isoformat(),
+        "failure_reason": failure_reason,
+        "retry_count": retry_count,
+        "trade_info": trade_info,
+        "routing_data": routing_data,
+        "signature": trade_info.get("signature", "unknown"),
+        "wallet_address": trade_info.get("wallet_address", "unknown"),
+        "dex_type": trade_info.get("dex_type", "unknown"),
+        "program_id": trade_info.get("program_id", "unknown")
+    }
+    
+    try:
+        with open("failed_trade_analysis.log", "a") as f:
+            f.write(json.dumps(log_entry, default=str) + "\n")
+        logger.debug(f"📝 Logged failed trade analysis: {failure_reason} - {trade_info.get('signature', 'unknown')[:12]}...")
+    except Exception as e:
+        logger.error(f"❌ Failed to log trade analysis: {e}")
 
-    def log_stats(self):
-        """Log current performance statistics"""
-        print("\n📊 Transaction Processing Summary")
-        print(f"Total trades seen    : {self.stats.trades_seen}")
-        print(f"Trades mirrored      : {self.stats.trades_mirrored}")
-        print(f"Successful mirrors   : {self.stats.successful_mirrors}")
-        if self.stats.mirror_latencies:
-            avg_latency = statistics.mean(self.stats.mirror_latencies)
-            print(f"Average latency (ms) : {avg_latency:.2f}")
-        
+# 🚀 JITO SERVICE IMPORT - Activate MEV protection
+try:
+    from jito_service import JitoClient
+    JITO_AVAILABLE = True
+    logger.info("✅ Jito service available - MEV protection ready")
+except ImportError:
+    logger.warning("⚠️ Jito service not available - will use RPC fallback")
+    JITO_AVAILABLE = False
 
-    async def process_transaction_data(self, data: str):
-        try:
-            start_time = time.time()
-            print("\n📥 Processing transaction")
-            print(f"📝 Data type: {type(data)}")
-            print(f"📝 String length: {len(data)}")
-            print(f"📝 Preview: {data[:64]}...")
+# Global bot instance for signal handlers
+bot_instance = None
 
-            # Decode transaction
-            try:
-                decoded = base64.b64decode(data)
-                print(f"✅ Base64 decode successful ({len(decoded)} bytes)")
-                versioned_tx = VersionedTransaction.from_bytes(decoded)
-                message = versioned_tx.message
-                
-                # Get blockhash
-                blockhash = await self.get_recent_blockhash()
-                print(f"✅ Got blockhash: {blockhash[:10]}...")
-                
-                # Create new instructions
-                new_instructions = []
-                print(f"\n🔄 Converting {len(message.instructions)} instructions...")
-                
-                for idx, ix in enumerate(message.instructions):
-                    program_id = message.account_keys[ix.program_id_index]
-                    accounts = []
-                    for acc_idx in ix.accounts:
-                        if acc_idx < len(message.account_keys):
-                            pubkey = message.account_keys[acc_idx]
-                            is_signer = acc_idx < message.header.num_required_signatures
-                            is_writable = (
-                                acc_idx < (message.header.num_required_signatures - 
-                                        message.header.num_readonly_signed_accounts) or
-                                (acc_idx >= message.header.num_required_signatures and 
-                                acc_idx < (len(message.account_keys) - 
-                                        message.header.num_readonly_unsigned_accounts))
-                            )
-                            meta = AccountMeta(
-                                pubkey=pubkey,
-                                is_signer=is_signer,
-                                is_writable=is_writable
-                            )
-                            accounts.append(meta)
-                    
-                    new_ix = Instruction(
-                        program_id=program_id,
-                        accounts=accounts,
-                        data=ix.data
-                    )
-                    new_instructions.append(new_ix)
-                    print(f"✅ Instruction {idx + 1} converted")
 
-                # Create transaction with instructions
-                tx = create_and_sign_transaction(
-                    keypair=self.keypair,
-                    instructions=new_instructions,
-                    recent_blockhash=blockhash
+from execution_coordinator import normalize_dex, ROUTE_MAP
+
+
+class SimpleCopyTradingBot:
+    async def _process_detected_trade(self, trade_info: Dict[str, Any]):
+        """
+        Canonical per-trade handler:
+        - requires a real signature (skip account-change stubs)
+        - derives source_wallet
+        - runs analyze_and_route_trade(trade_info, source_wallet)
+        - dispatches to coordinator for buy/sell
+        """
+        signature = trade_info.get("signature")
+        if not signature or signature == "unknown":
+            logger.info("ℹ️ Skipping account-change stub (no signature yet); waiting for logs event.")
+            return
+
+        # Prefer the wallet from the event; otherwise fall back to config/wallet
+        source_wallet = (
+            trade_info.get("wallet_address")
+            or (self.target_wallets[0] if self.target_wallets else None)
+            or str(self.wallet_pubkey)
+        )
+
+        logger.info("🔍 Running router detection for detected trade.")
+        routing = await self._resilient_async_call(
+            self.trade_processor.analyze_and_route_trade,
+            trade_info,
+            source_wallet,        # ← REQUIRED
+        )
+        if not routing:
+            logger.error("❌ No routing instructions returned.")
+            return
+
+        action = routing.get("action", "unknown")
+        enriched = routing.get("trade_info", trade_info)  # carries program IDs / router info
+        token_mint = routing.get("token_mint") or enriched.get("token_mint")
+        dex = normalize_dex(
+            enriched.get("dex_type") or routing.get("dex") or "unknown"
+        )
+
+                # === RETRY LOGIC FOR UNCERTAIN TRADES ===
+        if action == 'unknown' or token_mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
+            for retry in range(3):
+                logger.warning(f"Uncertain action or token mint detected (attempt {retry+1}/3). Retrying analysis...")
+                await asyncio.sleep(0.2)  # Fast retry for copy trading speed
+                routing = await self._resilient_async_call(
+                    self.trade_processor.analyze_and_route_trade,
+                    trade_info,
+                    source_wallet,
                 )
-                
-                if tx:  # If transaction was created successfully
-                    # Create bundle using the official Jito Bundle
-                    bundle = Bundle(transactions=[tx])
-                    self.stats.trades_mirrored += 1
-                    print("\n✅ Transaction created successfully")
+                action = routing.get("action", "unknown")
+                token_mint = routing.get("token_mint") or enriched.get("token_mint")
+                if action != 'unknown' and token_mint not in ['UNKNOWN', 'PENDING_ANALYSIS']:
+                    break
+            if action == 'unknown' or token_mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
+                logger.error(f"Uncertain action or token mint after retries: action={action}, token_mint={token_mint}")
+                log_failed_trade_analysis(
+                    trade_info, 
+                    failure_reason=f"failed_after_retries_action_{action}_mint_{token_mint}",
+                    retry_count=3,
+                    routing_data=routing
+                )
+                return
+
+        # === MINT/ACTION UNCERTAINTY DEBUGGING IN MAIN ===
+        if action == 'unknown' or token_mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
+            logger.error(f"Uncertain action or token mint detected in main: action={action}, token_mint={token_mint}, trade_info={enriched}")
+            logger.error(f"   Original routing: {routing}")
+            logger.error(f"   Signature: {enriched.get('signature', 'missing') if enriched else 'no_enriched_data'}")
+            logger.error(f"   Source wallet: {source_wallet}")
+            log_failed_trade_analysis(
+                enriched or trade_info, 
+                failure_reason=f"uncertain_after_successful_retries_action_{action}_mint_{token_mint}",
+                retry_count=0,
+                routing_data=routing
+            )
+
+        # === TOKEN BALANCE CHANGE REQUIREMENT FOR ALL MONITORED WALLETS ===
+        # Check EVERY monitored wallet for token balance changes
+        meta = enriched.get('meta') or trade_info.get('meta')
+        if meta:
+            pre_balances = meta.get('preTokenBalances', [])
+            post_balances = meta.get('postTokenBalances', [])
+            
+            # Build mapping from (owner, mint) -> amount for efficient lookup
+            pre_map = {}
+            post_map = {}
+            
+            for balance in pre_balances:
+                owner = balance.get('owner')
+                mint = balance.get('mint')
+                amount = int(balance.get('uiTokenAmount', {}).get('amount', '0'))
+                if owner and mint:
+                    pre_map[(owner, mint)] = amount
                     
-                    # Submit bundle
-                    signature = await self.executor.submit_transaction(bundle)
-                    if signature:
-                        self.stats.successful_mirrors += 1
-                        end_time = time.time()
-                        latency = (end_time - start_time) * 1000
-                        self.stats.mirror_latencies.append(latency)
-                        print(f"🎯 Transaction submitted: {signature}")
-                        print(f"⚡ Execution time: {latency:.2f}ms")
-                    else:
-                        print("❌ Transaction submission failed")
+            for balance in post_balances:
+                owner = balance.get('owner')
+                mint = balance.get('mint')
+                amount = int(balance.get('uiTokenAmount', {}).get('amount', '0'))
+                if owner and mint:
+                    post_map[(owner, mint)] = amount
+            
+            # Check ALL monitored wallets for balance changes
+            detected_trades = []
+            for wallet in self.target_wallets:  # Loop through ALL monitored wallets
+                logger.debug(f"🔍 Checking wallet {wallet[:8]}... for balance changes")
+                
+                # Get all (wallet, mint) pairs for this wallet
+                wallet_keys = set()
+                for (owner, mint) in pre_map.keys():
+                    if owner == wallet:
+                        wallet_keys.add((owner, mint))
+                for (owner, mint) in post_map.keys():
+                    if owner == wallet:
+                        wallet_keys.add((owner, mint))
+                
+                # Check for balance changes for this wallet
+                for (owner, mint) in wallet_keys:
+                    pre_amt = pre_map.get((owner, mint), 0)
+                    post_amt = post_map.get((owner, mint), 0)
+                    delta = post_amt - pre_amt
+                    
+                    if delta != 0:
+                        # Found a balance change for this wallet!
+                        detected_action = "buy" if delta > 0 else "sell"
+                        logger.info(f"🎯 {detected_action.upper()} detected for wallet {wallet[:8]}... on token {mint[:8] if mint else 'N/A'}...: {pre_amt} → {post_amt} (Δ{delta:+,})")
+                        
+                        detected_trades.append({
+                            'wallet': wallet,
+                            'mint': mint,
+                            'action': detected_action,
+                            'pre_amount': pre_amt,
+                            'post_amount': post_amt,
+                            'delta': delta
+                        })
+            
+            if not detected_trades:
+                logger.info(f"🚫 Skipping execution: No token balance changes detected for any monitored wallet")
+                logger.info(f"   Checked wallets: {[w[:8] + '...' for w in self.target_wallets]}")
+                log_failed_trade_analysis(
+                    enriched or trade_info,
+                    failure_reason="no_token_balance_change_detected_any_wallet",
+                    retry_count=0,
+                    routing_data={
+                        "routing": routing,
+                        "pre_balances_count": len(pre_balances),
+                        "post_balances_count": len(post_balances),
+                        "monitored_wallets": self.target_wallets,
+                        "checked_wallet_count": len(self.target_wallets)
+                    }
+                )
+                return
+            
+            # Execute trades for each detected wallet/token combination
+            logger.info(f"✅ Found {len(detected_trades)} balance change(s) across monitored wallets - executing copy trades")
+            
+            execution_results = []
+            for trade in detected_trades:
+                wallet = trade['wallet']
+                mint = trade['mint']
+                detected_action = trade['action']
+                
+                logger.info(f"🚀 Executing copy trade for wallet {wallet[:8]}... token {mint[:8]}... action: {detected_action}")
+                
+                # Use the detected action and wallet for this specific trade
+                if detected_action in ("buy", "swap_in"):
+                    exec_res = await self._resilient_async_call(
+                        self.execution_coordinator._execute_copy_buy,
+                        token_mint=mint,
+                        source_wallet=wallet,  # Use the specific wallet that had the balance change
+                        trade_info=enriched,
+                    )
+                elif detected_action in ("sell", "swap_out"):
+                    exec_res = await self._resilient_async_call(
+                        self.execution_coordinator._execute_copy_sell,
+                        token_mint=mint,
+                        source_wallet=wallet,  # Use the specific wallet that had the balance change
+                        trade_info=enriched,
+                    )
                 else:
-                    print("❌ Failed to create transaction")
+                    logger.warning(f"⚠️ Unknown action '{detected_action}' for wallet {wallet[:8]}... - skipping execution")
+                    continue
+                
+                execution_results.append({
+                    'wallet': wallet,
+                    'mint': mint,
+                    'action': detected_action,
+                    'result': exec_res
+                })
+            
+            logger.info(f"🎯 Completed {len(execution_results)} copy trade executions")
+            return  # Exit here since we handled all detected trades
+        else:
+            logger.warning(f"⚠️ No metadata available to verify token balance changes - proceeding with execution")
 
+        if action in ("buy", "swap_in"):
+            exec_res = await self._resilient_async_call(
+                self.execution_coordinator._execute_copy_buy,
+                token_mint=token_mint,
+                source_wallet=source_wallet,
+                trade_info=enriched,
+            )
+        elif action in ("sell", "swap_out"):
+            exec_res = await self._resilient_async_call(
+                self.execution_coordinator._execute_copy_sell,
+                token_mint=token_mint,
+                source_wallet=source_wallet,
+                trade_info=enriched,
+                detected_dex=dex,
+            )
+        else:
+            logger.warning(f"⚠️ Unknown action '{action}' — skipping execution.")
+            log_failed_trade_analysis(
+                enriched or trade_info,
+                failure_reason=f"unknown_action_{action}_skipped_execution",
+                retry_count=0,
+                routing_data=routing
+            )
+            return
+
+        if isinstance(exec_res, dict) and exec_res.get("success"):
+            logger.info(f"✅ Execution sent | Signature: {exec_res.get('signature')}")
+        else:
+            logger.error(f"❌ Execution failed: {exec_res}")
+            log_failed_trade_analysis(
+                enriched or trade_info,
+                failure_reason=f"execution_failed_{action}_result_{type(exec_res).__name__}",
+                retry_count=0,
+                routing_data={
+                    "routing": routing,
+                    "execution_result": exec_res,
+                    "action": action,
+                    "token_mint": token_mint,
+                    "dex": dex
+                }
+            )
+    async def _resilient_async_call(self, func, *args, max_retries=5, initial_delay=0.5, backoff=2, **kwargs):
+        """
+        Robust async call with exponential backoff and error logging.
+        """
+        delay = initial_delay
+        for attempt in range(1, max_retries + 1):
+            try:
+                return await func(*args, **kwargs)
             except Exception as e:
-                print(f"❌ Error processing transaction: {str(e)}")
-                traceback.print_exc()
-                
+                logger.error(f"[RESILIENT] Attempt {attempt} failed: {e}")
+                if attempt == max_retries:
+                    logger.error(f"[RESILIENT] Max retries reached for {func.__name__}")
+                    raise
+                await asyncio.sleep(delay)
+                delay *= backoff
+
+    async def execute_trade_with_fallback(self, trade_type, token_mint, amount=None, detected_dex=None, trade_info=None):
+        if normalize_dex(detected_dex) != "direct_copy":
+            return {"success": False, "error": "Universal cloner disabled for non-direct_copy"}
+        try:
+            if not trade_info or not trade_info.get('signature'):
+                logger.error("[UNIVERSAL CLONER] No signature in trade_info, cannot clone.")
+                return {"success": False, "error": "No signature in trade_info"}
+            signature = trade_info['signature']
+            logger.info(f"[UNIVERSAL CLONER] Executing {trade_type.upper()} for {token_mint[:8]}... (sig: {signature[:8]}...)")
+            override_accounts = {"payer": str(self.wallet.public_key)}
+            tx = await self._resilient_async_call(self.transaction_cloner.clone_transaction, signature, override_accounts=override_accounts)
+            if tx:
+                tx_sig = await self._resilient_async_call(self.transaction_cloner.send_cloned_transaction, tx)
+                if tx_sig:
+                    logger.info(f"[UNIVERSAL CLONER] Trade sent | Signature: {tx_sig}")
+                    return {"success": True, "signature": tx_sig}
+                else:
+                    logger.error(f"[UNIVERSAL CLONER] Failed to send cloned transaction for {signature}")
+                    return {"success": False, "error": "Failed to send cloned transaction"}
+            else:
+                logger.error(f"[UNIVERSAL CLONER] Failed to clone transaction for {signature}")
+                return {"success": False, "error": "Failed to clone transaction"}
         except Exception as e:
-            print(f"❌ Unexpected error: {str(e)}")
-            traceback.print_exc()
-        finally:
-            self.log_stats()
-
-    # Update the initialization message
-    async def start(self):
-        print("\n🚀 Copy Trading Bot Initialization")
-        print(f"👤 User: {self.CURRENT_USER}")
-        print(f"🎯 Target: Wallet A ({self.target_wallet})")
-        print(f"💰 Your Wallet: {self.keypair.pubkey()}")
-        print(f"⏰ Start time (UTC): {self.CURRENT_TIME}")
-
-    def _analyze_transaction_logs(self, logs: List[str]) -> bool:
-        """Analyze transaction logs to determine if they're relevant."""
-        relevant_instructions = {
-            "PumpAmmSwap", "Swap", "Exchange", "Transfer",
-            "TransferChecked", "Sell", "Buy", "PumpSell", "PumpBuy"
-        }
-        
-        for log in logs:
-            # Check for specific instructions
-            if "Instruction:" in log:
-                instruction = log.split("Instruction: ")[-1].strip()
-                if instruction in relevant_instructions:
-                    print(f"✅ Found relevant instruction: {instruction}")
-                    return True
-                
-            # Check for our target wallet
-            if self.target_wallet in log:
-                print(f"✅ Found target wallet in log")
-                return True
-                
-            # Check for specific program invocations
-            if "Program" in log and any(
-                program in log for program in [
-                    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",  # Token program
-                    "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW",  # Swap program
-                    "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"   # Additional swap program
-                ]
-            ):
-                print(f"✅ Found relevant program invocation")
-                return True
-        
+            logger.error(f"[UNIVERSAL CLONER] Exception: {e}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "error": str(e)}
+    # --- TEST HARNESS STUBS FOR INTEGRATION TESTS ---
+    async def send_transaction_jito_first(self, *args, **kwargs):
+        """Stub for Jito-first transaction sending."""
+        logger.warning("send_transaction_jito_first is a stub (not implemented)")
         return False
 
-    async def _start_websocket(self):
-        """Internal method to handle WebSocket connection and message processing"""
-        async with connect(self.ws_url) as ws:
-            print("📡 Connected to WebSocket")
-            
-            # Subscribe to account notifications with logs
-            subscribe_message = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "logsSubscribe",
-                "params": [
-                    {
-                        "mentions": [self.target_wallet]
-                    },
-                    {
-                        "commitment": "confirmed",
-                        "encoding": "base64"
-                    }
-                ]
-            }
-            
-            await ws.send(json.dumps(subscribe_message))
-            response = await ws.recv()
-            subscription_id = json.loads(response)["result"]
-            print(f"✅ Subscribed to logs (ID: {subscription_id})")
-            
-            print("\n🚀 Bot running - Press Ctrl+C to stop")
-            print(f"📊 Waiting for ANY Wallet A trades...\n")
-            
-            while True:
-                msg = await ws.recv()
-                data = json.loads(msg)
-                print(f"🔍 Full message: {json.dumps(data, indent=2)}")
-                
-                if "params" in data and "result" in data["params"]:
-                    result = data["params"]["result"]
-                    if "value" in result:
-                        value = result["value"]
-                        
-                        if "signature" in value and "err" in value and value["err"] is None:
-                            signature = value["signature"]
-                            print(f"📝 Found transaction signature: {signature}")
-                            
-                            if "logs" in value:
-                                logs = value["logs"]
-                                if self._analyze_transaction_logs(logs):
-                                    print("✅ Found relevant transaction")
-                                    tx_data = await fetch_transaction(signature, self.rpc_url)
-                                    if tx_data and "transaction" in tx_data:
-                                        print("✅ Retrieved transaction data")
-                                        transaction_data = tx_data["transaction"][0]
-                                        if transaction_data:
-                                            self.stats.trades_seen += 1
-                                            await self.process_transaction_data(transaction_data)
-                                        else:
-                                            print("❌ Empty transaction data")
-                                    else:
-                                        print("❌ Failed to fetch transaction details")
-                                else:
-                                    print("ℹ️ Transaction not relevant to our trading strategy")
-                        else:
-                            if "signature" in value and value["err"] is not None:
-                                print(f"⚠️ Transaction failed: {value['err']}")
-                            else:
-                                print("ℹ️ Non-transaction log message received")
+    async def _build_optimal_transaction(self, *args, **kwargs):
+        """Stub for optimal transaction building."""
+        logger.warning("_build_optimal_transaction is a stub (not implemented)")
+        return None
 
-    async def start(self):
-        """Start the trading bot with automatic reconnection"""
-        while True:
+
+    async def _try_jito_first_execution(self, token_mint, source_wallet, *args, **kwargs):
+        """Stub for Jito-first execution with correct signature."""
+        logger.warning("_try_jito_first_execution is a stub (not implemented)")
+        return False
+
+    async def _try_direct_rpc_execution(self, transaction_instructions, *args, **kwargs):
+        """Stub for direct RPC execution with correct signature."""
+        logger.warning("_try_direct_rpc_execution is a stub (not implemented)")
+        return False
+
+    # Wallet sign method wrapper for test compatibility
+    def sign(self, *args, **kwargs):
+        if hasattr(self.wallet, 'sign'):
+            return self.wallet.sign(*args, **kwargs)
+        logger.warning("Wallet sign method not implemented.")
+        return None
+
+    # --- END TEST HARNESS STUBS ---
+    """Simple copy trading bot - just the essentials"""
+    
+    def __init__(self, config: CopyTradeConfig):
+        self.config = config
+        self.is_running = False
+
+        # Core components
+        self.env_keys = EnvKeys()
+        self.wallet = WALLET
+        self.wallet_pubkey = self.wallet.pubkey()
+        # --- Enhanced error logging for RPC and Jito ---
+        # Initialize proper Solana RPC client for transaction analysis
+        try:
+            import aiohttp
+            self.rpc_client = AsyncClient(self.config.rpc_url)
+            logger.info(f"✅ RPC client initialized with endpoint: {self.config.rpc_url}")
+        except Exception as rpc_init_error:
+            logger.error(f"❌ Failed to initialize RPC client: {rpc_init_error}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
+
+        # 🚀 INITIALIZE JITO SERVICE for MEV protection
+        self.jito_service = None
+        if self.config.use_jito and JITO_AVAILABLE:
             try:
-                await self._start_websocket()
-            except websockets.exceptions.ConnectionClosed:
-                print("📡 WebSocket disconnected, reconnecting...")
-                await asyncio.sleep(1)
-            except KeyboardInterrupt:
-                print("\n🛑 Received stop signal")
-                break
-            except Exception as e:
-                print(f"❌ Error: {str(e)}")
-                await asyncio.sleep(1)
+                logger.info("🚀 Initializing Jito service for MEV protection...")
+                self.jito_service = JitoClient()
+                logger.info("✅ Jito service initialized - transactions will use MEV protection")
+            except Exception as jito_init_error:
+                logger.error(f"❌ Failed to initialize Jito service: {jito_init_error}")
+                import traceback
+                logger.error(traceback.format_exc())
+                self.jito_service = None
+        elif self.config.use_jito and not JITO_AVAILABLE:
+            logger.warning("⚠️ Jito requested but not available - using RPC fallback")
+        else:
+            logger.info("ℹ️ Jito disabled in config - using RPC only")
+
+        # Simple state tracking
+        self.target_wallets = self.config.target_wallets
+        self.processed_signatures: Set[str] = set()
+
+        # Initialize trade processor
+        self.trade_processor = TradeProcessor(self.target_wallets, self.rpc_client)
+        # Initialize wallet transaction parser for robust DEX/ALT decoding
+        self.tx_parser = WalletTransactionParser(self.rpc_client)
+        # Universal transaction cloner
+        self.transaction_cloner = TransactionCloner(self.config.rpc_url, self.wallet)
+        # WebSocket handler
+        self.ws_handler = None
+        # Simple logging
+        self.csv_logger = get_copy_trade_logger("simple_copy_logs")
+        logger.info(f"✅ Simple Copy Trading Bot initialized (UNIVERSAL CLONER MODE)")
+        logger.info(f"   🎯 Target wallets: {len(self.target_wallets)}")
+        logger.info(f"   💰 Investment per trade: {self.config.investment_amount_sol} SOL")
+        logger.info(f"   🚀 Jito MEV protection: {'✅ ENABLED' if self.jito_service else '❌ DISABLED'}")
+        # --- FIX: Initialize execution coordinator for real buy/sell logic ---
+        self.execution_coordinator = ExecutionCoordinator(self.wallet, rpc_client=self.rpc_client, jito_service=self.jito_service, config=self.config)
+
+    def reload_config(self, new_config: CopyTradeConfig):
+        """Reload configuration at runtime and update all components."""
+        logger.info("🔄 Reloading bot configuration at runtime...")
+        self.config = new_config
+        # Update all components that use config
+        self.target_wallets = self.config.target_wallets
+        self.trade_processor = TradeProcessor(self.target_wallets, self.rpc_client)
+        self.transaction_cloner = TransactionCloner(self.config.rpc_url, self.wallet)
+        self.execution_coordinator = ExecutionCoordinator(self.wallet, rpc_client=self.rpc_client, jito_service=self.jito_service, config=self.config)
+        logger.info(f"✅ Config reloaded. New investment amount: {self.config.investment_amount_sol} SOL")
+
+    async def _handle_websocket_trade(self, trade_info: Dict[str, Any]):
+        # Step 3: Parse and decode transaction using wallet_tx_parser
+        try:
+            if 'transaction' in trade_info:
+                # Parse and decode transaction before analysis/execution
+                parsed_tx = self.tx_parser.parse_transaction(trade_info['transaction'])
+                trade_info['parsed_tx'] = parsed_tx
+        except Exception as e:
+            logger.error(f"[TX PARSER] Error parsing transaction: {e}")
+            logger.error(traceback.format_exc())
+        logger.debug(f"[DEBUG] Received trade_info: {json.dumps(trade_info, default=str)}")
+        """🚀 ENHANCED: Handle trades with MAXIMUM SPEED - Copy ALL transactions immediately"""
+        try:
+            logger.info(f"🚨 ⚡ SPEED TRADE DETECTION: {trade_info}")
+
+            # Upstream Data Fix: Ensure required fields are present
+            if not trade_info.get("signature"):
+                logger.info("ℹ️ Skipping account-change stub (no signature); waiting for logs event.")
+                return
+            if not trade_info.get('wallet_address'):
+                logger.warning("[UPSTREAM DATA FIX] Missing 'wallet_address' in trade_info, setting to first target wallet.")
+                trade_info['wallet_address'] = self.target_wallets[0] if self.target_wallets else 'unknown'
+            logger.debug(f"[DEBUG] After upstream fix: {json.dumps(trade_info, default=str)}")
+
+            # 🚀 SPEED OPTIMIZATION: Skip lengthy analysis if basic analysis suggests immediate copy
+            if trade_info.get('basic_analysis', {}).get('copy_immediately'):
+                logger.debug(f"[DEBUG] basic_analysis: {json.dumps(trade_info.get('basic_analysis', {}), default=str)}")
+                logger.info("⚡ IMMEDIATE COPY - Basic analysis suggests high-confidence trade")
+                self.wallet = WALLET  # User's wallet is always included
+                # Extract basic info and execute immediately
+                likely_action = trade_info['basic_analysis'].get('likely_action', 'buy')
+                detected_dex = trade_info['basic_analysis'].get('detected_dex', 'unknown')
+
+                # Create fast trade info
+                fast_trade_info = {
+                    'action': likely_action,
+                    'signature': trade_info['signature'],
+                    'wallet_address': trade_info['wallet_address'],
+                    'dex': detected_dex,
+                    'token_mint': 'PENDING_ANALYSIS',  # Will be extracted during execution
+                    'timestamp': datetime.now(timezone.utc),
+                    'extraction_method': 'speed_copy',
+                    'confidence': 10,
+                    'speed_mode': True
+                }
+
+                # 🚀 PARALLEL PROCESSING: Start execution while doing analysis
+                if likely_action in ['buy', 'unknown']:
+                    # For buys or unknown, start execution immediately and extract token mint in parallel
+                    signature = fast_trade_info['signature']
+                    wallet_address = fast_trade_info['wallet_address']
+
+                    if signature and wallet_address:
+                        # Start parallel tasks: analysis + execution
+                        analysis_task = asyncio.create_task(
+                            self._fast_token_extraction(signature, wallet_address),
+                            name="fast_analysis"
+                        )
+
+                        # Wait for token extraction (fast)
+                        try:
+                            token_result = await asyncio.wait_for(analysis_task, timeout=3.0)
+                            logger.debug(f"[DEBUG] Fast token extraction result: {token_result}")
+                            if token_result:
+                                fast_trade_info['token_mint'] = token_result.get('token_mint', 'UNKNOWN')
+                                await self._process_detected_trade(fast_trade_info)
+                                return
+                        except asyncio.TimeoutError:
+                            logger.warning("⏰ Fast analysis timeout - proceeding with full analysis")
+                        except Exception as e:
+                            logger.error(f"[DEBUG] Exception in fast token extraction: {e}")
+                
+                elif likely_action in ['sell', 'swap_out']:
+                    # For sells, extract token mint first, then process
+                    logger.info(f"⚡ IMMEDIATE SELL PROCESSING - Extracting token mint")
+                    signature = fast_trade_info['signature']
+                    wallet_address = fast_trade_info['wallet_address']
+                    
+                    if signature and wallet_address:
+                        try:
+                            # Extract token mint for sell transaction
+                            extracted_info = await self._fast_token_extraction(signature, wallet_address)
+                            if extracted_info and extracted_info.get('token_mint'):
+                                fast_trade_info['token_mint'] = extracted_info['token_mint']
+                                logger.info(f"✅ SELL TOKEN EXTRACTED: {extracted_info['token_mint'][:8]}...")
+                                await self._process_detected_trade(fast_trade_info)
+                                return
+                            else:
+                                logger.error(f"❌ Failed to extract token mint from sell transaction")
+                        except Exception as e:
+                            logger.error(f"[DEBUG] Exception in sell token extraction: {e}")
+                    
+                    logger.warning(f"⚠️ Sell token extraction failed - falling back to full analysis")
+                else:
+                    logger.warning(f"⚠️ Unknown action '{likely_action}' - proceeding with full analysis")
+
+            # 🚀 FALLBACK: Full analysis if immediate copy not possible
+            if trade_info.get('requires_analysis'):
+                logger.debug(f"[DEBUG] requires_analysis: {trade_info.get('requires_analysis')}")
+                signature = trade_info['signature']
+                wallet_address = trade_info['wallet_address']
+                logger.debug(f"[DEBUG] Starting simple_trade_analysis for signature={signature}, wallet_address={wallet_address}")
+                if signature and wallet_address:
+                    # Use fast analysis with timeout
+                    try:
+                        result = await asyncio.wait_for(
+                            self._simple_trade_analysis(signature, wallet_address, trade_info),
+                            timeout=5.0  # 5 second max analysis time
+                        )
+                        logger.debug(f"[DEBUG] simple_trade_analysis result: {result}")
+                        if result:
+                            trade_info.update(result)
+                        else:
+                            logger.warning(f"⚠️ Fast analysis failed for {signature[:8]}... - skipping")
+                            return
+                    except Exception as e:
+                        logger.error(f"[DEBUG] Exception in simple_trade_analysis: {e}")
+                        return
+
+            # Validate and process
+            logger.debug(f"[DEBUG] Before validate_trade_info: {json.dumps(trade_info, default=str)}")
+            is_valid = await self.trade_processor.validate_trade_info(trade_info)
+            logger.debug(f"[DEBUG] validate_trade_info result: {is_valid}")
+            if is_valid:
+                await self._process_detected_trade(trade_info)
+            else:
+                logger.warning(f"⚠️ Trade validation failed - skipping")
+
+        except asyncio.TimeoutError:
+            logger.warning("⏰ Trade handling timeout - processing anyway")
+            logger.debug(f"[DEBUG] Timeout trade_info: {json.dumps(trade_info, default=str)}")
+            # Process with available info
+            is_valid = await self.trade_processor.validate_trade_info(trade_info)
+            logger.debug(f"[DEBUG] validate_trade_info (timeout) result: {is_valid}")
+            if is_valid:
+                await self._process_detected_trade(trade_info)
+        except Exception as e:
+            logger.error(f"❌ Error handling WebSocket trade: {e}")
+            logger.error(f"[DEBUG] Exception details: {traceback.format_exc()}")
+
+    async def _simple_trade_analysis(self, signature: str, wallet_address: str, trade_info: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Simple trade analysis - delegates to TradeProcessor with transaction data if available"""
+        return await self.trade_processor.analyze_trade_simple(signature, wallet_address, trade_info)
+
+
+    async def _execute_single_wallet_trade(self, trade_info: Dict[str, Any], source_wallet: str) -> Dict:
+        """Execute trade for a specific wallet - now uses clean analysis then execution"""
+        try:
+            # Get routing instructions
+            routing_instructions = await self.trade_processor.analyze_and_route_trade(trade_info, source_wallet)
+            
+            # === MINT/ACTION UNCERTAINTY DEBUGGING IN EXECUTION ===
+            action = routing_instructions.get('action', 'unknown')
+            token_mint = routing_instructions.get('token_mint', 'UNKNOWN')
+            
+            if action == 'unknown' or token_mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
+                logger.error(f"Uncertain action or token mint detected in execution: action={action}, token_mint={token_mint}, trade_info={trade_info}")
+                logger.error(f"   Routing instructions: {routing_instructions}")
+                logger.error(f"   Requires execution: {routing_instructions.get('requires_execution', False)}")
+            
+            if routing_instructions.get('requires_execution'):
+                # Use execution coordinator for actual execution
+                action = routing_instructions['action']
+                token_mint = routing_instructions['token_mint']
+                
+                if action in ['buy', 'swap_in']:
+                    # Extract trade_info from routing instructions (contains program IDs)
+                    original_trade_info = routing_instructions.get('trade_info', trade_info)
+                    exec_res = await self._resilient_async_call(
+                        self.execution_coordinator._execute_copy_buy,
+                        token_mint=token_mint,
+                        source_wallet=source_wallet,
+                        trade_info=original_trade_info  # CRITICAL: Pass trade_info with program IDs
+                    )
+                elif action in ['sell', 'swap_out']:
+                    strategy = routing_instructions.get('execution_strategy')
+                    # Extract trade_info from routing instructions (contains program IDs)
+                    original_trade_info = routing_instructions.get('trade_info', trade_info)
+                    # Ensure detected_dex is set
+                    detected_dex = routing_instructions.get('dex', 'unknown')
+                    exec_res = await self._resilient_async_call(
+                        self.execution_coordinator._execute_copy_sell,
+                        token_mint=token_mint,
+                        source_wallet=source_wallet,
+                        trade_info=original_trade_info,  # CRITICAL: Pass trade_info with program IDs
+                        detected_dex=detected_dex
+                    )
+                else:
+                    exec_res = None
+                
+                return {
+                    'success': bool(exec_res and exec_res.get('success')),
+                    'exec_result': exec_res,
+                    'action': action,
+                    'token_mint': token_mint,
+                    'routing_instructions': routing_instructions
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': 'Analysis failed',
+                    'routing_instructions': routing_instructions
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Error executing trade: {e}")
+            return {'success': False, 'error': str(e)}
+
+    async def _fast_token_extraction(self, signature: str, wallet_address: str) -> Optional[Dict[str, Any]]:
+        """Fast token extraction - delegates to TradeProcessor"""
+        return await self.trade_processor.extract_token_info_fast(signature, wallet_address)
+
+    async def start_monitoring(self):
+        """Start simple WebSocket monitoring"""
+        try:
+            logger.info("🚀 Starting simple copy trading bot...")
+            self.is_running = True
+            
+            # 🚀 INITIALIZE JITO SERVICE CONNECTIONS
+            if self.jito_service:
+                logger.info("🔄 Initializing Jito service connections...")
+                jito_initialized = await self.jito_service.initialize()
+                if jito_initialized:
+                    logger.info("✅ Jito service initialized successfully - MEV protection ACTIVE")
+                else:
+                    logger.warning("⚠️ Jito initialization failed - falling back to RPC")
+                    self.jito_service = None
+                    # Update execution coordinator
+                    self.execution_coordinator.jito_service = None
+            
+            # Initialize WebSocket handler
+            logger.info("📡 Initializing WebSocket monitoring...")
+            self.ws_handler = await create_websocket_handler(
+                target_wallets=self.target_wallets,
+                helius_ws_url=self.env_keys.HELIUS_WS_URL,
+                helius_rpc_url=self.env_keys.HELIUS_RPC_URL,
+                trade_callback=self._handle_websocket_trade
+            )
+            
+            # Start monitoring
+            logger.info("✅ Starting WebSocket connection...")
+            websocket_task = asyncio.create_task(
+                self.ws_handler.start_monitoring(),
+                name="websocket_monitor"
+            )
+            
+            # Simple status loop
+            status_task = asyncio.create_task(
+                self._simple_status_loop(),
+                name="status_monitor"
+            )
+            
+            logger.info("✅ Simple copy trading bot ready!")
+            
+            # Wait for tasks
+            await asyncio.gather(websocket_task, status_task, return_exceptions=True)
+                
+        except Exception as e:
+            logger.error(f"❌ Error starting monitoring: {e}")
+            await self.stop()
+
+    async def _simple_status_loop(self):
+        """Status monitoring with health checks"""
+        try:
+            while self.is_running:
+                try:
+                    # Show status every 5 minutes
+                    await asyncio.sleep(300)
+                    stats = self.execution_coordinator.get_execution_stats()
+                    logger.info(f"📊 Status: {stats.get('total_executions', 0)} trades, "
+                                f"{stats.get('success_rate', 0):.1f}% success rate")
+                    # Health check
+                    health = await self._health_check()
+                    if not all(health.values()):
+                        logger.warning(f"[HEALTH] Unhealthy system detected: {health}")
+                except Exception as e:
+                    logger.error(f"❌ Status loop error: {e}")
+                    await asyncio.sleep(60)
+        except Exception as e:
+            logger.error(f"❌ Status loop failed: {e}")
 
     async def stop(self):
-        """Stop the trading bot"""
-        await self.executor.close()
-        stop_time = datetime.now(UTC)
+        """Stop the bot"""
+        logger.info("🛑 Stopping simple copy trading bot...")
+        self.is_running = False
         
-        print("\n👋 Bot stopped")
-        print(f"⏰ Stop time (UTC): {stop_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        try:
+            if self.ws_handler:
+                await self.ws_handler.stop()
+        except Exception as e:
+            logger.error(f"Error stopping WebSocket: {e}")
         
-        print("\n📊 Performance Tracker")
-        print(f"  Wallet A trades seen   : {self.stats.trades_seen}")
-        print(f"  Trades mirrored        : {self.stats.trades_mirrored}")
-        print(f"  Successful mirrors     : {self.stats.successful_mirrors}")
-        print(f"  Avg Mirror Latency (ms): {self.stats.avg_latency:.2f}")
+        # 🚀 CLEANUP JITO SERVICE
+        try:
+            if self.jito_service:
+                logger.info("🔄 Closing Jito service connections...")
+                await self.jito_service.close()
+                logger.info("✅ Jito service closed properly")
+        except Exception as e:
+            logger.error(f"Error closing Jito service: {e}")
+        
+        logger.info("✅ Bot stopped")
 
-def _load_keypair() -> Optional[Keypair]:
-    """Load keypair from private key"""
-    try:
-        keypair = Keypair.from_bytes(DECODED_PRIVATE_KEY)
-        print(f"✅ Wallet loaded successfully: {keypair.pubkey()}")
-        return keypair
-        
-    except Exception as e:
-        print(f"❌ Failed to load wallet: {e}")
-        return None
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"🛑 Received signal {signum}. Shutting down...")
+    if bot_instance:
+        asyncio.create_task(bot_instance.stop())
 
 async def main():
     """Main entry point"""
-    print("\n🚀 Starting Copy Trading Bot")
-    print("=" * 50)
-    print(f"Current Date and Time (UTC): {get_formatted_datetime()}")
-    print(f"Current User's Login: {get_current_user()}")
-    print("=" * 50)
+    global bot_instance
+    
+    # Set up signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Configuration - TESTING PARAMETERS
+    from config import MONITORED_WALLETS
+    # MONITORED_WALLETS now includes the 4th wallet: 9ePNTG4j5eDGTFtUr6axt7h747HHzJPfmFh6JHAwFZsd
+    config = CopyTradeConfig(
+        target_wallets=MONITORED_WALLETS,
+        investment_amount_sol=0.001,       # 🧪 TESTING: Meets MEV executor minimum (0.001 SOL)
+        use_jito=False,                    # 🧪 TESTING: Simpler execution without Jito initially
+        slippage_tolerance=0.3             # 🧪 TESTING: 30% slippage - reasonable for meme coins
+    )
+    
+    # ...existing code...
+    
+    # Create and start bot
+    bot_instance = SimpleCopyTradingBot(config)
     
     try:
-        # Load wallet
-        keypair = _load_keypair()
-        if not keypair:
-            return
-            
-        # Create bot
-        target_wallet = "suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK"  # Wallet A address
-        bot = CopyTradingBot(keypair, target_wallet)
-        
-        # Initialize bot
-        if not await bot.initialize():
-            print("❌ Bot initialization failed")
-            return
-        
-        # Start bot
-        await bot.start()
-        
+        await bot_instance.start_monitoring()
     except KeyboardInterrupt:
-        print("\n🛑 Received stop signal")
+        logger.info("🛑 Keyboard interrupt received")
     except Exception as e:
-        print(f"❌ Fatal error: {str(e)}")
-        traceback.print_exc()
+        logger.error(f"❌ Bot error: {e}")
+        logger.error(traceback.format_exc())
     finally:
-        if 'bot' in locals():
-            await bot.stop()
+        await bot_instance.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())

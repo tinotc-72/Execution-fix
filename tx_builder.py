@@ -55,19 +55,15 @@ from spl.token.instructions import (
     close_account
 )
 
-# Constants for Jito configuration
-JITO_TIP_PROGRAM_ID = Pubkey.from_string("J1TnP8zvVxbtG4yxtt9qVaZK5nhG9SEqhYEJoQhJ5Pyr")
+# ✅ OFFICIAL JITO CONSTANTS - Verified with Jito Documentation
+JITO_TIP_PROGRAM_ID = Pubkey.from_string("J1TnP8zvVxbtG4yxtt9qVaZK5nhG9SEqhYEJoQhJ5Pyr")  # Official Jito Tip Program
 COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
-MIN_TIP_LAMPORTS = 10_000  # Minimum 0.00001 SOL
+MIN_TIP_LAMPORTS = 10_000  # Minimum 0.00001 SOL for auction eligibility
 MIN_PRIORITY_FEE = 1_000   # Minimum 1000 micro-lamports/CU
 DEFAULT_COMPUTE_UNITS = 200_000
-
-# Constants
-COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
-JITO_TIP_PROGRAM_ID = Pubkey.from_string("J1TnP8zvVxbtG4yxtt9qVaZK5nhG9SEqhYEJoQhJ5Pyr")
-COMPUTE_UNIT_LIMIT = 1_400_000
-COMPUTE_UNIT_PRICE = 100
-JITO_TIP_AMOUNT = 10_000
+COMPUTE_UNIT_LIMIT = 400_000  # Optimized for meme coin trades
+COMPUTE_UNIT_PRICE = 20_000   # Higher priority for MEV protection
+JITO_TIP_AMOUNT = 10_000      # Standard tip amount for bundle inclusion
 
 DEBUG = True
 
@@ -76,12 +72,16 @@ SYS_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
 COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
 TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
 
-# Jito Configuration
+# ✅ OFFICIAL JITO TIP ACCOUNTS - From Jito Documentation
 VALID_JITO_TIP_ACCOUNTS = [
-    Pubkey.from_string("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5"),
-    Pubkey.from_string("HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe"),
-    Pubkey.from_string("Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY"),
-    Pubkey.from_string("ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49")
+    Pubkey.from_string("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5"),  # Tip Account 1
+    Pubkey.from_string("HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe"),  # Tip Account 2  
+    Pubkey.from_string("Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY"),  # Tip Account 3
+    Pubkey.from_string("ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49"),  # Tip Account 4
+    Pubkey.from_string("DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh"),  # Tip Account 5
+    Pubkey.from_string("ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt"),  # Tip Account 6
+    Pubkey.from_string("DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL"),  # Tip Account 7
+    Pubkey.from_string("3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT")   # Tip Account 8
 ]
 
 # Add these constants
@@ -136,114 +136,139 @@ def ensure_bytes(data: Union[list, bytes, bytearray, None]) -> bytes:
     else:
         raise TypeError(f"Unsupported data type for instruction: {type(data)}")
         
-def create_compute_budget_instructions() -> List[Instruction]:
-    """Create compute budget instructions that MUST come first"""
+def create_compute_budget_instructions(
+    compute_units: int = None, 
+    priority_fee_microlamports: int = None
+) -> List[Instruction]:
+    """
+    ✅ OFFICIAL COMPUTE BUDGET INSTRUCTIONS - Following Solana Documentation
+    Creates compute budget instructions that MUST come before the tip instruction
+    
+    Args:
+        compute_units: Compute unit limit (default: 400,000 for meme coins)
+        priority_fee_microlamports: Priority fee in micro-lamports per CU (default: 20,000)
+        
+    Returns:
+        List[Instruction]: Two compute budget instructions [limit, price]
+    """
     try:
-        # Unit limit instruction (opcode 0x02)
-        unit_limit_ix = Instruction(
+        if compute_units is None:
+            compute_units = COMPUTE_UNIT_LIMIT
+        if priority_fee_microlamports is None:
+            priority_fee_microlamports = COMPUTE_UNIT_PRICE
+            
+        print(f"\n🔧 CREATING COMPUTE BUDGET INSTRUCTIONS")
+        print(f"   ⚡ Compute Units: {compute_units:,}")
+        print(f"   💰 Priority Fee: {priority_fee_microlamports:,} micro-lamports/CU")
+        
+        # ✅ OFFICIAL: SetComputeUnitLimit instruction (opcode 0x02)
+        # Data: [0x02, limit_u32_le]
+        unit_limit_instruction = Instruction(
             program_id=COMPUTE_BUDGET_PROGRAM_ID,
-            accounts=[],
-            data=bytes([0x02]) + COMPUTE_UNIT_LIMIT.to_bytes(4, "little")
+            accounts=[],  # No accounts needed for compute budget
+            data=bytes([0x02]) + compute_units.to_bytes(4, "little")
         )
 
-        # Unit price instruction (opcode 0x03)
-        unit_price_ix = Instruction(
+        # ✅ OFFICIAL: SetComputeUnitPrice instruction (opcode 0x03)  
+        # Data: [0x03, price_u64_le]
+        unit_price_instruction = Instruction(
             program_id=COMPUTE_BUDGET_PROGRAM_ID,
-            accounts=[],
-            data=bytes([0x03]) + COMPUTE_UNIT_PRICE.to_bytes(4, "little")
+            accounts=[],  # No accounts needed for compute budget
+            data=bytes([0x03]) + priority_fee_microlamports.to_bytes(8, "little")
         )
 
-        return [unit_limit_ix, unit_price_ix]
+        print(f"✅ COMPUTE BUDGET INSTRUCTIONS CREATED")
+        print(f"   1️⃣ SetComputeUnitLimit: {compute_units:,} units")
+        print(f"   2️⃣ SetComputeUnitPrice: {priority_fee_microlamports:,} μ-lamports/CU")
+        
+        return [unit_limit_instruction, unit_price_instruction]
 
     except Exception as e:
-        print(f"❌ Failed to create compute budget instructions: {str(e)}")
+        print(f"❌ FAILED TO CREATE COMPUTE BUDGET INSTRUCTIONS: {e}")
+        import traceback
         traceback.print_exc()
         return []
 
-def create_jito_tip_instruction(payer: Pubkey) -> Optional[Instruction]:
-    """Create tip instruction that MUST come second per Jito docs"""
+def create_jito_tip_instruction(payer: Pubkey, tip_lamports: int = None) -> Optional[Instruction]:
+    """
+    ✅ OFFICIAL JITO TIP INSTRUCTION - Following Jito Documentation
+    Creates a tip instruction that makes the bundle eligible for auction
+    
+    Args:
+        payer: The wallet paying the tip (must be signer and writable)
+        tip_lamports: Tip amount in lamports (default: 10,000 = 0.00001 SOL)
+        
+    Returns:
+        Instruction: Valid Jito tip instruction or None if creation fails
+    """
     try:
-        print(f"\n🔍 Debug - Tip Values:")
-        print(f"JITO_TIP_AMOUNT from config = {JITO_TIP_AMOUNT:,}")
-        print(f"Using tip_amount = {JITO_TIP_AMOUNT:,}")
+        if tip_lamports is None:
+            tip_lamports = JITO_TIP_AMOUNT
+            
+        print(f"\n🎯 CREATING JITO TIP INSTRUCTION")
+        print(f"   💰 Tip Amount: {tip_lamports:,} lamports ({tip_lamports / 1e9:.6f} SOL)")
+        print(f"   👤 Payer: {payer}")
 
-        # Select random tip account from valid list
-        tip_account = choice(VALID_JITO_TIP_ACCOUNTS)
+        # ✅ CRITICAL: Select random tip account to distribute load
+        tip_account_str = choice(VALID_JITO_TIP_ACCOUNTS)
+        tip_account = Pubkey.from_string(tip_account_str) if isinstance(tip_account_str, str) else tip_account_str
+        print(f"   🎯 Selected Tip Account: {tip_account}")
         
-        print("\n💰 Jito Tip Instruction Setup:")
-        print(f"Fee Payer: {payer}")
-        print(f"Tip Account: {tip_account}")
-        print(f"Final Tip Amount: {JITO_TIP_AMOUNT:,} lamports")
-
-        # Create account metadata with proper permissions
-        fee_payer_meta = AccountMeta(
-            pubkey=payer,
-            is_signer=True,
-            is_writable=True
-        )
+        # ✅ OFFICIAL: Use System Program for SOL transfer (NOT Jito Tip Program)
+        # The "Jito Tip Program" is just for identification, actual transfer uses System Program
+        SYSTEM_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
         
-        tip_account_meta = AccountMeta(
-            pubkey=tip_account,
-            is_signer=False,
-            is_writable=True
-        )
+        # ✅ CRITICAL: Create proper account metadata
+        accounts = [
+            AccountMeta(
+                pubkey=payer,
+                is_signer=True,   # ✅ MUST be signer (pays the tip)
+                is_writable=True  # ✅ MUST be writable (SOL balance decreases)
+            ),
+            AccountMeta(
+                pubkey=tip_account,
+                is_signer=False,  # ✅ Tip account is not a signer
+                is_writable=True  # ✅ MUST be writable (receives SOL)
+            )
+        ]
         
-        # Create instruction data - 8 byte little-endian encoding
-        tip_data = JITO_TIP_AMOUNT.to_bytes(8, "little")
+        # ✅ OFFICIAL: Create SOL transfer instruction data
+        # System Program transfer instruction: [2, ...8_bytes_lamports]
+        instruction_data = bytes([2]) + tip_lamports.to_bytes(8, "little")
         
-        # Create instruction with proper metadata
+        # ✅ Create the tip instruction
         tip_instruction = Instruction(
-            program_id=JITO_TIP_PROGRAM_ID,
-            accounts=[fee_payer_meta, tip_account_meta],
-            data=tip_data
+            program_id=SYSTEM_PROGRAM_ID,  # ✅ Use System Program for SOL transfer
+            accounts=accounts,
+            data=instruction_data
         )
         
-        # Verify instruction data
-        print("\n🔍 Debug - Instruction Data:")
-        print(f"Data length: {len(tip_instruction.data)} bytes")
-        print(f"Data bytes: {[b for b in tip_instruction.data]}")
+        # ✅ VALIDATION: Verify instruction is properly formed
+        print(f"\n🔍 TIP INSTRUCTION VALIDATION")
+        print(f"   🎯 Program ID: {tip_instruction.program_id}")
+        print(f"   📊 Accounts: {len(tip_instruction.accounts)}")
+        print(f"   📦 Data Length: {len(tip_instruction.data)} bytes")
+        print(f"   💰 Decoded Amount: {int.from_bytes(tip_instruction.data[1:9], 'little'):,} lamports")
         
-        # Verify account metadata
-        print("\n🔍 Account Metadata Verification:")
-        print("Fee Payer Account:")
-        print(f"  Address: {tip_instruction.accounts[0].pubkey}")
-        print(f"  Is Signer: {tip_instruction.accounts[0].is_signer}")
-        print(f"  Is Writable: {tip_instruction.accounts[0].is_writable}")
-        print("\nTip Account:")
-        print(f"  Address: {tip_instruction.accounts[1].pubkey}")
-        print(f"  Is Signer: {tip_instruction.accounts[1].is_signer}")
-        print(f"  Is Writable: {tip_instruction.accounts[1].is_writable}")
-        
-        # Verify program ID
-        print("\n🔍 Program Verification:")
-        print(f"Program ID: {tip_instruction.program_id}")
-        print(f"Expected: {JITO_TIP_PROGRAM_ID}")
-        
-        if tip_instruction.program_id != JITO_TIP_PROGRAM_ID:
-            print("❌ Program ID mismatch")
-            return None
-            
+        # ✅ CRITICAL CHECKS for Jito eligibility
         if len(tip_instruction.accounts) != 2:
-            print("❌ Invalid number of accounts")
+            print(f"❌ INVALID: Expected 2 accounts, got {len(tip_instruction.accounts)}")
             return None
             
-        if len(tip_instruction.data) != 8:
-            print("❌ Invalid data length")
+        if not tip_instruction.accounts[1].is_writable:
+            print(f"❌ INVALID: Tip account must be writable for auction eligibility")
             return None
             
-        # Decode and verify tip amount
-        decoded_amount = int.from_bytes(tip_instruction.data, "little")
-        if decoded_amount != JITO_TIP_AMOUNT:
-            print("❌ Tip amount mismatch")
-            print(f"Expected: {JITO_TIP_AMOUNT:,}")
-            print(f"Got: {decoded_amount:,}")
+        if tip_lamports < MIN_TIP_LAMPORTS:
+            print(f"❌ INVALID: Tip amount {tip_lamports} < minimum {MIN_TIP_LAMPORTS}")
             return None
             
-        print("\n✅ Tip instruction created and verified")
+        print(f"✅ TIP INSTRUCTION CREATED - Bundle is eligible for Jito auction!")
         return tip_instruction
         
     except Exception as e:
-        print(f"❌ Failed to create tip instruction: {str(e)}")
+        print(f"❌ FAILED TO CREATE TIP INSTRUCTION: {e}")
+        import traceback
         traceback.print_exc()
         return None
 
@@ -517,7 +542,7 @@ def create_and_sign_transaction(
         if not validate_transaction_size(tx):
             return None
 
-        sig = keypair.sign_message(bytes(tx.message))
+        sig = keypair.sign_message(tx.message.to_bytes())
         tx.signatures = [sig]
 
         print(f"[{current_time}] ✅ Transaction signed by {current_user}")
@@ -1067,7 +1092,7 @@ async def process_transaction(
             signatures=[Signature.default()]
         )
         
-        signature = keypair.sign_message(bytes(tx.message))
+        signature = keypair.sign_message(tx.message.to_bytes())
         tx.signatures = [signature]
 
         # 1. Try Jito first
@@ -1163,8 +1188,8 @@ def prepare_transaction_for_jito(transaction: VersionedTransaction) -> dict:
             print("⚠️ Transaction not signed, signing required")
             return None
 
-        # Serialize the transaction
-        tx_bytes = transaction.serialize()
+        # Serialize the transaction using modern method
+        tx_bytes = bytes(transaction)
         serialized_tx = base64.b64encode(tx_bytes).decode('utf-8')
         
         # Create bundle request

@@ -1,0 +1,104 @@
+{
+  "total_trades": 10,
+  "compatible_trades": 0,
+  "incompatible_trades": 10,
+  "meme_coin_trades": 0,
+  "new_token_trades": 0,
+  "incompatibility_reasons": {
+    "unsupported_program_": 55,
+    "no_supported_programs": 10
+  },
+  "sample_tokens": [
+    {
+      "signature": "2gq5wv5RbyK1N6PoHEzjE6N6zRqi1bHqkQuddvjBzLn9ztwkmpyKUSc5QmhrjP3M732Bndbd8cC1eRabpTPZoKS",
+      "is_meme": false,
+      "is_compatible": false,
+      "token_mints": [
+        "So11111111111111111111111111111111111111112",
+        "B97KLAsDgW2nva65QanA4phmJJFZmLKC2jWb8fqoBAGS"
+      ],
+      "issues": [
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "no_supported_programs"
+      ]
+    },
+    {
+      "signature": "38gcNWoB4Hk13yrnLS94VSyuQmoXpCaTM5fd7FEh33fCaZa885hoF5KPj9TQtiBPhn2zVFnom9YrHLywhjYUwoW6",
+      "is_meme": false,
+      "is_compatible": false,
+      "token_mints": [
+        "So11111111111111111111111111111111111111112",
+        "B97KLAsDgW2nva65QanA4phmJJFZmLKC2jWb8fqoBAGS"
+      ],
+      "issues": [
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "no_supported_programs"
+      ]
+    },
+    {
+      "signature": "2KPhZco6qsGgTGPQ4oW3reMHaV8WcV16wF9V1nHergtjvmwyMfdNZ1X5LCZHG4YxuXRYPB3gNcKvutc1mpjLYxhu",
+      "is_meme": false,
+      "is_compatible": false,
+      "token_mints": [
+        "So11111111111111111111111111111111111111112",
+        "B97KLAsDgW2nva65QanA4phmJJFZmLKC2jWb8fqoBAGS"
+      ],
+      "issues": [
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "no_supported_programs"
+      ]
+    },
+    {
+      "signature": "rWpeRvHWowmDfDg2pZqeS5ucYo3CDMZk6JyFG3f9n6WMiuHWdj7JskF9fkso9g6iJFuL9GmUQkRm8rznBhM1DmS",
+      "is_meme": false,
+      "is_compatible": false,
+      "token_mints": [
+        "B97KLAsDgW2nva65QanA4phmJJFZmLKC2jWb8fqoBAGS"
+      ],
+      "issues": [
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "no_supported_programs"
+      ]
+    },
+    {
+      "signature": "3TxL4XfznkLaJhbCuRXRWLhAdCyYY4tNxkYCFhF2qWjUipXziPNBfwR82tCJTwCE7Kw8gR87QS9XiSz1dWx8r1Uv",
+      "is_meme": false,
+      "is_compatible": false,
+      "token_mints": [
+        "So11111111111111111111111111111111111111112",
+        "B97KLAsDgW2nva65QanA4phmJJFZmLKC2jWb8fqoBAGS"
+      ],
+      "issues": [
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "unsupported_program_",
+        "no_supported_programs"
+      ]
+    }
+  ]
+}

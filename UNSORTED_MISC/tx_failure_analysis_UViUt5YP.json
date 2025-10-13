@@ -1,0 +1,101 @@
+{
+  "signature": "UViUt5YPhvmTAp8nVqAx7UpEynhvpomtCw8DrG4uLjaKuXXvjYC59p8dnQToEcDvDxpxBeEh2Dv6ar67jtPM29q",
+  "timestamp": "2025-08-10T21:41:06.656416",
+  "basic_info": {
+    "slot": 359194008,
+    "block_time": 1754858213,
+    "fee": 5060,
+    "compute_units_consumed": 5410,
+    "status": {
+      "Err": {
+        "InstructionError": [
+          2,
+          "IllegalOwner"
+        ]
+      }
+    },
+    "error": {
+      "InstructionError": [
+        2,
+        "IllegalOwner"
+      ]
+    },
+    "num_instructions": 3,
+    "num_accounts": 8
+  },
+  "failure_analysis": {
+    "failed": true,
+    "error_type": "InstructionError",
+    "error_details": [
+      2,
+      "IllegalOwner"
+    ],
+    "common_causes": [],
+    "specific_analysis": {
+      "failed_instruction_index": 2,
+      "error_detail": "IllegalOwner"
+    }
+  },
+  "program_analysis": {
+    "programs_involved": [],
+    "program_names": {},
+    "total_programs": 0
+  },
+  "account_analysis": {
+    "total_accounts": 8,
+    "balance_changes": [
+      {
+        "account": {
+          "pubkey": "A26P5WXU5SwdgKNAP6nkyYFELv4MkmK7sDGKt7Nu3AoB",
+          "signer": true,
+          "source": "transaction",
+          "writable": true
+        },
+        "pre_balance": 68759934,
+        "post_balance": 68754874,
+        "change": -5060,
+        "change_sol": -5.06e-06
+      }
+    ],
+    "accounts_with_changes": 1
+  },
+  "instruction_analysis": {
+    "total_instructions": 3,
+    "instruction_details": [
+      {
+        "index": 0,
+        "program_id_index": null,
+        "accounts": [],
+        "data_length": 6,
+        "num_accounts": 0
+      },
+      {
+        "index": 1,
+        "program_id_index": null,
+        "accounts": [],
+        "data_length": 12,
+        "num_accounts": 0
+      },
+      {
+        "index": 2,
+        "program_id_index": null,
+        "accounts": [],
+        "data_length": 0,
+        "num_accounts": 0
+      }
+    ]
+  },
+  "compute_analysis": {
+    "compute_units_consumed": 5410,
+    "fee": 5060,
+    "fee_sol": 5.06e-06
+  },
+  "recommendations": [
+    "Check the specific instruction that failed",
+    "Verify all account addresses are correct",
+    "Ensure all accounts are properly initialized",
+    "Test with smaller amounts first",
+    "Check transaction simulation before sending",
+    "Verify all program IDs are correct"
+  ]
+}

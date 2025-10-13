@@ -11,9 +11,10 @@ from solders.keypair import Keypair
 import keyZ as kz
 
 class FastExecutor:
-    def __init__(self, wallet: Keypair, tracker=None):
+    def __init__(self, wallet: Keypair, tracker=None, jito_client=None):
         self.wallet = wallet
         self.tracker = tracker
+        self.jito_client = jito_client  # ✅ Add jito_client parameter
         self.session = None
         
     async def initialize(self):
@@ -29,12 +30,36 @@ class FastExecutor:
             self.session = None
             
     async def submit_transaction(self, tx: VersionedTransaction) -> Optional[str]:
-        """Submit transaction to RPC"""
+        """Submit transaction with Jito-first execution if available, RPC fallback"""
         try:
             if not self.session:
                 await self.initialize()
-                
+            
+            start_time = time.time()
+            
+            # ✅ Try Jito first if jito_client is available
+            if self.jito_client:
+                try:
+                    print(f"🚀 Trying Jito submission with client: {type(self.jito_client).__name__}")
+                    bundle = self.jito_client.new_bundle()
+                    bundle.add_transaction(tx)
+                    print(f"📦 Bundle created with {len(bundle.transactions)} transaction(s)")
+                    jito_result = await self.jito_client.send_bundle(bundle)
+                    if jito_result:
+                        execution_time = time.time() - start_time
+                        if self.tracker:
+                            self.tracker.track_execution(execution_time)
+                        print(f"✅ Jito submission successful in {execution_time:.3f}s: {jito_result[:8]}...")
+                        return jito_result
+                    else:
+                        print(f"⚠️ Jito submission returned None, falling back to RPC")
+                except Exception as jito_error:
+                    print(f"⚠️ Jito submission error: {type(jito_error).__name__}: {jito_error}, falling back to RPC")
+            
+            # Fallback to RPC
+            print(f"📡 Using RPC fallback to {kz.HELIUS_RPC_URL[:50]}...")
             encoded_tx = base64.b64encode(bytes(tx)).decode('utf-8')
+            print(f"📝 Transaction encoded ({len(encoded_tx)} chars)")
             
             payload = {
                 "jsonrpc": "2.0",
@@ -46,16 +71,19 @@ class FastExecutor:
                 ]
             }
             
-            start_time = time.time()
-            
             async with self.session.post(kz.HELIUS_RPC_URL, json=payload) as response:
                 result = await response.json()
+                execution_time = time.time() - start_time
                 if "result" in result:
                     if self.tracker:
-                        self.tracker.track_execution(time.time() - start_time)
+                        self.tracker.track_execution(execution_time)
+                    print(f"✅ RPC submission successful in {execution_time:.3f}s: {result['result'][:8]}...")
                     return result["result"]
                 else:
-                    print(f"❌ RPC error: {result.get('error', {}).get('message', 'Unknown error')}")
+                    error_info = result.get('error', {})
+                    error_msg = error_info.get('message', 'Unknown error')
+                    error_code = error_info.get('code', 'No code')
+                    print(f"❌ RPC error (code {error_code}): {error_msg}")
                     return None
                     
         except Exception as e:
@@ -151,11 +179,11 @@ class RateLimiter:
         self.requests.append(now)
 
 class TradeExecutor:
-    def __init__(self, wallet: Keypair, tracker=None):
+    def __init__(self, wallet: Keypair, tracker=None, jito_client=None):
         self.wallet = wallet
         self.tracker = tracker
         self.jito_executor = JitoExecutor(wallet, tracker)
-        self.fast_executor = FastExecutor(wallet, tracker)
+        self.fast_executor = FastExecutor(wallet, tracker, jito_client)  # ✅ Pass jito_client
         
     async def initialize(self):
         """Initialize executors"""

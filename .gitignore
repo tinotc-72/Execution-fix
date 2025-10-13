@@ -26,39 +26,28 @@ wheels/
 .installed.cfg
 *.egg
 
-# Trading Bot Specific
-bot.log
-*.log
-mirrored_trades.csv
-*.csv
-*.backup
-main2.py.backup
-test.py
-minimal_test.py
-test_bundle.py
-test_secure_config.py
-
-# Virtual Environment
-hope/
-hope/bin/
-hope/lib/
-venv/
-env/
-ENV/
-
-# Mac specific (for tinotc-72)
-.DS_Store
-.AppleDouble
-.LSOverride
-._*
-
 # VSCode
 .vscode/
 *.code-workspace
 .history/
 
-# Project specific paths
+# Mac specific (since you're on Mac)
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Your specific project paths (based on your file structure)
 **/Attempt/Hope/keyZ.py
 **/Axiom Sniper*/backup/
 **/Algo Trading/**/private/
-normalizer
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+
+# Environment directories
+venv/
+env/
+ENV/.env

@@ -1,0 +1,106 @@
+{
+  "timestamp": "2025-09-05T14:52:05.613880",
+  "test_type": "triple_platform_mev_integration",
+  "tests": {
+    "executor_availability": [
+      {
+        "name": "Pump.fun MEV",
+        "available": true,
+        "error": null
+      },
+      {
+        "name": "Meteora MEV",
+        "available": true,
+        "error": null
+      },
+      {
+        "name": "Advanced MEV Bot",
+        "available": true,
+        "error": null
+      },
+      {
+        "name": "Execution Coordinator",
+        "available": true,
+        "error": null
+      }
+    ],
+    "platform_detection": [
+      {
+        "test": "Advanced MEV Bot Detection",
+        "token": "AdvancedMEVTestT...",
+        "expected": "advanced_mev_bot",
+        "detected": "advanced_mev_bot",
+        "success": true
+      },
+      {
+        "test": "Meteora DBC Detection",
+        "token": "MeteoraTestToken...",
+        "expected": "meteora_dbc",
+        "detected": "meteora_dbc",
+        "success": true
+      },
+      {
+        "test": "Pump.fun Detection",
+        "token": "PumpfunTestToken...",
+        "expected": "pumpfun",
+        "detected": "pumpfun",
+        "success": true
+      },
+      {
+        "test": "Default Detection (No Programs)",
+        "token": "UnknownTestToken...",
+        "expected": "pumpfun",
+        "detected": "pumpfun",
+        "success": true
+      }
+    ],
+    "execution_routing": [
+      {
+        "test": "Advanced MEV Bot Routing",
+        "expected_platform": "advanced_mev_bot",
+        "detected_platform": "advanced_mev_bot",
+        "success": true
+      },
+      {
+        "test": "Meteora DBC Routing",
+        "expected_platform": "meteora_dbc",
+        "detected_platform": "meteora_dbc",
+        "success": true
+      },
+      {
+        "test": "Pump.fun Default Routing",
+        "expected_platform": "pumpfun",
+        "detected_platform": "pumpfun",
+        "success": true
+      }
+    ],
+    "configuration_validation": [
+      {
+        "executor": "Pump.fun MEV",
+        "config_loaded": false,
+        "validation_works": false,
+        "success": false,
+        "error": "cannot import name 'get_mev_config' from 'mev_pumpfun_executor' (/Users/tinotchinyoka/Desktop/Algo Trading/Axiom Sniper 13.03.25/Attempt/Hope/mev_pumpfun_executor.py)"
+      },
+      {
+        "executor": "Meteora MEV",
+        "config_loaded": true,
+        "validation_works": true,
+        "success": true
+      },
+      {
+        "executor": "Advanced MEV Bot",
+        "config_loaded": true,
+        "validation_works": true,
+        "success": true
+      }
+    ]
+  },
+  "summary": {
+    "total_tests": 14,
+    "successful_tests": 13,
+    "failed_tests": 1,
+    "success_rate": 92.85714285714286,
+    "status": "PASSED"
+  }
+}

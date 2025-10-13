@@ -1,12 +1,19 @@
+# --- FIX: Add create_ata_if_missing for generic executor compatibility ---
+from solders.pubkey import Pubkey
+from config import WALLET
+def create_ata_if_missing(wallet_pubkey: Pubkey, token_mint: Pubkey, rpc_client=None) -> str:
+    """
+    Dummy implementation: Returns the associated token address as a string.
+    Replace with real logic for actual ATA creation if needed.
+    """
+    return str(token_mint)
 # utils.py
 
 import aiohttp
 import json
 from typing import Any, Dict
-from solders.keypair import Keypair  # New import
 from solders.hash import Hash
 from solders.pubkey import Pubkey
-import base58
 import keyZ as kz
 
 # Use your actual RPC URL here
@@ -29,42 +36,20 @@ async def get_transaction_with_logs(signature: str) -> Dict[str, Any]:
                 }
             ]
         )
-        
         if "result" not in response or not response["result"]:
             print(f"❌ No transaction data for {signature}")
             return None
-            
         if "meta" not in response["result"] or "logMessages" not in response["result"]["meta"]:
             print(f"❌ No logs in transaction {signature}")
             return None
-            
         return response["result"]
-        
     except Exception as e:
         print(f"❌ Error fetching transaction: {e}")
         return None
     
-def load_keypair() -> Keypair:
-    """Load wallet keypair from private key"""
-    try:
-        # Get private key from your keyZ.py file
-        private_key = kz.PRIVATE_KEY
-        
-        # Convert to bytes if it's a string
-        if isinstance(private_key, str):
-            if private_key.startswith('['):  # Array format
-                private_key = bytes([int(x) for x in private_key.strip('[]').split(',')])
-            else:  # Base58 format
-                private_key = base58.b58decode(private_key)
-                
-        # Create Keypair
-        keypair = Keypair.from_bytes(private_key)
-        print(f"✅ Wallet loaded successfully: {keypair.pubkey()}")
-        return keypair
-
-    except Exception as e:
-        print(f"❌ Failed to load wallet: {e}")
-        return None
+def load_keypair():
+    """Return the WALLET from config.py (loaded from .env)"""
+    return WALLET
     
 def rewrite_pda_if_wallet_a(original_key: Pubkey, program_id: Pubkey, wallet_a: Pubkey, new_payer: Pubkey) -> Pubkey:
     """

@@ -1,0 +1,106 @@
+    async def send_transaction(self, 
+                           transaction: VersionedTransaction, 
+                           signers: List[Keypair],
+                           original_instructions: List[Instruction],  # Need original instructions for rebuilding
+                           retries: int = 3) -> Optional[str]:
+        """Send a transaction to a healthy RPC with immediate blockhash usage"""
+        try:
+            message = transaction.message
+            if not isinstance(message, MessageV0):
+                self.logger.error("❌ Only VersionedTransaction with MessageV0 supported")
+                return None
+
+            # Get initial RPC to use
+            rpc_urls = [
+                "https://api.mainnet-beta.solana.com",
+                await self.get_working_rpc()
+            ]
+            rpc_idx = 0
+
+            for attempt in range(retries):
+                self.logger.debug(f"\n🔄 Attempt {attempt + 1}/{retries}")
+                
+                # 1. Get a fresh blockhash and immediately use it
+                latest_blockhash = await self.get_latest_blockhash()
+                if not latest_blockhash:
+                    self.logger.error("❌ Failed to get latest blockhash")
+                    continue
+
+                self.logger.debug(f"Fresh blockhash: {latest_blockhash}")
+
+                # 2. Immediately build new message with fresh blockhash
+                new_message = MessageV0.try_compile(
+                    payer=message.account_keys[0],  # First account is payer
+                    instructions=original_instructions,
+                    recent_blockhash=latest_blockhash,
+                    address_lookup_table_accounts=[]
+                )
+
+                # 3. Immediately sign
+                message_bytes = to_bytes_versioned(new_message)
+                signatures = [signer.sign_message(message_bytes) for signer in signers]
+                new_tx = VersionedTransaction.populate(new_message, signatures)
+
+                # 4. Immediately serialize and send
+                serialized_tx = base64.b64encode(bytes(new_tx)).decode("utf-8")
+                
+                # Alternate between RPCs on retries
+                current_rpc = rpc_urls[rpc_idx]
+                rpc_idx = (rpc_idx + 1) % len(rpc_urls)
+
+                self.logger.debug(f"🌐 Sending to RPC: {current_rpc}")
+                
+                # Prepare payload with no preflight to speed up submission
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": f"send-tx-{attempt}",
+                    "method": "sendTransaction",
+                    "params": [
+                        serialized_tx,
+                        {
+                            "encoding": "base64",
+                            "skipPreflight": True,  # Speed up submission
+                            "maxRetries": 1,  # We handle retries ourselves
+                        }
+                    ]
+                }
+
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(current_rpc, json=payload) as response:
+                            if not response.ok:
+                                self.logger.error(f"❌ HTTP error {response.status} from RPC")
+                                continue
+
+                            result = await response.json()
+                            if "error" in result:
+                                error = result["error"]
+                                if "BlockhashNotFound" in str(error):
+                                    self.logger.warning("⚠️ Blockhash expired, retrying...")
+                                    if attempt < retries - 1:
+                                        continue
+                                    return None
+                                else:
+                                    self.logger.error(f"❌ Transaction failed: {json.dumps(error, indent=2)}")
+                                    return None
+
+                            signature = result.get("result")
+                            if not signature:
+                                self.logger.error("❌ No signature in response")
+                                if attempt < retries - 1:
+                                    continue
+                                return None
+
+                            self.logger.info(f"✅ Transaction sent: {signature}")
+                            return signature
+
+                except Exception as e:
+                    self.logger.error(f"❌ Error in attempt {attempt + 1}: {str(e)}")
+                    continue
+
+            self.logger.error(f"❌ Failed after {retries} attempts")
+            return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Unhandled error: {str(e)}\n{traceback.format_exc()}")
+            return None

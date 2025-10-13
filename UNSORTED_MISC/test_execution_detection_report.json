@@ -1,0 +1,42 @@
+{
+  "timestamp": "2025-08-06T17:18:36.624753+00:00",
+  "summary": {
+    "total_tests": 6,
+    "passed_tests": 5,
+    "failed_tests": 1,
+    "success_rate": 83.33333333333334,
+    "duration_seconds": 0.2716829776763916
+  },
+  "test_results": [
+    {
+      "test": "Configuration & Initialization",
+      "status": "PASSED",
+      "details": "Bot initialized with 2 target wallets"
+    },
+    {
+      "test": "WebSocket Detection System",
+      "status": "FAILED",
+      "error": "'EnvKeys' object has no attribute 'WS_RPC_URL'"
+    },
+    {
+      "test": "Balance-Based Analysis",
+      "status": "PASSED",
+      "details": "All analysis methods available and verified"
+    },
+    {
+      "test": "Jito Service Integration",
+      "status": "PASSED",
+      "details": "Jito service ready with 7 backup regions"
+    },
+    {
+      "test": "Execution Flow Simulation",
+      "status": "PASSED",
+      "details": "Complete execution flow verified and functional"
+    },
+    {
+      "test": "Error Handling & Fallbacks",
+      "status": "PASSED",
+      "details": "All error handling and validation working correctly"
+    }
+  ]
+}

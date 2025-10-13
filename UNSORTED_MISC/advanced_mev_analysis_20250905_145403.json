@@ -1,0 +1,219 @@
+{
+  "signature": "2pT917H73HoUe2yJzxVoysNM5W1CWmDbHJN5ukQ7atk8qU744JrHx4xRJZQVtvsBmGfmXznVC46YAUmikpSoxjSa",
+  "analysis_time": "2025-09-05T14:54:03.747965",
+  "instruction_analysis": {
+    "account_analysis": {},
+    "instruction_analysis": [
+      {
+        "index": 0,
+        "program_id": "ComputeBudget111111111111111111111111111111",
+        "account_count": 1,
+        "data_length": 6,
+        "accounts": [
+          "Unknown_15"
+        ],
+        "type": "COMPUTE_BUDGET"
+      },
+      {
+        "index": 1,
+        "program_id": "ComputeBudget111111111111111111111111111111",
+        "account_count": 0,
+        "data_length": 12,
+        "accounts": [],
+        "type": "COMPUTE_BUDGET"
+      },
+      {
+        "index": 2,
+        "program_id": "11111111111111111111111111111111",
+        "account_count": 2,
+        "data_length": 136,
+        "accounts": [
+          "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj",
+          "2UCzvXKquzEsChNZVaHwrUxdhMcabWCUhZh2rcaMx1Nn"
+        ],
+        "type": "SYSTEM_OPERATION"
+      },
+      {
+        "index": 3,
+        "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "account_count": 4,
+        "data_length": 1,
+        "accounts": [
+          "2UCzvXKquzEsChNZVaHwrUxdhMcabWCUhZh2rcaMx1Nn",
+          "Unknown_16",
+          "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj",
+          "Unknown_17"
+        ],
+        "type": "TOKEN_OPERATION"
+      },
+      {
+        "index": 4,
+        "program_id": "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+        "account_count": 14,
+        "data_length": 33,
+        "accounts": [
+          "Unknown_18",
+          "DBW2SohFyNBz54hdqkAowjKVJwbFgY2UkkmA9YSZHmEp",
+          "8mdrK75JSdwAePAN2FeMnsQBQoahN69ZCS8yRiUu5FF3",
+          "2UCzvXKquzEsChNZVaHwrUxdhMcabWCUhZh2rcaMx1Nn",
+          "2ze5FCDmT4ntmQoHcqHAyRrST9PYqGePFCd2GPmU3TvB",
+          "4QkF28hBEkrK2Z3nAs2rKNP7UNiEWVkiTni1SAtSdf2V",
+          "61TgFHQsSvxPXvWH5nqjPhuqhmNvfberJWcBK72VBAGS",
+          "Unknown_16",
+          "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "JNK45gwenyqjk85JN44XekEYytZFGRubTabSNSXgT9u",
+          "Unknown_19",
+          "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"
+        ],
+        "type": "CUSTOM_PROGRAM",
+        "priority": "HIGH"
+      },
+      {
+        "index": 5,
+        "program_id": "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW",
+        "account_count": 5,
+        "data_length": 34,
+        "accounts": [
+          "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj",
+          "2UCzvXKquzEsChNZVaHwrUxdhMcabWCUhZh2rcaMx1Nn",
+          "Unknown_14",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "11111111111111111111111111111111"
+        ],
+        "type": "MEV_BOT_EXECUTION",
+        "priority": "HIGH"
+      },
+      {
+        "index": 6,
+        "program_id": "11111111111111111111111111111111",
+        "account_count": 2,
+        "data_length": 16,
+        "accounts": [
+          "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj",
+          "7ks326H4LbMVaUC8nW5FpC5EoAf5eK5pf4Dsx4HDQLpq"
+        ],
+        "type": "SYSTEM_OPERATION"
+      }
+    ],
+    "mev_patterns": [
+      "Instruction 4: Custom program execution",
+      "Instruction 5: MEV Bot program execution"
+    ],
+    "execution_flow": [
+      {
+        "step": 0,
+        "operation": "COMPUTE_BUDGET",
+        "program": "ComputeB...",
+        "accounts": 1
+      },
+      {
+        "step": 1,
+        "operation": "COMPUTE_BUDGET",
+        "program": "ComputeB...",
+        "accounts": 0
+      },
+      {
+        "step": 2,
+        "operation": "SYSTEM_OPERATION",
+        "program": "11111111...",
+        "accounts": 2
+      },
+      {
+        "step": 3,
+        "operation": "TOKEN_OPERATION",
+        "program": "Tokenkeg...",
+        "accounts": 4
+      },
+      {
+        "step": 4,
+        "operation": "CUSTOM_PROGRAM",
+        "program": "cpamdpZC...",
+        "accounts": 14
+      },
+      {
+        "step": 5,
+        "operation": "MEV_BOT_EXECUTION",
+        "program": "BSfD6SHZ...",
+        "accounts": 5
+      },
+      {
+        "step": 6,
+        "operation": "SYSTEM_OPERATION",
+        "program": "11111111...",
+        "accounts": 2
+      }
+    ]
+  },
+  "wallet_analysis": {
+    "executing_wallet": "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj",
+    "potential_tokens": [
+      "DfMxre4cKmvogbLrPigxmibVTTQDuzjdXojWzjCXXhzj",
+      "2UCzvXKquzEsChNZVaHwrUxdhMcabWCUhZh2rcaMx1Nn",
+      "DBW2SohFyNBz54hdqkAowjKVJwbFgY2UkkmA9YSZHmEp",
+      "8mdrK75JSdwAePAN2FeMnsQBQoahN69ZCS8yRiUu5FF3",
+      "2ze5FCDmT4ntmQoHcqHAyRrST9PYqGePFCd2GPmU3TvB",
+      "4QkF28hBEkrK2Z3nAs2rKNP7UNiEWVkiTni1SAtSdf2V",
+      "7ks326H4LbMVaUC8nW5FpC5EoAf5eK5pf4Dsx4HDQLpq",
+      "61TgFHQsSvxPXvWH5nqjPhuqhmNvfberJWcBK72VBAGS"
+    ],
+    "total_accounts": 14,
+    "mev_bot_present": true,
+    "custom_program_present": true
+  },
+  "program_research": {
+    "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW": {
+      "name": "Advanced MEV Bot/Router",
+      "type": "MEV Bot",
+      "confidence": "High",
+      "description": "Sophisticated MEV bot program for advanced trading execution",
+      "research_needed": true
+    },
+    "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG": {
+      "name": "Unknown Custom Program",
+      "type": "Custom/DeFi",
+      "confidence": "Medium",
+      "description": "Custom program in MEV execution chain - could be routing or arbitrage",
+      "research_needed": true
+    }
+  },
+  "executor_blueprint": {
+    "executor_name": "AdvancedMEVBotExecutor",
+    "pattern_type": "Advanced MEV Bot",
+    "confidence": "High",
+    "key_programs": [
+      {
+        "program_id": "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW",
+        "role": "Primary MEV Execution",
+        "priority": 1
+      },
+      {
+        "program_id": "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+        "role": "Custom Routing/Logic",
+        "priority": 2
+      }
+    ],
+    "execution_steps": [
+      "1. Set compute budget (priority fees)",
+      "2. System operations (account setup)",
+      "3. Token program operations",
+      "4. Custom program execution",
+      "5. MEV bot execution",
+      "6. System cleanup"
+    ],
+    "implementation_requirements": [
+      "Direct program invocation support",
+      "Custom instruction building",
+      "MEV protection via program routing",
+      "Advanced account management",
+      "Compute budget optimization"
+    ],
+    "integration_points": [
+      "execution_coordinator.py - Add new detection logic",
+      "Create mev_advanced_bot_executor.py",
+      "Update smart routing in _detect_token_platform()",
+      "Add to MeteoraExecutor pattern"
+    ]
+  }
+}
