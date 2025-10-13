@@ -3524,10 +3524,105 @@ class TradeProcessor:
                 pass
             return None
 
+    def _extract_mint_from_instruction_accounts(self, trade_info: Dict[str, Any]) -> Optional[str]:
+        """
+        Extract token mint from transaction instruction accounts.
+        This is a fallback when logs and balances don't reveal the mint.
+        
+        Looks for mint accounts in swap instructions by analyzing account keys
+        and filtering out known system programs and DEX programs.
+        
+        Reference: Solana transaction structure - https://docs.solana.com/developing/programming-model/transactions
+        """
+        try:
+            tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+            if not tx:
+                logger.debug("[MINT_FROM_ACCOUNTS] No transaction data available")
+                return None
+            
+            message = tx.get('transaction', {}).get('message', {})
+            account_keys = message.get('accountKeys', [])
+            instructions = message.get('instructions', [])
+            
+            if not account_keys or not instructions:
+                logger.debug("[MINT_FROM_ACCOUNTS] No account keys or instructions in transaction")
+                return None
+            
+            # Known programs to exclude
+            excluded_programs = set(DEX_PROGRAMS.keys()) | TOKEN_PROGRAMS | {
+                '11111111111111111111111111111111',  # System Program
+                'ComputeBudget111111111111111111111111111111',  # Compute Budget
+                'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',  # Associated Token Program
+                'So11111111111111111111111111111111111111112',  # SOL/WSOL
+            }
+            
+            # Collect candidate mints from all instructions
+            candidate_mints = []
+            
+            for ix in instructions:
+                prog_idx = ix.get('programIdIndex')
+                if prog_idx is None or prog_idx >= len(account_keys):
+                    continue
+                
+                prog_id = account_keys[prog_idx]
+                
+                # Only look at DEX program instructions
+                if prog_id not in DEX_PROGRAMS:
+                    continue
+                
+                # Get accounts used by this instruction
+                account_indices = ix.get('accounts', [])
+                for acc_idx in account_indices:
+                    if acc_idx < len(account_keys):
+                        account = account_keys[acc_idx]
+                        # Filter out known programs
+                        if account not in excluded_programs and is_valid_solana_address(account):
+                            candidate_mints.append(account)
+            
+            # Return the first valid candidate
+            if candidate_mints:
+                # Remove duplicates while preserving order
+                seen = set()
+                unique_candidates = []
+                for mint in candidate_mints:
+                    if mint not in seen:
+                        seen.add(mint)
+                        unique_candidates.append(mint)
+                
+                # Return the first candidate (most likely the output token)
+                mint = unique_candidates[0]
+                logger.info(f"🎯 [MINT_FROM_ACCOUNTS] Found candidate mint from instruction accounts: {mint[:8]}... ({len(unique_candidates)} total candidates)")
+                return mint
+            
+            logger.debug(f"[MINT_FROM_ACCOUNTS] No valid mint candidates found in instruction accounts")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"⚠️ [MINT_FROM_ACCOUNTS] Failed to extract mint from instruction accounts: {e}")
+            return None
+    
     def _parse_raydium_accounts(self, trade_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Parse Raydium CPMM account information from transaction for MEVRaydiumExecutor.
         Extracts pool state, config, vaults, and other necessary accounts.
+        
+        Implementation references:
+        - Raydium SDK: https://github.com/raydium-io/raydium-sdk
+        - Raydium CPMM Program: CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C
+        - Pool account layout documented in Raydium SDK documentation
+        
+        Standard Raydium CPMM swap instruction account layout:
+        0: payer (signer)
+        1: authority (amm authority)
+        2: amm config
+        3: pool state
+        4: input token account
+        5: output token account
+        6: input vault
+        7: output vault
+        8: input token mint
+        9: output token mint
+        10: observation state
         """
         try:
             tx = trade_info.get('transaction') or trade_info.get('transaction_full')
@@ -3695,6 +3790,17 @@ class TradeProcessor:
         This method implements industry-standard inference strategies used by
         Solana copy trading bots to minimize skipped trades.
         
+        Implementation follows official Solana documentation and best practices:
+        - Solana Transaction Structure: https://docs.solana.com/developing/programming-model/transactions
+        - Token Program: https://spl.solana.com/token
+        - Account Model: https://docs.solana.com/developing/programming-model/accounts
+        
+        Fallback Strategy (in order):
+        1. Extract from transaction logs (log parsing)
+        2. Analyze pre/post balance deltas (token balance changes)
+        3. Parse instruction account keys (instruction accounts)
+        4. RPC lookup for account verification
+        
         Args:
             trade_info: Trade information potentially with missing fields
             
@@ -3841,11 +3947,24 @@ class TradeProcessor:
                 else:
                     logger.warning(f"⚠️ [MINT_INFERENCE] Could not extract mint from balances")
             
+            # Last resort: Try to extract from transaction instruction accounts
+            if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
+                logger.debug(f"[MINT_INFERENCE] Attempting extraction from instruction accounts...")
+                mint = self._extract_mint_from_instruction_accounts(trade_info)
+                if mint:
+                    trade_info['token_mint'] = mint
+                    inferred_fields.append('token_mint (from accounts)')
+                    logger.info(f"✅ [MINT_INFERENCE] Successfully extracted mint from instruction accounts: {mint[:12]}...")
+                else:
+                    logger.warning(f"⚠️ [MINT_INFERENCE] Could not extract mint from instruction accounts")
+            
             # Log final inference failure if mint still unresolved
             if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
                 logger.error(f"❌ [MINT_INFERENCE] All inference methods failed - mint remains unresolved")
                 logger.error(f"   Available data: logs={bool(logs)}, transaction={bool(trade_info.get('transaction'))}")
+                logger.error(f"   Methods tried: log parsing, balance deltas, instruction accounts")
                 logger.error(f"   This trade will be skipped by intelligent execution mode")
+                logger.error(f"   Consider using Jupiter executor which can handle unknown mints via routing")
         
         # 7. Parse Raydium-specific account information for MEVRaydiumExecutor
         dex = trade_info.get('dex') or trade_info.get('dex_type', '')

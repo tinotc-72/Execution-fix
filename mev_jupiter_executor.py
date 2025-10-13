@@ -350,8 +350,21 @@ def build_sell_tx(token_mint: str, wallet: Keypair, slippage: float = 3.0) -> Ve
 
 class MEVJupiterExecutor:
     """
-    Jupiter aggregator executor implementing official Solana best practices
-    Standalone executor for consistent transaction handling
+    Jupiter aggregator executor implementing official Solana best practices.
+    Standalone executor for consistent transaction handling.
+    
+    Official Documentation References:
+    - Jupiter API Documentation: https://station.jup.ag/docs/apis/swap-api
+    - Jupiter Quote API: https://quote-api.jup.ag/v6/quote
+    - Jupiter Swap API: https://quote-api.jup.ag/v6/swap
+    - Solana Transaction Signing: https://docs.solana.com/developing/clients/javascript-api#transaction
+    - VersionedTransaction: https://docs.solana.com/developing/versioned-transactions
+    
+    Implementation follows Jupiter's recommended patterns:
+    1. Get quote from Jupiter API with slippage
+    2. Get swap transaction (unsigned) from Jupiter
+    3. Sign transaction with wallet keypair
+    4. Send with retry logic and MEV protection (Jito optional)
     """
     
     def __init__(self, wallet_keypair: Keypair, rpc_url: str, config=None, jito_service=None):
