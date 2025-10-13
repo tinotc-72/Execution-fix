@@ -134,7 +134,17 @@ class MEVDirectCopyExecutor:
         
         try:
             # Validate and set config
-            self.config = config or MEVDirectCopyConfig()
+            if config is None:
+                self.config = MEVDirectCopyConfig()
+                logger.debug(f"[DIRECT_COPY] Using default MEVDirectCopyConfig")
+            elif isinstance(config, MEVDirectCopyConfig):
+                self.config = config
+                logger.debug(f"[DIRECT_COPY] Using provided MEVDirectCopyConfig")
+            else:
+                error_msg = f"config must be MEVDirectCopyConfig object or None, got {type(config).__name__}"
+                logger.error(f"[DIRECT_COPY] ❌ Config type error: {error_msg}")
+                raise TypeError(error_msg)
+            
             logger.debug(f"[DIRECT_COPY] Config attributes: {vars(self.config)}")
             logger.info(f"[DIRECT_COPY] ✅ Config validated successfully")
             

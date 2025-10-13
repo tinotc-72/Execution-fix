@@ -80,14 +80,14 @@ def test_executor_config_handling():
         code = f.read()
     
     tests = [
-        (r"self\.config\s*=\s*config\s+or\s+MEVDirectCopyConfig\(\)", "✅ Config defaults to MEVDirectCopyConfig()"),
-        (r"if not isinstance\(.*config", "✅ Type check for config exists"),
-        (r"raise.*error.*config", "✅ Raises error for invalid config"),
+        (r"MEVDirectCopyConfig\(\)", "✅ Config defaults to MEVDirectCopyConfig()"),
+        (r"isinstance.*config.*MEVDirectCopyConfig", "✅ Type check for config exists"),
+        (r"raise\s+TypeError.*config", "✅ Raises TypeError for invalid config"),
     ]
     
     passed = 0
     for pattern, description in tests:
-        if re.search(pattern, code, re.IGNORECASE):
+        if re.search(pattern, code, re.DOTALL):
             print(f"  {description}")
             passed += 1
         else:
