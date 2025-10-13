@@ -52,6 +52,20 @@ env_keys = EnvKeys()
 JUPITER_QUOTE_URL = env_keys.JUPITER_QUOTE_URL
 JUPITER_SWAP_URL = env_keys.JUPITER_SWAP_URL
 JUPITER_API_KEY = env_keys.JUPITER_API_KEY
+
+# Alternate Jupiter endpoints for robustness
+JUPITER_QUOTE_ENDPOINTS = [
+    JUPITER_QUOTE_URL,
+    "https://quote-api.jup.ag/v6/quote",  # Alternate endpoint
+    "https://api.jup.ag/quote/v6",  # Another alternate
+]
+
+JUPITER_SWAP_ENDPOINTS = [
+    JUPITER_SWAP_URL,
+    "https://quote-api.jup.ag/v6/swap",  # Alternate endpoint
+    "https://api.jup.ag/swap/v6",  # Another alternate
+]
+
 SOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
 
 # Jupiter Program and Accounts
@@ -62,7 +76,7 @@ RPC_URL = EnvKeys().HELIUS_RPC_URL
 
 
 def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 300) -> Optional[dict]:
-    """Get best route with comprehensive error logging"""
+    """Get best route with comprehensive error logging and alternate endpoint support"""
     import traceback
     
     logger.info(f"[JUPITER_QUOTE] 🔍 Requesting quote...")
@@ -100,25 +114,40 @@ def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps:
             headers['x-api-key'] = JUPITER_API_KEY
             logger.debug(f"[JUPITER_QUOTE] Using API key authentication")
         
-        logger.info(f"[JUPITER_QUOTE] Sending request to {JUPITER_QUOTE_URL}...")
-        response = requests.get(JUPITER_QUOTE_URL, params=params, headers=headers, timeout=15)
-        logger.debug(f"[JUPITER_QUOTE] Response status: {response.status_code}")
+        # Try all alternate endpoints
+        last_error = None
+        for endpoint_idx, endpoint_url in enumerate(JUPITER_QUOTE_ENDPOINTS, 1):
+            try:
+                logger.info(f"[JUPITER_QUOTE] Attempting endpoint {endpoint_idx}/{len(JUPITER_QUOTE_ENDPOINTS)}: {endpoint_url}...")
+                response = requests.get(endpoint_url, params=params, headers=headers, timeout=15)
+                logger.debug(f"[JUPITER_QUOTE] Response status: {response.status_code}")
+                
+                response.raise_for_status()  # Official: Raise for HTTP errors
+                
+                data = response.json()
+                logger.debug(f"[JUPITER_QUOTE] Response data keys: {list(data.keys())}")
+                
+                if 'error' in data:
+                    logger.warning(f"[JUPITER_QUOTE] ⚠️  Endpoint {endpoint_idx} returned error: {data['error']}")
+                    last_error = data['error']
+                    continue
+                
+                if 'inAmount' in data and 'outAmount' in data:
+                    logger.info(f"[JUPITER_QUOTE] ✅ Quote received from endpoint {endpoint_idx}: {data['inAmount']} → {data['outAmount']}")
+                    return data
+                else:
+                    logger.warning(f"[JUPITER_QUOTE] ⚠️  Endpoint {endpoint_idx} response missing amounts")
+                    continue
+                    
+            except Exception as endpoint_error:
+                logger.warning(f"[JUPITER_QUOTE] ⚠️  Endpoint {endpoint_idx} failed: {endpoint_error}")
+                last_error = endpoint_error
+                continue
         
-        response.raise_for_status()  # Official: Raise for HTTP errors
-        
-        data = response.json()
-        logger.debug(f"[JUPITER_QUOTE] Response data keys: {list(data.keys())}")
-        
-        if 'error' in data:
-            logger.error(f"[JUPITER_QUOTE] ❌ API returned error: {data['error']}")
-            return exec_err("jupiter", f"quote error: {data['error']}")
-        
-        if 'inAmount' in data and 'outAmount' in data:
-            logger.info(f"[JUPITER_QUOTE] ✅ Quote received: {data['inAmount']} → {data['outAmount']}")
-        else:
-            logger.warning(f"[JUPITER_QUOTE] ⚠️  Quote response missing amounts")
-            
-        return data
+        # All endpoints failed
+        error_msg = f"All {len(JUPITER_QUOTE_ENDPOINTS)} Jupiter quote endpoints failed. Last error: {last_error}"
+        logger.error(f"[JUPITER_QUOTE] ❌ {error_msg}")
+        return exec_err("jupiter", error_msg)
         
     except requests.exceptions.Timeout:
         logger.error(f"[JUPITER_QUOTE] ❌ Request timeout after 15 seconds")
@@ -574,6 +603,57 @@ class MEVJupiterExecutor:
         except Exception as e:
             logger.error(f"Error ensuring token account: {e}")
             return exec_err("jupiter", f"ATA creation failed: {str(e)}")
+
+    async def send_transaction_with_retry(self, transaction: VersionedTransaction, max_retries: int = 3) -> Optional[str]:
+        """Send transaction with retry logic for robustness"""
+        import traceback
+        
+        logger.info(f"[JUPITER_RETRY] 🔄 Sending transaction with up to {max_retries} retries...")
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"[JUPITER_RETRY] Attempt {attempt}/{max_retries}...")
+                
+                # Try Jito first if configured
+                if jito_is_configured(self.jito_service):
+                    try:
+                        logger.info(f"[JUPITER_RETRY] Attempting Jito submission (attempt {attempt})...")
+                        signed_tx_bytes = bytes(transaction)
+                        result = await self.jito_service.send_transaction(signed_tx_bytes)
+                        signature = result.get("signature")
+                        if signature:
+                            logger.info(f"[JUPITER_RETRY] ✅ Success via Jito on attempt {attempt}: {signature}")
+                            return signature
+                        else:
+                            logger.warning(f"[JUPITER_RETRY] Jito returned no signature on attempt {attempt}")
+                    except Exception as jito_error:
+                        logger.warning(f"[JUPITER_RETRY] Jito failed on attempt {attempt}: {jito_error}")
+                
+                # RPC fallback
+                logger.info(f"[JUPITER_RETRY] Attempting RPC submission (attempt {attempt})...")
+                opts = {
+                    "skip_preflight": True,
+                    "preflight_commitment": "processed",
+                    "max_retries": 1
+                }
+                sig_result = await self.client.send_transaction(transaction, opts=opts)
+                if sig_result.value:
+                    signature = str(sig_result.value)
+                    logger.info(f"[JUPITER_RETRY] ✅ Success via RPC on attempt {attempt}: {signature}")
+                    return signature
+                else:
+                    logger.warning(f"[JUPITER_RETRY] RPC returned no signature on attempt {attempt}")
+                    
+            except Exception as e:
+                logger.warning(f"[JUPITER_RETRY] Attempt {attempt} failed: {e}")
+                if attempt < max_retries:
+                    logger.info(f"[JUPITER_RETRY] Retrying...")
+                    await asyncio.sleep(0.5 * attempt)  # Exponential backoff
+                else:
+                    logger.error(f"[JUPITER_RETRY] ❌ All {max_retries} attempts failed")
+                    logger.error(traceback.format_exc())
+        
+        return None
 
     async def execute_buy_trade(self, token_mint: Pubkey, sol_amount: float) -> Optional[str]:
         """Execute a buy trade through Jupiter with AGGRESSIVE settings"""

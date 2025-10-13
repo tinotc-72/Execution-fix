@@ -631,7 +631,7 @@ async def try_raydium_buy(token_mint: str, source_wallet: str, *, amount_sol: fl
     except Exception:
         import os
         HELIUS_RPC_URL = os.getenv("HELIUS_RPC_URL") or os.getenv("RPC_URL")
-        from solders.pubkey import Pubkey
+        # Pubkey already imported at module level
         SOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
         from solders.keypair import Keypair
         WALLET = Keypair()
@@ -665,7 +665,7 @@ async def try_raydium_sell_all(token_mint: str, source_wallet: str, *, slippage_
     except Exception:
         import os
         HELIUS_RPC_URL = os.getenv("HELIUS_RPC_URL") or os.getenv("RPC_URL")
-        from solders.pubkey import Pubkey
+        # Pubkey already imported at module level
         SOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
         from solders.keypair import Keypair
         WALLET = Keypair()
