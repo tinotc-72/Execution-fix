@@ -3683,6 +3683,8 @@ class TradeProcessor:
         
         # 4. Infer action using enhanced extraction
         if not trade_info.get('action') or trade_info.get('action') == 'unknown':
+            logger.info("🔍 [ACTION_INFERENCE] Action missing or unknown, attempting inference...")
+            
             # Try to extract from logs
             logs = trade_info.get('logs', [])
             if not logs:
@@ -3693,16 +3695,20 @@ class TradeProcessor:
                     logs = meta.get('logMessages', [])
             
             if logs:
+                logger.debug(f"[ACTION_INFERENCE] Analyzing {len(logs)} log messages...")
                 action = self._analyze_logs_for_action(logs)
                 if action and action != 'unknown':
                     trade_info['action'] = action
                     inferred_fields.append('action')
+                    logger.info(f"✅ [ACTION_INFERENCE] Successfully inferred action from logs: {action}")
                 else:
                     # Default to 'swap' for permissive execution
+                    logger.warning(f"⚠️ [ACTION_INFERENCE] Could not determine action from logs, defaulting to 'swap'")
                     trade_info['action'] = 'swap'
                     inferred_fields.append('action (default: swap)')
             else:
                 # No logs available, default to swap
+                logger.warning(f"⚠️ [ACTION_INFERENCE] No logs available, defaulting to 'swap'")
                 trade_info['action'] = 'swap'
                 inferred_fields.append('action (default: swap, no logs)')
         
@@ -3743,9 +3749,11 @@ class TradeProcessor:
                                         inferred_fields.append('dex (from instructions)')
                                         break
         
-        # 6. Infer token mint if missing
+        # 6. Infer token mint if missing - with multiple fallbacks
         if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
-            # Try enhanced log extraction
+            logger.info("🔍 [MINT_INFERENCE] Token mint missing or pending, attempting inference...")
+            
+            # Try enhanced log extraction (primary method)
             logs = trade_info.get('logs', [])
             if not logs:
                 tx = trade_info.get('transaction') or trade_info.get('transaction_full')
@@ -3754,17 +3762,33 @@ class TradeProcessor:
                     logs = meta.get('logMessages', [])
             
             if logs:
+                logger.debug(f"[MINT_INFERENCE] Attempting extraction from {len(logs)} log messages...")
                 mint = self._extract_mint_from_logs_enhanced(logs)
                 if mint:
                     trade_info['token_mint'] = mint
                     inferred_fields.append('token_mint')
+                    logger.info(f"✅ [MINT_INFERENCE] Successfully extracted mint from logs: {mint[:12]}...")
+                else:
+                    logger.warning(f"⚠️ [MINT_INFERENCE] Could not extract mint from logs")
+            else:
+                logger.warning(f"⚠️ [MINT_INFERENCE] No logs available for mint extraction")
             
             # Also try extracting from token balances as fallback
             if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
+                logger.debug(f"[MINT_INFERENCE] Attempting extraction from token balances...")
                 mint = self._extract_mint_from_token_balances(trade_info)
                 if mint:
                     trade_info['token_mint'] = mint
                     inferred_fields.append('token_mint (from balances)')
+                    logger.info(f"✅ [MINT_INFERENCE] Successfully extracted mint from balances: {mint[:12]}...")
+                else:
+                    logger.warning(f"⚠️ [MINT_INFERENCE] Could not extract mint from balances")
+            
+            # Log final inference failure if mint still unresolved
+            if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
+                logger.error(f"❌ [MINT_INFERENCE] All inference methods failed - mint remains unresolved")
+                logger.error(f"   Available data: logs={bool(logs)}, transaction={bool(trade_info.get('transaction'))}")
+                logger.error(f"   This trade will be skipped by intelligent execution mode")
         
         # 7. Parse Raydium-specific account information for MEVRaydiumExecutor
         dex = trade_info.get('dex') or trade_info.get('dex_type', '')
