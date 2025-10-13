@@ -506,10 +506,39 @@ class MEVRaydiumExecutor:
         logger.info(f"[RAYDIUM_SWAP] ✅ Pool resolver validated")
         
         try:
-            # 1) Resolve pool & accounts
+            # 1) Resolve pool & accounts with validation
             logger.info(f"[RAYDIUM_SWAP] Resolving pool for {mint_in} -> {mint_out}...")
-            pool = self.pool_resolver.resolve(mint_in, mint_out, self.owner)
-            logger.info(f"[RAYDIUM_SWAP] ✅ Pool resolved: {pool}")
+            
+            try:
+                pool = self.pool_resolver.resolve(mint_in, mint_out, self.owner)
+            except Exception as pool_error:
+                logger.error(f"[RAYDIUM_SWAP] ❌ Pool resolution failed: {pool_error}")
+                logger.error(f"[RAYDIUM_SWAP] Cannot proceed without pool information")
+                raise ValueError(f"Pool resolution failed: {pool_error}")
+            
+            # Validate pool accounts before swap execution
+            if not pool:
+                logger.error(f"[RAYDIUM_SWAP] ❌ Skipping trade: Pool resolver returned None")
+                raise ValueError("Pool resolver returned None - cannot execute swap")
+            
+            # Validate pool has required accounts
+            if not hasattr(pool, 'accounts') or not pool.accounts:
+                logger.error(f"[RAYDIUM_SWAP] ❌ Skipping trade: Pool missing account information")
+                raise ValueError("Pool missing required account information")
+            
+            # Validate critical pool account fields
+            acc = pool.accounts
+            required_accounts = ['pool_state', 'input_vault', 'output_vault', 'input_mint', 'output_mint']
+            missing_accounts = [field for field in required_accounts if not hasattr(acc, field) or not getattr(acc, field)]
+            
+            if missing_accounts:
+                logger.error(f"[RAYDIUM_SWAP] ❌ Skipping trade: Incomplete account set - missing: {missing_accounts}")
+                raise ValueError(f"Pool missing required accounts: {missing_accounts}")
+            
+            logger.info(f"[RAYDIUM_SWAP] ✅ Pool validated: {pool}")
+            logger.info(f"[RAYDIUM_SWAP]    Pool state: {acc.pool_state}")
+            logger.info(f"[RAYDIUM_SWAP]    Input vault: {acc.input_vault}")
+            logger.info(f"[RAYDIUM_SWAP]    Output vault: {acc.output_vault}")
 
             # 2) Ensure user ATAs (and WSOL handling if needed)
             logger.info(f"[RAYDIUM_SWAP] Ensuring ATAs...")
@@ -585,18 +614,29 @@ class MEVRaydiumExecutor:
         
         # RPC fallback (must exist)
         if not sig:
+            logger.info(f"[RAYDIUM_SWAP] Attempting RPC submission...")
             sig = self.rpc.send_transaction(txn, skip_preflight=opts.skip_preflight)
-            logger.info(f"✅ EXECUTED via raydium (rpc) — signature: {sig}")
+            logger.info(f"✅ [RAYDIUM_SWAP] SUCCESS via RPC — signature: {sig}")
         
         try:
+            logger.info(f"[RAYDIUM_SWAP] Confirming transaction with {opts.confirm_timeout_s}s timeout...")
             status = self.rpc.confirm_signature(sig, timeout_s=opts.confirm_timeout_s)
+            logger.info(f"✅ [RAYDIUM_SWAP] Transaction confirmed: {status}")
         except Exception as e:
+            logger.error(f"❌ [RAYDIUM_SWAP] Transaction confirmation failed: {e}")
             # Best-effort surfacing: fetch transaction for logs if available
-            txj = self.rpc.get_transaction(str(sig))
-            logs = None
-            if txj and txj.get("meta") and txj["meta"].get("logMessages"):
-                logs = txj["meta"]["logMessages"]
-            raise RuntimeError(f"Send OK but confirmation failed: {e}\nLogs: {logs}")
+            try:
+                txj = self.rpc.get_transaction(str(sig))
+                logs = None
+                if txj and txj.get("meta") and txj["meta"].get("logMessages"):
+                    logs = txj["meta"]["logMessages"]
+                    logger.error(f"[RAYDIUM_SWAP] Transaction logs:")
+                    for log in logs:
+                        logger.error(f"  {log}")
+                raise RuntimeError(f"Send OK but confirmation failed: {e}\nLogs: {logs}")
+            except Exception as log_error:
+                logger.warning(f"[RAYDIUM_SWAP] Could not fetch transaction logs: {log_error}")
+                raise RuntimeError(f"Send OK but confirmation failed: {e}")
 
         # If err surfaced in status, fetch logs
         if status.get("err"):
@@ -637,14 +677,21 @@ async def try_raydium_buy(token_mint: str, source_wallet: str, *, amount_sol: fl
         WALLET = Keypair()
 
     if not trade_info:
+        logger.error("[RAYDIUM_BUY] ❌ trade_info required for pool resolution")
         return {"success": False, "error": "trade_info required (must include parsed_tx.raydium_info)"}
 
-    executor = MEVRaydiumExecutor(rpc_url=HELIUS_RPC_URL, keypair=(WALLET.keypair if hasattr(WALLET, "keypair") else WALLET), jito_service=jito_service)
-    # Override resolver with context-aware one that has rpc and trade_info
-    executor.pool_resolver = PoolResolver(executor.rpc, trade_info)
+    try:
+        executor = MEVRaydiumExecutor(rpc_url=HELIUS_RPC_URL, keypair=(WALLET.keypair if hasattr(WALLET, "keypair") else WALLET), jito_service=jito_service)
+        # Override resolver with context-aware one that has rpc and trade_info
+        executor.pool_resolver = PoolResolver(executor.rpc, trade_info)
+        logger.info(f"[RAYDIUM_BUY] ✅ Executor and pool resolver initialized")
+    except Exception as init_error:
+        logger.error(f"[RAYDIUM_BUY] ❌ Failed to initialize executor: {init_error}")
+        return {"success": False, "error": f"Executor initialization failed: {init_error}"}
 
     lamports = int(amount_sol * 1_000_000_000)
     try:
+        logger.info(f"[RAYDIUM_BUY] Executing buy: {amount_sol} SOL -> {token_mint[:8]}...")
         sig = executor.swap(
             mint_in=SOL_MINT,
             mint_out=Pubkey.from_string(token_mint),
@@ -652,8 +699,14 @@ async def try_raydium_buy(token_mint: str, source_wallet: str, *, amount_sol: fl
             min_out=1,
         )
         path = "jito" if jito_is_configured(executor.jito_service) else "rpc"
+        logger.info(f"✅ [RAYDIUM_BUY] SUCCESS: {str(sig)}")
         return exec_ok("raydium", str(sig), {"dex": "raydium", "lamports": lamports, "path": path})
+    except ValueError as val_error:
+        # Validation errors (pool resolution, missing accounts)
+        logger.error(f"❌ [RAYDIUM_BUY] FAILED with validation error: {val_error}")
+        return {"success": False, "error": f"Validation failed: {val_error}"}
     except Exception as e:
+        logger.error(f"❌ [RAYDIUM_BUY] FAILED with exception: {e}")
         return {"success": False, "error": str(e)}
 
 async def try_raydium_sell_all(token_mint: str, source_wallet: str, *, slippage_bps: int = 300, trade_info: dict | None = None, jito_service=None, **kwargs):
@@ -671,9 +724,14 @@ async def try_raydium_sell_all(token_mint: str, source_wallet: str, *, slippage_
         WALLET = Keypair()
 
     if not trade_info:
+        logger.error("[RAYDIUM_SELL] ❌ trade_info required for pool resolution")
         return {"success": False, "error": "trade_info required (must include parsed_tx.raydium_info)"}
 
-    rpc = SimpleRPC(RPCConfig(HELIUS_RPC_URL))
+    try:
+        rpc = SimpleRPC(RPCConfig(HELIUS_RPC_URL))
+    except Exception as rpc_error:
+        logger.error(f"[RAYDIUM_SELL] ❌ Failed to initialize RPC: {rpc_error}")
+        return {"success": False, "error": f"RPC initialization failed: {rpc_error}"}
 
     # Find user's token ATA and balance
     owner = (WALLET.keypair.pubkey() if hasattr(WALLET, "keypair") else WALLET.pubkey())
