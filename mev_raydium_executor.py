@@ -541,11 +541,19 @@ class MEVRaydiumExecutor:
             ixs: List[Instruction] = [cu_ix, cup_ix]
             if in_ata_ix:
                 ixs.append(in_ata_ix)
-        if out_ata_ix:
-            ixs.append(out_ata_ix)
-        ixs.append(swap_ix)
+            if out_ata_ix:
+                ixs.append(out_ata_ix)
+            ixs.append(swap_ix)
+            
+            logger.info(f"[RAYDIUM_SWAP] ✅ All instructions prepared, total: {len(ixs)}")
+            
+        except Exception as e:
+            logger.error(f"[RAYDIUM_SWAP] ❌ Failed to prepare swap: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
         # 6) Compile & sign
+        logger.info(f"[RAYDIUM_SWAP] Compiling and signing transaction...")
         recent_hash, _ = self.rpc.get_latest_blockhash()
         msg = MessageV0.try_compile(
             payer=self.owner,
@@ -554,6 +562,7 @@ class MEVRaydiumExecutor:
             recent_blockhash=recent_hash,
         )
         txn = VersionedTransaction(msg, [self.kp])
+        logger.debug(f"[RAYDIUM_SWAP] Transaction compiled and signed")
 
         # 7) Dual-path execution: Jito first, RPC fallback
         sig = None

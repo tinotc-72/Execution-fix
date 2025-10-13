@@ -128,15 +128,15 @@ def test_executor_logging():
     
     checks = [
         (
-            'self.logger.info(f"📊 [EXECUTION] Trade info summary:")',
+            'self.logger.info(f"[EXECUTION_SUMMARY] 📊 Trade details:")',
             '✅ Logs trade info summary before execution'
         ),
         (
-            'self.logger.info(f"🎯 [{idx}/{len(plan)}] Attempting executor: {label}")',
+            'self.logger.info(f"[EXECUTOR_ATTEMPT] 🎯 [{idx}/{len(plan)}] Attempting: {label}")',
             '✅ Logs numbered executor attempts'
         ),
         (
-            'self.logger.info(f"   → Calling',
+            'self.logger.info(f"[EXECUTOR_ATTEMPT] → Calling',
             '✅ Logs which executor is being called'
         ),
         (
