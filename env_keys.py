@@ -129,6 +129,10 @@ def clean_rpc_url(url: str) -> str:
 
 class EnvKeys:
     def __init__(self):
+        # Validate critical environment variables exist
+        if not os.getenv("PHANTOM_PRIVATE_KEY"):
+            raise ValueError("PHANTOM_PRIVATE_KEY not found in environment variables. Please check your .env file.")
+        
         # === Phantom Private Key ===
         self.PHANTOM_PRIVATE_KEY = os.getenv("PHANTOM_PRIVATE_KEY").strip()
 

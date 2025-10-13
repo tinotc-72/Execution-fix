@@ -3426,6 +3426,132 @@ class TradeProcessor:
         
         return None
 
+    def _extract_mint_from_token_balances(self, trade_info: Dict[str, Any]) -> Optional[str]:
+        """
+        Extract token mint from pre/post token balance changes.
+        This is useful when logs don't contain mint information.
+        """
+        try:
+            tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+            if not tx:
+                return None
+            
+            meta = tx.get('meta', {})
+            pre_balances = meta.get('preTokenBalances', [])
+            post_balances = meta.get('postTokenBalances', [])
+            
+            # SOL mint to skip
+            SOL_MINT = "So11111111111111111111111111111111111111112"
+            
+            # Look for token balances that changed (excluding SOL)
+            for post_bal in post_balances:
+                mint = post_bal.get('mint')
+                if mint and mint != SOL_MINT:
+                    # Check if this token had a balance change
+                    account_idx = post_bal.get('accountIndex')
+                    pre_amount = 0
+                    for pre_bal in pre_balances:
+                        if pre_bal.get('accountIndex') == account_idx:
+                            pre_amount = int(pre_bal.get('uiTokenAmount', {}).get('amount', 0))
+                            break
+                    
+                    post_amount = int(post_bal.get('uiTokenAmount', {}).get('amount', 0))
+                    
+                    # If balance changed, this is likely the traded token
+                    if post_amount != pre_amount:
+                        logger.info(f"🎯 [MINT_INFERENCE] Found token mint from balance changes: {mint[:8]}...")
+                        return mint
+            
+            return None
+        except Exception as e:
+            logger.warning(f"⚠️ [MINT_INFERENCE] Failed to extract mint from token balances: {e}")
+            return None
+
+    def _parse_raydium_accounts(self, trade_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Parse Raydium CPMM account information from transaction for MEVRaydiumExecutor.
+        Extracts pool state, config, vaults, and other necessary accounts.
+        """
+        try:
+            tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+            if not tx:
+                logger.debug("[RAYDIUM_PARSE] No transaction data available")
+                return None
+            
+            # Look for Raydium CPMM program ID
+            RAYDIUM_CPMM_PROGRAM = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
+            
+            message = tx.get('transaction', {}).get('message', {})
+            account_keys = message.get('accountKeys', [])
+            instructions = message.get('instructions', [])
+            
+            # Find Raydium instruction
+            raydium_ix = None
+            for ix in instructions:
+                prog_idx = ix.get('programIdIndex')
+                if prog_idx is not None and prog_idx < len(account_keys):
+                    if account_keys[prog_idx] == RAYDIUM_CPMM_PROGRAM:
+                        raydium_ix = ix
+                        break
+            
+            if not raydium_ix:
+                logger.debug("[RAYDIUM_PARSE] No Raydium CPMM instruction found")
+                return None
+            
+            # Extract account indices from the instruction
+            account_indices = raydium_ix.get('accounts', [])
+            
+            # Standard Raydium CPMM swap instruction account layout:
+            # 0: payer (signer)
+            # 1: authority (amm authority)
+            # 2: amm config
+            # 3: pool state
+            # 4: input token account
+            # 5: output token account
+            # 6: input vault
+            # 7: output vault
+            # 8: input token mint
+            # 9: output token mint
+            # 10: observation state
+            
+            raydium_info = {
+                'program_id': RAYDIUM_CPMM_PROGRAM,
+                'accounts': {}
+            }
+            
+            # Map known account positions (may vary by instruction type)
+            if len(account_indices) >= 10:
+                raydium_info['accounts'] = {
+                    'amm_authority': account_keys[account_indices[1]] if account_indices[1] < len(account_keys) else None,
+                    'pool_config': account_keys[account_indices[2]] if account_indices[2] < len(account_keys) else None,
+                    'pool_state': account_keys[account_indices[3]] if account_indices[3] < len(account_keys) else None,
+                    'input_vault': account_keys[account_indices[6]] if account_indices[6] < len(account_keys) else None,
+                    'output_vault': account_keys[account_indices[7]] if account_indices[7] < len(account_keys) else None,
+                    'input_mint': account_keys[account_indices[8]] if account_indices[8] < len(account_keys) else None,
+                    'output_mint': account_keys[account_indices[9]] if account_indices[9] < len(account_keys) else None,
+                }
+                
+                # Add system accounts
+                TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                SYSTEM_PROGRAM = "11111111111111111111111111111111"
+                raydium_info['accounts']['token_program'] = TOKEN_PROGRAM
+                raydium_info['accounts']['system_program'] = SYSTEM_PROGRAM
+                
+                # Extract instruction data for discriminator
+                raydium_info['instruction_data'] = raydium_ix.get('data', '')
+                
+                logger.info(f"✅ [RAYDIUM_PARSE] Successfully parsed Raydium accounts")
+                logger.debug(f"[RAYDIUM_PARSE] Pool state: {raydium_info['accounts'].get('pool_state', 'N/A')[:12]}...")
+                
+                return raydium_info
+            else:
+                logger.warning(f"[RAYDIUM_PARSE] Insufficient accounts in Raydium instruction: {len(account_indices)}")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"⚠️ [RAYDIUM_PARSE] Failed to parse Raydium accounts: {e}")
+            return None
+
     def _infer_signature_from_transaction(self, trade_info: Dict[str, Any]) -> Optional[str]:
         """
         Infer transaction signature from transaction data.
@@ -3632,6 +3758,24 @@ class TradeProcessor:
                 if mint:
                     trade_info['token_mint'] = mint
                     inferred_fields.append('token_mint')
+            
+            # Also try extracting from token balances as fallback
+            if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
+                mint = self._extract_mint_from_token_balances(trade_info)
+                if mint:
+                    trade_info['token_mint'] = mint
+                    inferred_fields.append('token_mint (from balances)')
+        
+        # 7. Parse Raydium-specific account information for MEVRaydiumExecutor
+        dex = trade_info.get('dex') or trade_info.get('dex_type', '')
+        if 'raydium' in str(dex).lower():
+            raydium_info = self._parse_raydium_accounts(trade_info)
+            if raydium_info:
+                if 'parsed_tx' not in trade_info:
+                    trade_info['parsed_tx'] = {}
+                trade_info['parsed_tx']['raydium_info'] = raydium_info
+                inferred_fields.append('raydium_info')
+                logger.info(f"✅ [FIELD_INFERENCE] Parsed Raydium account information")
         
         if inferred_fields:
             logger.info(f"✅ [FIELD_INFERENCE] Successfully inferred: {', '.join(inferred_fields)}")
