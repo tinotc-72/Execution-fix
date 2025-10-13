@@ -3384,6 +3384,9 @@ class TradeProcessor:
         Enhanced token mint extraction from transaction logs.
         Uses multiple patterns to identify potential token mint addresses.
         
+        Reference: https://docs.solana.com/developing/programming-model/transactions
+        Implements robust log parsing following Solana transaction structure best practices.
+        
         Returns:
             Token mint address if found, None otherwise
         """
@@ -3395,13 +3398,17 @@ class TradeProcessor:
         # Pattern to match Solana addresses (base58, 32-44 chars)
         address_pattern = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
         
-        # Known system addresses to exclude
+        # Known system addresses to exclude (expand from DEX_PROGRAMS)
         system_addresses = {
-            'So11111111111111111111111111111111111111112',  # SOL
+            'So11111111111111111111111111111111111111112',  # SOL/WSOL
             '11111111111111111111111111111111',  # System Program
             'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',  # Token Program
+            'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',  # Token-2022 Program
             'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',  # Associated Token Program
+            'ComputeBudget111111111111111111111111111111',  # Compute Budget
         }
+        # Also exclude known DEX program IDs
+        system_addresses.update(DEX_PROGRAMS.keys())
         
         # Extract all potential addresses from logs
         log_text = ' '.join(logs)
@@ -3421,32 +3428,53 @@ class TradeProcessor:
             if most_common:
                 mint, count = most_common[0]
                 if count >= 2:  # Mentioned at least twice
-                    logger.info(f"🎯 [MINT_FROM_LOGS] Found mint {mint[:8]}... (mentioned {count} times)")
+                    logger.info(f"🎯 [MINT_FROM_LOGS] Found mint {mint[:8]}... (mentioned {count} times in logs)")
+                    return mint
+                elif count == 1 and len(potential_mints) == 1:
+                    # Only one candidate, likely the mint
+                    logger.info(f"🎯 [MINT_FROM_LOGS] Found single candidate mint {mint[:8]}...")
                     return mint
         
+        logger.debug(f"[MINT_FROM_LOGS] No reliable mint found in {len(logs)} log messages")
         return None
 
     def _extract_mint_from_token_balances(self, trade_info: Dict[str, Any]) -> Optional[str]:
         """
         Extract token mint from pre/post token balance changes.
         This is useful when logs don't contain mint information.
+        
+        Uses delta-based detection to identify the token being traded by analyzing
+        which token balances changed in the transaction.
+        
+        Reference: Following industry-standard delta detection patterns from:
+        - https://github.com/jup-ag/jupiter-copy-trading
+        - https://github.com/solana-labs/raydium-copy-bot
         """
         try:
             tx = trade_info.get('transaction') or trade_info.get('transaction_full')
             if not tx:
+                logger.debug("[MINT_FROM_BALANCES] No transaction data available")
                 return None
             
             meta = tx.get('meta', {})
             pre_balances = meta.get('preTokenBalances', [])
             post_balances = meta.get('postTokenBalances', [])
             
-            # SOL mint to skip
-            SOL_MINT = "So11111111111111111111111111111111111111112"
+            if not pre_balances and not post_balances:
+                logger.debug("[MINT_FROM_BALANCES] No token balance data in transaction")
+                return None
             
-            # Look for token balances that changed (excluding SOL)
+            # SOL mint to skip (WSOL is often used as intermediate)
+            SOL_MINT = "So11111111111111111111111111111111111111112"
+            EXCLUDED_MINTS = {SOL_MINT}  # Can add USDC/USDT if they're common intermediates
+            
+            # Track all mints with balance changes
+            changed_mints = []
+            
+            # Look for token balances that changed (excluding SOL/WSOL)
             for post_bal in post_balances:
                 mint = post_bal.get('mint')
-                if mint and mint != SOL_MINT:
+                if mint and mint not in EXCLUDED_MINTS:
                     # Check if this token had a balance change
                     account_idx = post_bal.get('accountIndex')
                     pre_amount = 0
@@ -3456,15 +3484,44 @@ class TradeProcessor:
                             break
                     
                     post_amount = int(post_bal.get('uiTokenAmount', {}).get('amount', 0))
+                    delta = post_amount - pre_amount
                     
-                    # If balance changed, this is likely the traded token
-                    if post_amount != pre_amount:
-                        logger.info(f"🎯 [MINT_INFERENCE] Found token mint from balance changes: {mint[:8]}...")
-                        return mint
+                    # If balance changed significantly, this is likely involved in the trade
+                    if delta != 0:
+                        changed_mints.append({
+                            'mint': mint,
+                            'delta': delta,
+                            'pre_amount': pre_amount,
+                            'post_amount': post_amount
+                        })
             
+            # Return the mint with the largest positive delta (what was bought)
+            # or if only sells, return the mint with largest negative delta
+            if changed_mints:
+                # Prioritize buys (positive delta) as that's typically the target token
+                buys = [m for m in changed_mints if m['delta'] > 0]
+                if buys:
+                    # Return the token that increased the most
+                    best_buy = max(buys, key=lambda x: x['delta'])
+                    mint = best_buy['mint']
+                    logger.info(f"🎯 [MINT_FROM_BALANCES] Found token mint from balance increase: {mint[:8]}... (Δ={best_buy['delta']:+,})")
+                    return mint
+                else:
+                    # All sells - return the token being sold
+                    best_sell = min(changed_mints, key=lambda x: x['delta'])
+                    mint = best_sell['mint']
+                    logger.info(f"🎯 [MINT_FROM_BALANCES] Found token mint from balance decrease: {mint[:8]}... (Δ={best_sell['delta']:+,})")
+                    return mint
+            
+            logger.debug(f"[MINT_FROM_BALANCES] No token balance changes detected")
             return None
         except Exception as e:
-            logger.warning(f"⚠️ [MINT_INFERENCE] Failed to extract mint from token balances: {e}")
+            logger.warning(f"⚠️ [MINT_FROM_BALANCES] Failed to extract mint from token balances: {e}")
+            try:
+                import traceback
+                logger.debug(f"[MINT_FROM_BALANCES] Exception details: {traceback.format_exc()}")
+            except:
+                pass
             return None
 
     def _parse_raydium_accounts(self, trade_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:

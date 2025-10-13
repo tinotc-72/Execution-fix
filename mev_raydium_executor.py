@@ -276,7 +276,26 @@ class PoolResolver:
         rent_sysvar = _pk(rent_sysvar) if rent_sysvar else None
 
         if not all([pool_state, pool_config, amm_authority, input_vault, output_vault, input_mint, output_mint, token_program, system_program]):
-            raise ValueError("Incomplete Raydium account set in parsed trade; cannot resolve pool")
+            # Log which fields are missing for debugging
+            missing_fields = []
+            if not pool_state: missing_fields.append("pool_state")
+            if not pool_config: missing_fields.append("pool_config")
+            if not amm_authority: missing_fields.append("amm_authority")
+            if not input_vault: missing_fields.append("input_vault")
+            if not output_vault: missing_fields.append("output_vault")
+            if not input_mint: missing_fields.append("input_mint")
+            if not output_mint: missing_fields.append("output_mint")
+            if not token_program: missing_fields.append("token_program")
+            if not system_program: missing_fields.append("system_program")
+            
+            logger.error(f"[RAYDIUM_POOL] ❌ Incomplete Raydium account set - missing: {', '.join(missing_fields)}")
+            logger.error(f"[RAYDIUM_POOL] 📋 Available raydium_info keys: {list(ray.keys())}")
+            logger.error(f"[RAYDIUM_POOL] 📋 Available accounts keys: {list(accounts.keys())}")
+            logger.error(f"[RAYDIUM_POOL] ℹ️  This trade requires Raydium-specific pool data that was not parsed")
+            logger.error(f"[RAYDIUM_POOL] ℹ️  The monitored wallet used Raydium but we cannot reconstruct the exact pool")
+            logger.error(f"[RAYDIUM_POOL] ℹ️  Consider using Jupiter executor as fallback for broader DEX support")
+            
+            raise ValueError(f"Incomplete Raydium account set in parsed trade (missing: {', '.join(missing_fields)}); cannot resolve pool")
 
         # Discriminator
         ix_bytes = self._get_ix_bytes_from_trade(program_id_str)
