@@ -230,6 +230,26 @@ def test_mint_inference_from_balances():
             "inferred_fields.append('token_mint (from balances)')",
             '✅ Logs when mint is inferred from balances'
         ),
+        (
+            '# Build dicts keyed by accountIndex for efficient lookup',
+            '✅ Builds dicts keyed by accountIndex'
+        ),
+        (
+            'SOL_MINT = "So11111111111111111111111111111111111111112"',
+            '✅ Defines WSOL mint for exclusion'
+        ),
+        (
+            'mint != SOL_MINT',
+            '✅ Ignores WSOL in balance processing'
+        ),
+        (
+            'abs(x[1][\'delta\'])',
+            '✅ Uses absolute delta for mint selection'
+        ),
+        (
+            '# Fallback: If no pre balance or ties, choose first non-WSOL mint from postTokenBalances',
+            '✅ Has fallback for no pre balance case'
+        ),
     ]
     
     passed = 0

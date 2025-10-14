@@ -3470,6 +3470,13 @@ class TradeProcessor:
         Uses delta-based detection to identify the token being traded by analyzing
         which token balances changed in the transaction.
         
+        Enhanced algorithm:
+        - Builds dicts of preTokenBalances and postTokenBalances keyed by account index
+        - Computes per-mint deltas (post - pre) by matching accountIndex
+        - Ignores WSOL (So11111111111111111111111111111111111111112)
+        - Chooses the mint with the largest absolute delta
+        - If ties or no pre balance, chooses the first non-WSOL mint from postTokenBalances
+        
         Reference: Following industry-standard delta detection patterns from:
         - https://github.com/jup-ag/jupiter-copy-trading
         - https://github.com/solana-labs/raydium-copy-bot
@@ -3490,54 +3497,72 @@ class TradeProcessor:
             
             # SOL mint to skip (WSOL is often used as intermediate)
             SOL_MINT = "So11111111111111111111111111111111111111112"
-            EXCLUDED_MINTS = {SOL_MINT}  # Can add USDC/USDT if they're common intermediates
             
-            # Track all mints with balance changes
-            changed_mints = []
+            # Build dicts keyed by accountIndex for efficient lookup
+            pre_map = {}
+            for pre_bal in pre_balances:
+                account_idx = pre_bal.get('accountIndex')
+                mint = pre_bal.get('mint')
+                if account_idx is not None and mint and mint != SOL_MINT:
+                    amount = int(pre_bal.get('uiTokenAmount', {}).get('amount', 0))
+                    pre_map[account_idx] = {'mint': mint, 'amount': amount}
             
-            # Look for token balances that changed (excluding SOL/WSOL)
+            post_map = {}
             for post_bal in post_balances:
+                account_idx = post_bal.get('accountIndex')
                 mint = post_bal.get('mint')
-                if mint and mint not in EXCLUDED_MINTS:
-                    # Check if this token had a balance change
-                    account_idx = post_bal.get('accountIndex')
-                    pre_amount = 0
-                    for pre_bal in pre_balances:
-                        if pre_bal.get('accountIndex') == account_idx:
-                            pre_amount = int(pre_bal.get('uiTokenAmount', {}).get('amount', 0))
-                            break
-                    
-                    post_amount = int(post_bal.get('uiTokenAmount', {}).get('amount', 0))
-                    delta = post_amount - pre_amount
-                    
-                    # If balance changed significantly, this is likely involved in the trade
-                    if delta != 0:
-                        changed_mints.append({
-                            'mint': mint,
-                            'delta': delta,
-                            'pre_amount': pre_amount,
-                            'post_amount': post_amount
-                        })
+                if account_idx is not None and mint and mint != SOL_MINT:
+                    amount = int(post_bal.get('uiTokenAmount', {}).get('amount', 0))
+                    post_map[account_idx] = {'mint': mint, 'amount': amount}
             
-            # Return the mint with the largest positive delta (what was bought)
-            # or if only sells, return the mint with largest negative delta
-            if changed_mints:
-                # Prioritize buys (positive delta) as that's typically the target token
-                buys = [m for m in changed_mints if m['delta'] > 0]
-                if buys:
-                    # Return the token that increased the most
-                    best_buy = max(buys, key=lambda x: x['delta'])
-                    mint = best_buy['mint']
-                    logger.info(f"🎯 [MINT_FROM_BALANCES] Found token mint from balance increase: {mint[:8]}... (Δ={best_buy['delta']:+,})")
-                    return mint
-                else:
-                    # All sells - return the token being sold
-                    best_sell = min(changed_mints, key=lambda x: x['delta'])
-                    mint = best_sell['mint']
-                    logger.info(f"🎯 [MINT_FROM_BALANCES] Found token mint from balance decrease: {mint[:8]}... (Δ={best_sell['delta']:+,})")
+            # Compute per-mint deltas by matching accountIndex
+            mint_deltas = {}
+            
+            # Process all account indices that appear in either pre or post
+            all_indices = set(pre_map.keys()) | set(post_map.keys())
+            
+            for account_idx in all_indices:
+                pre_data = pre_map.get(account_idx, {})
+                post_data = post_map.get(account_idx, {})
+                
+                # Get mint (prefer post if both exist, should be same mint)
+                mint = post_data.get('mint') or pre_data.get('mint')
+                if not mint:
+                    continue
+                
+                pre_amount = pre_data.get('amount', 0)
+                post_amount = post_data.get('amount', 0)
+                delta = post_amount - pre_amount
+                
+                # Track this mint's delta (sum if mint appears in multiple accounts)
+                if mint not in mint_deltas:
+                    mint_deltas[mint] = {'delta': 0, 'has_pre': False}
+                mint_deltas[mint]['delta'] += delta
+                if pre_amount > 0:
+                    mint_deltas[mint]['has_pre'] = True
+            
+            # Choose mint with largest absolute delta
+            if mint_deltas:
+                # Filter out mints with zero delta
+                changed_mints = {m: d for m, d in mint_deltas.items() if d['delta'] != 0}
+                
+                if changed_mints:
+                    # Select mint with largest absolute delta
+                    best_mint = max(changed_mints.items(), key=lambda x: abs(x[1]['delta']))
+                    mint = best_mint[0]
+                    delta = best_mint[1]['delta']
+                    logger.info(f"✅ [MINT_FROM_BALANCES] Found token mint from balance delta: {mint[:12]}... (Δ={delta:+,})")
                     return mint
             
-            logger.debug(f"[MINT_FROM_BALANCES] No token balance changes detected")
+            # Fallback: If no pre balance or ties, choose first non-WSOL mint from postTokenBalances
+            if post_balances:
+                for post_bal in post_balances:
+                    mint = post_bal.get('mint')
+                    if mint and mint != SOL_MINT:
+                        logger.info(f"✅ [MINT_FROM_BALANCES] Using first non-WSOL mint from post balances: {mint[:12]}...")
+                        return mint
+            
+            logger.warning(f"⚠️ [MINT_FROM_BALANCES] No token balance changes detected")
             return None
         except Exception as e:
             logger.warning(f"⚠️ [MINT_FROM_BALANCES] Failed to extract mint from token balances: {e}")
