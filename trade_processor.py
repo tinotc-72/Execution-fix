@@ -482,7 +482,7 @@ class TradeProcessor:
                 trade["route_hint"] = trade.get("route_hint") or "direct_copy"
                 trade["dex"] = trade.get("dex") or trade.get("dex_type") or "unknown"
                 trade["action"] = trade.get("action") or "swap"
-                logger.info("✅ [VALIDATION] Allowing execution via direct_copy (mint unresolved but signature present)")
+                logger.info("✅ [VALIDATION] route_hint='direct_copy' fallback - Allowing execution via direct_copy (mint unresolved but signature present)")
                 return True
             else:
                 logger.warning("🛑 [VALIDATION] Mint unresolved and no signature — skipping")
