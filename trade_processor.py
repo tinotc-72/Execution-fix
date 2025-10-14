@@ -3767,6 +3767,38 @@ class TradeProcessor:
         
         return None
 
+    def ensure_meta_in_trade_info(self, trade_info: dict, backfilled: dict | None) -> None:
+        """
+        Ensure trade_info has meta attached from backfilled transaction.
+        
+        Args:
+            trade_info: Trade information dict
+            backfilled: Backfilled transaction data (optional)
+        """
+        if trade_info.get("meta") is None and backfilled and backfilled.get("meta"):
+            trade_info["meta"] = backfilled["meta"]
+
+    def annotate_source_failure(self, trade_info: dict) -> None:
+        """
+        Detect and annotate source transaction failures, especially slippage errors.
+        
+        Sets trade_info["source_tx_failed"] = True if meta.err is present.
+        Sets trade_info["retry_hint"] = "requote" for slippage failures (Anchor 6004 or explicit message).
+        
+        Args:
+            trade_info: Trade information dict
+        """
+        meta = trade_info.get("meta") or {}
+        err = meta.get("err")
+        if not err:
+            return
+        trade_info["source_tx_failed"] = True
+        logs = " ".join(meta.get("logMessages") or [])
+        # Anchor 6004 or explicit message
+        if ("Exceeded slippage tolerance" in logs) or ("6004" in str(err)):
+            trade_info["retry_hint"] = "requote"
+            logger.warning("⚠️ [ANALYSIS] Source tx failed with ExceededSlippage (6004) — will re-quote & rebuild")
+
     def infer_missing_fields(self, trade_info: Dict[str, Any]) -> Dict[str, Any]:
         """
         Comprehensive fallback logic to infer missing critical fields.
@@ -3792,6 +3824,12 @@ class TradeProcessor:
             Updated trade_info with inferred fields
         """
         logger.info("🔍 [FIELD_INFERENCE] Starting comprehensive field inference...")
+        
+        # 0) Make sure meta is attached (from backfill; pipeline already populates it in many cases)
+        self.ensure_meta_in_trade_info(trade_info, backfilled=trade_info.get("backfilled_tx"))
+        
+        # 0b) Mark error context (prevents clone of a failed tx)
+        self.annotate_source_failure(trade_info)
         
         inferred_fields = []
         
