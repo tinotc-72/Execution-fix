@@ -663,6 +663,18 @@ class WalletTransactionParser:
                     return "unknown"
                 return label.lower()
         
+        # EARLY METEORA DETECTION: Check all instructions for Meteora program ID
+        instructions = tx_data.get("instructions", [])
+        meteora_program_id = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
+        early_meteora_detected = False
+        
+        for ix in instructions:
+            pid = ix.get("programId") or ix.get("program")
+            if pid == meteora_program_id:
+                early_meteora_detected = True
+                self.logger.info(f"✅ [PARSER] Early Meteora detection: programId={meteora_program_id[:8]}...")
+                break
+        
         # Get original decoder result
         dex_type = self.identify_dex(tx_data)
         decoder_result = self.dex_decoder.decode(dex_type, tx_data)
@@ -677,6 +689,11 @@ class WalletTransactionParser:
             dex = normalize_dex(dex_raw.lower().replace(".", ""))
         else:
             dex = "unknown"
+        
+        # Apply early Meteora detection override
+        if early_meteora_detected:
+            dex = "meteora"
+            self.logger.info(f"✅ [PARSER] Applied early Meteora detection override: dex=meteora")
         
         # Extract action from decoder result
         action = "unknown"
@@ -727,6 +744,11 @@ class WalletTransactionParser:
             action = decoder_result.get("detected_action", "unknown")
         if not source_wallet:
             source_wallet = tx_data.get("signer")
+        
+        # Apply early Meteora action override if action is still unknown
+        if early_meteora_detected and action in (None, "unknown"):
+            action = "swap"
+            self.logger.info(f"✅ [PARSER] Applied early Meteora action override: action=swap")
         
         # Enhanced log parsing when regular parsing fails or returns unknown
         if dex == "unknown" or action == "unknown" or mint is None:
