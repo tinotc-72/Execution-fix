@@ -12,9 +12,9 @@ import sys
 import re
 
 def test_code_implementation():
-    """Test that the code has the correct early Meteora detection logic"""
+    """Test that the code has the correct Meteora detection logic"""
     print("=" * 80)
-    print("TEST: Code Implementation of Early Meteora Detection")
+    print("TEST: Code Implementation of Meteora Detection")
     print("=" * 80)
     
     with open('wallet_tx_parser.py', 'r') as f:
@@ -22,44 +22,54 @@ def test_code_implementation():
     
     success = True
     
-    # Test 1: Check for early Meteora detection loop
-    print("\n--- Test 1: Early Meteora Detection Loop ---")
-    pattern1 = r'for\s+ix\s+in\s+instructions:.*?pid\s*=\s*ix\.get\("programId"\)\s+or\s+ix\.get\("program"\).*?if\s+pid\s*==\s*meteora_program_id:'
-    if re.search(pattern1, content, re.DOTALL):
-        print("✅ PASS: Early Meteora detection loop found")
+    # Test 1: Check for METEORA_PID constant
+    print("\n--- Test 1: METEORA_PID Constant ---")
+    if 'METEORA_PID = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"' in content:
+        print("✅ PASS: Correct METEORA_PID constant found")
     else:
-        print("❌ FAIL: Early Meteora detection loop not found or incorrect")
+        print("❌ FAIL: METEORA_PID constant not found or incorrect")
         success = False
     
-    # Test 2: Check for DEX override
-    print("\n--- Test 2: DEX Override Logic ---")
-    if 'if early_meteora_detected:' in content and 'dex = "meteora"' in content:
-        print("✅ PASS: DEX override logic found")
+    # Test 2: Check for Meteora detection loop with parsed dict
+    print("\n--- Test 2: Meteora Detection Loop ---")
+    pattern2 = r'for\s+ix\s+in\s+\(tx\.get\("message",\s*\{\}\)\.get\("instructions"\)\s+or\s+\[\]\):'
+    if re.search(pattern2, content, re.DOTALL):
+        print("✅ PASS: Meteora detection loop with tx.get pattern found")
     else:
-        print("❌ FAIL: DEX override logic not found")
+        print("❌ FAIL: Meteora detection loop not found or incorrect")
         success = False
     
-    # Test 3: Check for action override
-    print("\n--- Test 3: Action Override Logic ---")
-    pattern3 = r'if\s+early_meteora_detected\s+and\s+action\s+in\s+\(None,\s*"unknown"\):'
-    if re.search(pattern3, content):
-        print("✅ PASS: Action override condition found")
+    # Test 3: Check for DEX assignment to parsed dict
+    print("\n--- Test 3: DEX Assignment Logic ---")
+    if 'parsed["dex"] = "meteora"' in content:
+        print("✅ PASS: DEX assignment to parsed dict found")
     else:
-        print("❌ FAIL: Action override condition not found")
+        print("❌ FAIL: DEX assignment logic not found")
         success = False
     
-    if 'action = "swap"' in content:
-        print("✅ PASS: Action set to 'swap' found")
+    # Test 4: Check for action setdefault
+    print("\n--- Test 4: Action Setdefault Logic ---")
+    if 'parsed.setdefault("action", "swap")' in content:
+        print("✅ PASS: Action setdefault found")
     else:
-        print("❌ FAIL: Action set to 'swap' not found")
+        print("❌ FAIL: Action setdefault not found")
         success = False
     
-    # Test 4: Check Meteora program ID constant
-    print("\n--- Test 4: Meteora Program ID Constant ---")
-    if 'meteora_program_id = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"' in content:
-        print("✅ PASS: Correct Meteora program ID constant found")
+    # Test 5: Check for wallet_address extraction from signers
+    print("\n--- Test 5: Wallet Address Extraction ---")
+    pattern5 = r'signers\s*=\s*\[k\["pubkey"\]\s+for\s+k\s+in\s+\(tx\.get\("message",\s*\{\}\)\.get\("accountKeys"\)\s+or\s+\[\]\)\s+if\s+k\.get\("signer"\)\]'
+    if re.search(pattern5, content, re.DOTALL):
+        print("✅ PASS: Wallet address extraction from signers found")
     else:
-        print("❌ FAIL: Meteora program ID constant not found or incorrect")
+        print("❌ FAIL: Wallet address extraction not found or incorrect")
+        success = False
+    
+    # Test 6: Check for wallet_address assignment
+    print("\n--- Test 6: Wallet Address Assignment ---")
+    if 'parsed["wallet_address"] = signers[0]' in content:
+        print("✅ PASS: Wallet address assignment found")
+    else:
+        print("❌ FAIL: Wallet address assignment not found")
         success = False
     
     print("\n" + "=" * 80)
@@ -82,23 +92,18 @@ def test_logging_format():
     with open('wallet_tx_parser.py', 'r') as f:
         content = f.read()
     
-    # Find the early Meteora detection log messages
-    if 'self.logger.info(f"✅ [PARSER] Early Meteora detection:' in content:
-        print("✅ PASS: Early detection uses INFO level with ✅ emoji")
+    # Find the Meteora detection log messages
+    if 'self.logger.info(f"✅ [PARSER] Meteora detected:' in content:
+        print("✅ PASS: Meteora detection uses INFO level with ✅ emoji")
     else:
-        print("❌ FAIL: Early detection logging format incorrect")
+        print("❌ FAIL: Meteora detection logging format incorrect")
         return 1
     
-    if 'self.logger.info(f"✅ [PARSER] Applied early Meteora detection override: dex=meteora")' in content:
-        print("✅ PASS: DEX override uses INFO level with ✅ emoji")
+    # Check for WARNING emoji in unknown DEX log
+    if 'self.logger.warning(f"⚠️ [PARSER] DEX=unknown' in content:
+        print("✅ PASS: Unknown DEX uses WARNING level with ⚠️ emoji")
     else:
-        print("❌ FAIL: DEX override logging format incorrect")
-        return 1
-    
-    if 'self.logger.info(f"✅ [PARSER] Applied early Meteora action override: action=swap")' in content:
-        print("✅ PASS: Action override uses INFO level with ✅ emoji")
-    else:
-        print("❌ FAIL: Action override logging format incorrect")
+        print("❌ FAIL: Unknown DEX logging format incorrect")
         return 1
     
     print("\n✅ ALL LOGGING TESTS PASSED")
