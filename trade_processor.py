@@ -3979,6 +3979,46 @@ class TradeProcessor:
                 else:
                     logger.warning(f"⚠️ [MINT_INFERENCE] Could not extract mint from balances")
             
+            # Last-chance: scan instruction accounts for SPL mints
+            if not trade_info.get("token_mint"):
+                try:
+                    WSOL = "So11111111111111111111111111111111111111112"
+                    # Get mints from postTokenBalances
+                    meta = trade_info.get("meta") or {}
+                    if not meta:
+                        tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                        if tx:
+                            meta = tx.get('meta', {})
+                    
+                    post_mints = {b.get("mint") for b in (meta.get("postTokenBalances") or []) if b.get("mint")}
+                    if post_mints:
+                        # Get transaction instructions and account keys
+                        tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                        if tx:
+                            message = tx.get('transaction', {}).get('message', {})
+                            instrs = message.get('instructions', [])
+                            account_keys = message.get('accountKeys', [])
+                            
+                            # Handle account_keys format (could be list of strings or list of dicts)
+                            if account_keys and isinstance(account_keys[0], dict):
+                                account_keys = [k.get('pubkey') for k in account_keys if k.get('pubkey')]
+                            
+                            for ix in instrs:
+                                # Get accounts from instruction (these are indices)
+                                account_indices = ix.get("accounts") or []
+                                for acc_idx in account_indices:
+                                    if acc_idx < len(account_keys):
+                                        acc = account_keys[acc_idx]
+                                        if acc in post_mints and acc != WSOL:
+                                            trade_info["token_mint"] = acc
+                                            inferred_fields.append('token_mint (from instruction scan)')
+                                            logger.info(f"✅ [MINT_INFERENCE] Resolved token mint from instruction accounts: {acc}")
+                                            break
+                                if trade_info.get("token_mint"):
+                                    break
+                except Exception as e:
+                    logger.warning(f"⚠️ [MINT_INFERENCE] Instruction scan failed: {e}")
+            
             # Last resort: Try to extract from transaction instruction accounts
             if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
                 logger.debug(f"[MINT_INFERENCE] Attempting extraction from instruction accounts...")
