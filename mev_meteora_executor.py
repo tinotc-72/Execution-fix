@@ -1245,31 +1245,29 @@ def _build_meteora_sell_solders(rpc: SimpleRPC, owner: Keypair, token_mint: Pubk
     return VersionedTransaction(msg, [owner])
 
 def build_and_sign(
+    trade_info: dict,
     rpc: SimpleRPC,
-    owner: Keypair,
-    token_mint: Pubkey,
-    lamports_in: int = 1_000_000,  # Default 0.001 SOL
-    min_tokens: int = 1,
-    trade_info: dict = None
+    keypair: Keypair,
+    force_requote: bool = False,
+    slippage_bps: int = 300
 ) -> VersionedTransaction:
     """
     Build and sign a valid Meteora transaction with proper instruction structure.
     
     Instruction order mirrors successful transactions:
-    1. ATA creation for WSOL (idempotent)
-    2. ATA creation for token_mint (idempotent)
+    1. ATA creation for WSOL (idempotent with existence check)
+    2. ATA creation for token_mint (idempotent with existence check)
     3. System transfer to wrap SOL
     4. SyncNative to update WSOL balance
-    5. Meteora Swap2 instruction
+    5. Meteora Swap instruction (using program Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB)
     6. CloseAccount to unwrap remaining WSOL
     
     Args:
+        trade_info: Trade information containing token_mint, transaction data, etc.
         rpc: SimpleRPC client
-        owner: Wallet keypair
-        token_mint: Token mint to buy
-        lamports_in: Amount of SOL to spend in lamports (default 0.001 SOL = 1_000_000 lamports)
-        min_tokens: Minimum tokens to receive
-        trade_info: Optional trade information for extracting source tx data
+        keypair: Wallet keypair
+        force_requote: If True, use wider slippage (slippage_bps) or recompute minOut
+        slippage_bps: Slippage in basis points (default 300 = 3%)
     
     Returns:
         VersionedTransaction ready to send (signed)
@@ -1278,109 +1276,206 @@ def build_and_sign(
     
     # Constants
     WSOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
-    METEORA_PROGRAM_ID = Pubkey.from_string("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN")
+    METEORA_PROGRAM_ID = Pubkey.from_string("Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB")
     SPL_TOKEN_PROGRAM = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     SYSTEM_PROGRAM = Pubkey.from_string("11111111111111111111111111111111")
     
-    owner_pk = owner.pubkey()
+    # Extract trade info parameters
+    payer = keypair.pubkey()
+    token_mint = Pubkey.from_string(trade_info["token_mint"])
+    lamports_in = int(0.001 * 1_000_000_000)  # Default 0.001 SOL
+    
+    logger.info(f"🚀 Building Meteora transaction for {token_mint}")
+    logger.info(f"   Amount: {lamports_in / 1_000_000_000} SOL")
+    logger.info(f"   Force requote: {force_requote}, Slippage: {slippage_bps} bps")
+    
     ixs = []
     
-    # 1. Create ATA for WSOL (idempotent - will fail gracefully if exists)
-    wsol_ata = find_associated_token_address(owner_pk, WSOL_MINT)
-    wsol_create_ix = create_associated_token_account_ix(owner_pk, owner_pk, WSOL_MINT)
-    ixs.append(wsol_create_ix)
-    logger.info("🔧 Added WSOL ATA creation instruction")
+    # 1. Derive/create ATAs (idempotent with existence check)
+    user_wsol_ata = find_associated_token_address(payer, WSOL_MINT)
+    user_out_ata = find_associated_token_address(payer, token_mint)
     
-    # 2. Create ATA for token_mint (idempotent)
-    token_ata = find_associated_token_address(owner_pk, token_mint)
-    token_create_ix = create_associated_token_account_ix(owner_pk, owner_pk, token_mint)
-    ixs.append(token_create_ix)
-    logger.info(f"🔧 Added token ATA creation instruction for {token_mint}")
+    # Check WSOL ATA existence
+    try:
+        wsol_account = rpc._post("getAccountInfo", [str(user_wsol_ata), {"encoding": "jsonParsed"}])
+        if wsol_account["value"] is None:
+            wsol_create_ix = create_associated_token_account_ix(payer, payer, WSOL_MINT)
+            ixs.append(wsol_create_ix)
+            logger.info("🔧 Added WSOL ATA creation instruction (account doesn't exist)")
+        else:
+            logger.info("✅ WSOL ATA already exists, skipping creation")
+    except Exception as e:
+        # If check fails, be conservative and attempt creation (will no-op if exists)
+        wsol_create_ix = create_associated_token_account_ix(payer, payer, WSOL_MINT)
+        ixs.append(wsol_create_ix)
+        logger.info(f"⚠️ WSOL ATA check failed ({e}), adding creation instruction")
     
-    # 3. System transfer to wrap SOL into WSOL ATA
+    # Check output token ATA existence
+    try:
+        token_account = rpc._post("getAccountInfo", [str(user_out_ata), {"encoding": "jsonParsed"}])
+        if token_account["value"] is None:
+            token_create_ix = create_associated_token_account_ix(payer, payer, token_mint)
+            ixs.append(token_create_ix)
+            logger.info(f"🔧 Added output token ATA creation instruction (account doesn't exist)")
+        else:
+            logger.info("✅ Output token ATA already exists, skipping creation")
+    except Exception as e:
+        # If check fails, be conservative and attempt creation (will no-op if exists)
+        token_create_ix = create_associated_token_account_ix(payer, payer, token_mint)
+        ixs.append(token_create_ix)
+        logger.info(f"⚠️ Output token ATA check failed ({e}), adding creation instruction")
+    
+    # 2. Wrap SOL: system transfer to WSOL ATA
     transfer_ix = transfer(
         TransferParams(
-            from_pubkey=owner_pk,
-            to_pubkey=wsol_ata,
+            from_pubkey=payer,
+            to_pubkey=user_wsol_ata,
             lamports=lamports_in
         )
     )
     ixs.append(transfer_ix)
     logger.info(f"💸 Added system transfer: {lamports_in} lamports to WSOL ATA")
     
-    # 4. SyncNative instruction to update WSOL balance
-    # SPL Token SyncNative instruction (discriminator 17)
+    # 3. SyncNative instruction to update WSOL balance
     sync_native_ix = Instruction(
         program_id=SPL_TOKEN_PROGRAM,
-        accounts=[AccountMeta(wsol_ata, is_signer=False, is_writable=True)],
+        accounts=[AccountMeta(user_wsol_ata, is_signer=False, is_writable=True)],
         data=bytes([17])  # SyncNative discriminator
     )
     ixs.append(sync_native_ix)
     logger.info("🔄 Added SyncNative instruction")
     
-    # 5. Build Meteora Swap2 instruction
-    if trade_info:
-        # Extract from source transaction if available
+    # 4. Build Meteora Swap instruction - reuse pool/PDA accounts from backfilled tx
+    # Calculate minOut based on slippage
+    if force_requote:
+        # Use wider slippage for force_requote
+        actual_slippage_bps = max(slippage_bps, 300)  # Ensure at least 300 bps
+        min_out = 1  # Very permissive minimum for requote
+        logger.info(f"⚡ Force requote mode: using slippage_bps={actual_slippage_bps}, min_out={min_out}")
+    else:
+        # Normal mode: calculate minOut from slippage_bps
+        # For simplicity, use a basic calculation (in production, fetch pool state)
+        min_out = 1  # Placeholder - should calculate based on pool state
+        logger.info(f"📊 Normal mode: using slippage_bps={slippage_bps}, min_out={min_out}")
+    
+    # Extract Meteora instruction from backfilled transaction
+    if trade_info and "transaction" in trade_info:
         try:
-            resolver = ContextPoolResolverMeteora(rpc, trade_info)
-            source_data, source_metas, program_id = resolver.extract_ix()
-            metas = _replace_user_accounts(
-                source_metas,
-                Pubkey.from_string(trade_info.get("wallet_address", "")),
-                owner_pk,
-                token_mint
-            )
-            ix_data = _pack_swap_data_from_source(source_data, lamports_in, min_tokens, swap_mode=0)
-            swap_ix = Instruction(program_id=program_id, accounts=metas, data=ix_data)
-            logger.info("✅ Built Swap2 instruction from source transaction")
+            # Extract pool accounts from the backfilled transaction
+            tx_data = trade_info["transaction"]
+            msg = tx_data.get("message", {})
+            account_keys = msg.get("accountKeys", [])
+            
+            # Find Meteora instruction in the source transaction
+            meteora_ix_found = False
+            for ix in msg.get("instructions", []):
+                pid_idx = ix.get("programIdIndex")
+                if pid_idx is not None and pid_idx < len(account_keys):
+                    program_id_str = account_keys[pid_idx]
+                    if isinstance(program_id_str, dict):
+                        program_id_str = program_id_str.get("pubkey", "")
+                    
+                    if program_id_str == str(METEORA_PROGRAM_ID):
+                        # Found Meteora instruction - extract and rebuild
+                        account_indices = ix.get("accounts", [])
+                        
+                        # Build account metas, substituting user accounts
+                        metas = []
+                        source_wallet = trade_info.get("wallet_address", "")
+                        if source_wallet:
+                            source_wallet_pk = Pubkey.from_string(source_wallet)
+                            source_wsol_ata = find_associated_token_address(source_wallet_pk, WSOL_MINT)
+                            source_out_ata = find_associated_token_address(source_wallet_pk, token_mint)
+                            
+                            for acc_idx in account_indices:
+                                if acc_idx < len(account_keys):
+                                    acc_key = account_keys[acc_idx]
+                                    if isinstance(acc_key, dict):
+                                        acc_pubkey = Pubkey.from_string(acc_key["pubkey"])
+                                        is_signer = acc_key.get("signer", False)
+                                        is_writable = acc_key.get("writable", False)
+                                    else:
+                                        acc_pubkey = Pubkey.from_string(acc_key)
+                                        is_signer = False
+                                        is_writable = False
+                                    
+                                    # Substitute user accounts
+                                    if acc_pubkey == source_wallet_pk:
+                                        metas.append(AccountMeta(payer, is_signer=True, is_writable=is_writable))
+                                    elif acc_pubkey == source_wsol_ata:
+                                        metas.append(AccountMeta(user_wsol_ata, is_signer=False, is_writable=True))
+                                    elif acc_pubkey == source_out_ata:
+                                        metas.append(AccountMeta(user_out_ata, is_signer=False, is_writable=True))
+                                    else:
+                                        metas.append(AccountMeta(acc_pubkey, is_signer=is_signer, is_writable=is_writable))
+                        
+                        # Extract and rebuild instruction data with updated amounts
+                        import base64
+                        source_data = base64.b64decode(ix.get("data", ""))
+                        if len(source_data) >= 8:
+                            discriminator = source_data[:8]
+                            # Rebuild data with our amounts
+                            ix_data = discriminator + struct.pack('<QQ', lamports_in, min_out)
+                        else:
+                            ix_data = source_data
+                        
+                        swap_ix = Instruction(program_id=METEORA_PROGRAM_ID, accounts=metas, data=ix_data)
+                        meteora_ix_found = True
+                        logger.info("✅ Built Meteora swap instruction from backfilled transaction")
+                        break
+            
+            if not meteora_ix_found:
+                raise ValueError("No Meteora instruction found in backfilled transaction")
+                
         except Exception as e:
-            logger.warning(f"⚠️ Could not extract from source, using default Swap2: {e}")
-            # Fallback: build basic Swap2 instruction
-            SWAP2_DISCRIMINATOR = bytes([65, 75, 63, 76, 235, 91, 91, 136])
-            ix_data = SWAP2_DISCRIMINATOR + struct.pack('<QQB', lamports_in, min_tokens, 0)
-            # Basic account structure - would need proper pool resolution in production
+            logger.warning(f"⚠️ Could not extract from backfilled tx: {e}")
+            # Fallback: build basic swap instruction
+            SWAP_DISCRIMINATOR = bytes([248, 198, 158, 145, 225, 117, 135, 200])
+            ix_data = SWAP_DISCRIMINATOR + struct.pack('<QQ', lamports_in, min_out)
+            # Note: This fallback won't work without proper pool accounts
             swap_ix = Instruction(
                 program_id=METEORA_PROGRAM_ID,
-                accounts=[],  # Placeholder - needs proper account resolution
+                accounts=[],  # Placeholder - needs proper pool resolution
                 data=ix_data
             )
+            logger.warning("⚠️ Using fallback swap instruction (may fail without proper accounts)")
     else:
-        # Build basic Swap2 instruction
-        SWAP2_DISCRIMINATOR = bytes([65, 75, 63, 76, 235, 91, 91, 136])
-        ix_data = SWAP2_DISCRIMINATOR + struct.pack('<QQB', lamports_in, min_tokens, 0)
+        # No trade_info - build basic instruction
+        SWAP_DISCRIMINATOR = bytes([248, 198, 158, 145, 225, 117, 135, 200])
+        ix_data = SWAP_DISCRIMINATOR + struct.pack('<QQ', lamports_in, min_out)
         swap_ix = Instruction(
             program_id=METEORA_PROGRAM_ID,
-            accounts=[],  # Placeholder - needs proper account resolution
+            accounts=[],  # Placeholder - needs proper pool resolution
             data=ix_data
         )
+        logger.warning("⚠️ No trade_info provided - using basic swap instruction")
     
     ixs.append(swap_ix)
-    logger.info("🎯 Added Meteora Swap2 instruction")
+    logger.info("🎯 Added Meteora Swap instruction")
     
-    # 6. CloseAccount instruction to unwrap remaining WSOL
-    # SPL Token CloseAccount instruction (discriminator 9)
+    # 5. CloseAccount instruction to unwrap remaining WSOL
     close_account_ix = Instruction(
         program_id=SPL_TOKEN_PROGRAM,
         accounts=[
-            AccountMeta(wsol_ata, is_signer=False, is_writable=True),  # Account to close
-            AccountMeta(owner_pk, is_signer=False, is_writable=True),  # Destination for lamports
-            AccountMeta(owner_pk, is_signer=True, is_writable=False),  # Owner/authority
+            AccountMeta(user_wsol_ata, is_signer=False, is_writable=True),  # Account to close
+            AccountMeta(payer, is_signer=False, is_writable=True),  # Destination for lamports
+            AccountMeta(payer, is_signer=True, is_writable=False),  # Owner/authority
         ],
         data=bytes([9])  # CloseAccount discriminator
     )
     ixs.append(close_account_ix)
-    logger.info("🔒 Added CloseAccount instruction")
+    logger.info("🔒 Added CloseAccount instruction for WSOL unwrap")
     
-    # Fetch fresh blockhash
-    bh, _ = rpc.get_latest_blockhash()
+    # 6. Fetch fresh blockhash right before signing
+    bh, last_valid_height = rpc.get_latest_blockhash()
     logger.info(f"📡 Fetched fresh blockhash: {bh}")
     
-    # Build and sign transaction
-    msg = MessageV0.try_compile(owner_pk, ixs, [], bh)
-    tx = VersionedTransaction(msg, [owner])
+    # 7. Build and sign v0 transaction
+    msg = MessageV0.try_compile(payer, ixs, [], bh)
+    vtx = VersionedTransaction(msg, [keypair])
     
-    logger.info(f"✅ Built valid transaction with {len(ixs)} instructions")
-    return tx
+    logger.info(f"✅ Built and signed transaction with {len(ixs)} instructions")
+    return vtx
 
 # Example usage
 async def main():
