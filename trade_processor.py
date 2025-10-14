@@ -3828,7 +3828,8 @@ class TradeProcessor:
                         meta = tx.get("meta") or {}
                         trade_info["logs"] = meta.get("logMessages") or []
                         trade_info["transaction"] = tx.get("transaction")
-                        logger.info("🔎 [TRADE_PROCESSOR] Attached missing logs/tx via signature fetch")
+                        trade_info["meta"] = meta
+                        logger.info("🔎 [TRADE_PROCESSOR] Attached missing logs/tx/meta via signature fetch")
                         inferred_fields.append('logs/transaction (last-chance fetch)')
                     else:
                         logger.warning(f"⚠️ [TRADE_PROCESSOR] No transaction data returned for {sig[:12]}...")
@@ -3852,6 +3853,9 @@ class TradeProcessor:
                 if tx_data:
                     trade_info['transaction'] = tx_data
                     trade_info['transaction_full'] = tx_data
+                    # Ensure meta is attached from fetched transaction
+                    if tx_data.get('meta'):
+                        trade_info['meta'] = tx_data['meta']
                     inferred_fields.append('transaction (fetched)')
                     logger.info(f"✅ [FIELD_INFERENCE] Successfully fetched transaction data")
             except Exception as e:
@@ -3939,6 +3943,12 @@ class TradeProcessor:
         # 6. Infer token mint if missing - with multiple fallbacks
         if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
             logger.info("🔍 [MINT_INFERENCE] Token mint missing or pending, attempting inference...")
+            
+            # Ensure meta is present in trade_info for inference helpers
+            if "meta" not in trade_info:
+                backfilled_tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                if backfilled_tx and backfilled_tx.get("meta"):
+                    trade_info["meta"] = backfilled_tx["meta"]
             
             # Try enhanced log extraction (primary method)
             logs = trade_info.get('logs', [])
