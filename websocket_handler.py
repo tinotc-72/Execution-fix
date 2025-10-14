@@ -19,6 +19,85 @@ from dataclasses import dataclass
 # Setup logging
 logger = logging.getLogger(__name__)
 
+
+async def backfill_latest_tx(helius_rpc_url: str, wallet_str: str, limit: int = 1) -> Optional[Dict[str, Any]]:
+    """
+    🔁 Backfill helper: Fetch the latest transaction signature and full transaction data
+    
+    This helper is used when an account/logs event doesn't include a signature.
+    It fetches the latest signature via getSignaturesForAddress and loads the full 
+    transaction via getTransaction (jsonParsed, max_supported_transaction_version=0).
+    
+    Args:
+        helius_rpc_url: The Helius RPC URL to use for fetching data
+        wallet_str: The wallet address to fetch transactions for
+        limit: Number of signatures to fetch (default: 1)
+    
+    Returns:
+        Dict containing signature, logs, and transaction, or None if fetch fails
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Step 1: Get latest signature(s) via getSignaturesForAddress
+            sig_payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getSignaturesForAddress",
+                "params": [wallet_str, {"limit": limit}]
+            }
+            
+            async with session.post(helius_rpc_url, json=sig_payload, timeout=aiohttp.ClientTimeout(total=10)) as sig_response:
+                sig_data = await sig_response.json()
+                sigs = sig_data.get("result") or []
+            
+            if not sigs:
+                logger.warning(f"🧵 [BACKFILL] No signatures found for wallet {wallet_str[:8]}...")
+                return None
+            
+            sig = sigs[0].get("signature")
+            if not sig:
+                logger.warning(f"🧵 [BACKFILL] No signature in result for wallet {wallet_str[:8]}...")
+                return None
+            
+            # Step 2: Get full transaction via getTransaction
+            tx_payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getTransaction",
+                "params": [
+                    sig,
+                    {
+                        "encoding": "jsonParsed",
+                        "commitment": "confirmed",
+                        "maxSupportedTransactionVersion": 0
+                    }
+                ]
+            }
+            
+            async with session.post(helius_rpc_url, json=tx_payload, timeout=aiohttp.ClientTimeout(total=10)) as tx_response:
+                tx_data = await tx_response.json()
+                tx = tx_data.get("result")
+            
+            if not tx:
+                logger.warning(f"🧵 [BACKFILL] No transaction data for signature {sig[:8]}...")
+                return None
+            
+            meta = tx.get("meta") or {}
+            logs = meta.get("logMessages") or []
+            transaction = tx.get("transaction")
+            
+            return {
+                "signature": sig,
+                "logs": logs,
+                "transaction": transaction,
+                "meta": meta
+            }
+    
+    except Exception as e:
+        logger.warning(f"🧵 [BACKFILL] Failed to backfill latest tx: {e}")
+        return None
+
+
 @dataclass
 class WebSocketConfig:
     """Configuration for WebSocket monitoring"""
@@ -341,6 +420,24 @@ class WebSocketHandler:
                 return
             signature = result.get("value", {}).get("signature")
             logs = result.get("value", {}).get("logs", [])
+            
+            # Track backfill data to avoid redundant RPC calls
+            backfill_data = None
+            
+            # If we have logs but no signature, try backfill
+            if not signature and logs:
+                logger.info("🔍 [BACKFILL] Logs event without signature - attempting backfill")
+                # Try to backfill from target wallets
+                for wallet_str in self.config.target_wallets[:1]:  # Try first wallet
+                    backfill_data = await backfill_latest_tx(self.config.helius_rpc_url, wallet_str)
+                    if backfill_data:
+                        signature = backfill_data["signature"]
+                        # Merge logs if we got some from backfill
+                        if backfill_data.get("logs"):
+                            logs = backfill_data["logs"]
+                        logger.info(f"🔁 [BACKFILL] Retrieved signature via backfill: {signature[:8]}...")
+                        break
+            
             if not signature or not logs:
                 return
             if signature in self.processed_signatures:
@@ -352,29 +449,36 @@ class WebSocketHandler:
                 # Always fetch full transaction/meta from RPC for every trade event
                 meta = None
                 transaction = None
-                try:
-                    payload = {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "getTransaction",
-                        "params": [
-                            signature,
-                            {
-                                "encoding": "json",
-                                "commitment": "confirmed",
-                                "maxSupportedTransactionVersion": 0
-                            }
-                        ]
-                    }
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(self.config.helius_rpc_url, json=payload) as response:
-                            data_rpc = await response.json()
-                            result_rpc = data_rpc.get('result')
-                            if result_rpc:
-                                meta = result_rpc.get('meta')
-                                transaction = result_rpc.get('transaction')
-                except Exception as rpc_error:
-                    logger.warning(f"⚠️ Could not fetch transaction metadata for {signature[:8]}: {rpc_error}")
+                
+                # If we already have backfill data, use it to avoid redundant RPC call
+                if backfill_data:
+                    meta = backfill_data.get("meta")
+                    transaction = backfill_data.get("transaction")
+                    logger.info("🔁 [BACKFILL] Reusing backfilled transaction/meta data")
+                else:
+                    try:
+                        payload = {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "getTransaction",
+                            "params": [
+                                signature,
+                                {
+                                    "encoding": "json",
+                                    "commitment": "confirmed",
+                                    "maxSupportedTransactionVersion": 0
+                                }
+                            ]
+                        }
+                        async with aiohttp.ClientSession() as session:
+                            async with session.post(self.config.helius_rpc_url, json=payload) as response:
+                                data_rpc = await response.json()
+                                result_rpc = data_rpc.get('result')
+                                if result_rpc:
+                                    meta = result_rpc.get('meta')
+                                    transaction = result_rpc.get('transaction')
+                    except Exception as rpc_error:
+                        logger.warning(f"⚠️ Could not fetch transaction metadata for {signature[:8]}: {rpc_error}")
                 # Pass only enriched trade info to callback, no legacy/partial analysis
                 trade_info = {
                     'signature': signature,
@@ -409,6 +513,23 @@ class WebSocketHandler:
                 'timestamp': datetime.now(timezone.utc),
                 'requires_full_analysis': True
             }
+            
+            # If signature is missing, try backfill for each target wallet
+            if not trade_info.get("signature"):
+                # Try to find which wallet had the account change
+                # Since we don't have the wallet in the notification, try the first target wallet
+                # The callback will determine the correct wallet using balance changes
+                for wallet_str in self.config.target_wallets[:1]:  # Try first wallet as representative
+                    backfill = await backfill_latest_tx(self.config.helius_rpc_url, wallet_str)
+                    if backfill:
+                        trade_info["signature"] = backfill["signature"]
+                        trade_info["logs"] = backfill["logs"]
+                        trade_info["transaction"] = backfill["transaction"]
+                        trade_info["meta"] = backfill.get("meta")
+                        logger.info("🔁 [BACKFILL] Attached signature/logs/tx via RPC backfill")
+                        break
+                else:
+                    logger.warning("⚠️ [BACKFILL] No signature available and backfill returned nothing")
             
             # Let the callback handle the full analysis
             asyncio.create_task(
