@@ -1085,7 +1085,8 @@ async def mev_meteora_copy_trade(
     amount_sol: float,
     original_signature: str = "",
     detected_action: str = "buy",
-    jito_service=None
+    jito_service=None,
+    force_requote: bool = False  # NEW: Force fresh quote with wider slippage
 ) -> Optional[str]:
     from config import HELIUS_RPC_URL
     rpc = SimpleRPC(RPCConfig(HELIUS_RPC_URL))
@@ -1093,9 +1094,15 @@ async def mev_meteora_copy_trade(
     mint_pk = Pubkey.from_string(token_mint)
     lamports = int(amount_sol * 1_000_000_000)
     trade_info = {"signature": source_tx_signature, "wallet_address": source_wallet}
+    
+    # Adjust min_tokens for wider slippage if force_requote is True
+    min_tokens = 1 if not force_requote else 0  # 0 means no minimum, maximum slippage tolerance
+    if force_requote:
+        logger.info("⚡ [METEORA] force_requote=True - using min_tokens=0 for maximum slippage tolerance")
+    
     try:
         if detected_action.lower() == "buy":
-            tx = _build_meteora_buy_solders(rpc, owner, mint_pk, lamports, min_tokens=1, trade_info=trade_info)
+            tx = _build_meteora_buy_solders(rpc, owner, mint_pk, lamports, min_tokens=min_tokens, trade_info=trade_info)
         else:
             # TODO: implement _build_meteora_sell_solders similarly (swap_mode=1)
             return exec_err("meteora_executor", f"Sell action not implemented for Meteora: {detected_action}")
