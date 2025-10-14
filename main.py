@@ -223,6 +223,39 @@ bot_instance = None
 from execution_coordinator import normalize_dex, ROUTE_MAP
 
 
+def merge_parsed_fields(trade_info: dict, parsed: dict) -> None:
+    """
+    Merge parser-detected fields into trade_info if the destination fields are empty/unknown.
+    
+    This prevents downstream code from clobbering fields that the parser already identified.
+    Only updates fields if they are currently None, empty string, "unknown", or "PENDING_ANALYSIS".
+    
+    Args:
+        trade_info: The trade dictionary to update
+        parsed: The parser result dictionary (may contain parsed_tx wrapper)
+    """
+    if not parsed:
+        return
+    
+    # Some code paths store parser result under "parsed_tx"
+    if isinstance(parsed.get("parsed_tx"), dict):
+        parsed = parsed["parsed_tx"]
+    
+    # normalize names from parser → trade_info
+    mapping = {
+        "dex": "dex",
+        "action": "action",
+        "token_mint": "token_mint",
+        "mint": "token_mint",
+        "wallet_address": "wallet_address",
+        "signature": "signature",
+    }
+    for src, dst in mapping.items():
+        val = parsed.get(src)
+        if val and trade_info.get(dst) in (None, "", "unknown", "PENDING_ANALYSIS"):
+            trade_info[dst] = val
+
+
 class SimpleCopyTradingBot:
     async def _process_detected_trade(self, trade_info: Dict[str, Any]):
         """
@@ -604,6 +637,8 @@ class SimpleCopyTradingBot:
                 parsed_tx = self.tx_parser.parse_transaction(trade_info['transaction'])
                 trade_info['parsed_tx'] = parsed_tx
                 logger.debug(f"[PIPELINE_ENTRY] ✅ Transaction parsed successfully")
+                # Merge parser-detected fields into trade_info before any defaulting logic
+                merge_parsed_fields(trade_info, parsed_tx)
         except Exception as e:
             logger.error(f"[PIPELINE_ENTRY] ❌ Error parsing transaction: {e}")
             logger.error(traceback.format_exc())
@@ -616,59 +651,32 @@ class SimpleCopyTradingBot:
             # === ENHANCED UPSTREAM DATA FIX: Ensure required fields are present with debug logging ===
             # This section validates and defaults missing fields to prevent execution failures
             # downstream. Each missing field is logged for debugging upstream data issues.
-            missing_fields = []
             
-            # Check and fix signature
-            # Signature may be missing for account-change events or preliminary notifications
+            # Check signature
             sig = (trade_info.get("signature") or "").strip()
-            if not sig or sig == "unknown":
-                missing_fields.append("signature")
-                logger.warning("[PIPELINE_ENTRY] ℹ️  No signature in trade_info; proceeding with parsed trade data.")
-                # Continue processing instead of returning - signature may be available in transaction data
-            else:
+            if sig and sig != "unknown":
                 logger.debug(f"[PIPELINE_ENTRY] Signature: {sig[:12]}...")
             
-            # Check and fix wallet_address
-            # Critical for determining which wallet triggered the trade
-            if not trade_info.get('wallet_address'):
-                missing_fields.append("wallet_address")
-                logger.warning("[PIPELINE_ENTRY] Missing 'wallet_address', setting to first target wallet.")
-                trade_info['wallet_address'] = self.target_wallets[0] if self.target_wallets else 'unknown'
+            # Check wallet_address - try to extract from transaction if still missing
+            if not trade_info.get("wallet_address"):
+                # Try first signer from the tx
+                msg = (trade_info.get("transaction") or {}).get("message", {})
+                signers = [k["pubkey"] for k in (msg.get("accountKeys") or []) if k.get("signer")]
+                if signers:
+                    trade_info["wallet_address"] = signers[0]
+                    logger.info("[PIPELINE_ENTRY] Set wallet_address from tx signer: %s", signers[0])
+                else:
+                    logger.warning("[PIPELINE_ENTRY] No signer in tx; leaving wallet_address empty")
             else:
                 logger.debug(f"[PIPELINE_ENTRY] Wallet: {trade_info.get('wallet_address')[:12]}...")
             
-            # Check and default DEX type
-            # DEX identification helps route to the correct executor
-            if not trade_info.get('dex') and not trade_info.get('dex_type'):
-                missing_fields.append("dex/dex_type")
-                logger.debug("[PIPELINE_ENTRY] Missing 'dex' field - will be inferred during analysis")
-                trade_info['dex'] = 'unknown'
-            else:
-                logger.debug(f"[PIPELINE_ENTRY] DEX: {trade_info.get('dex') or trade_info.get('dex_type')}")
-            
-            # Check and default action
-            # Action (buy/sell/swap) determines execution strategy
-            if not trade_info.get('action'):
-                missing_fields.append("action")
-                logger.debug("[PIPELINE_ENTRY] Missing 'action' field - will be inferred during analysis")
-                trade_info['action'] = 'unknown'
-            else:
-                logger.debug(f"[PIPELINE_ENTRY] Action: {trade_info.get('action')}")
-            
-            # Check and default mint
-            # Token mint is essential for execution but can be extracted from transaction
-            if not trade_info.get('mint') and not trade_info.get('token_mint'):
-                missing_fields.append("mint/token_mint")
-                logger.debug("[PIPELINE_ENTRY] Missing 'mint'/'token_mint' field - will be extracted during analysis")
-                trade_info['token_mint'] = 'PENDING_ANALYSIS'
-            else:
-                mint = trade_info.get('mint') or trade_info.get('token_mint')
-                logger.debug(f"[PIPELINE_ENTRY] Mint: {mint[:12] if mint else 'None'}...")
-            
-            # Log summary of missing fields for debugging
-            # This helps identify patterns in upstream data issues
-            if missing_fields:
-                logger.info(f"[PIPELINE_ENTRY] 📋 Missing/defaulted fields: {', '.join(missing_fields)}")
+            # Now compute what's still missing after merge and extraction
+            missing = []
+            for k in ("wallet_address", "dex", "action", "token_mint"):
+                if trade_info.get(k) in (None, "", "unknown", "PENDING_ANALYSIS"):
+                    missing.append(k)
+            if missing:
+                logger.info(f"[PIPELINE_ENTRY] 📋 Missing/defaulted fields: {', '.join(missing)}")
             else:
                 logger.info(f"[PIPELINE_ENTRY] ✅ All expected fields present")
             
