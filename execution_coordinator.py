@@ -213,8 +213,22 @@ class ExecutionCoordinator:
                     self.logger.info(f"[EXECUTOR_ATTEMPT] → Calling Raydium executor...")
                     result = await self._execute_raydium_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
                 elif label == "meteora":
-                    self.logger.info(f"[EXECUTOR_ATTEMPT] → Calling Meteora executor...")
-                    result = await self._execute_meteora_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                    self.logger.info("🧭 [COORDINATOR] Route=meteora → trying Meteora executor")
+                    try:
+                        result = await self._execute_meteora_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                    except Exception as e:
+                        self.logger.error(f"❌ [METEORA] Build failed: {e}")
+                        result = None
+                    
+                    # If Meteora executor failed or returned None, try direct_copy fallback
+                    if not result or not (result.get("ok") or result.get("success")):
+                        self.logger.warning("⚠️ [COORDINATOR] Meteora build returned no tx — falling back to direct_copy")
+                        # Try direct_copy as immediate fallback
+                        try:
+                            result = await self._execute_direct_copy_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                        except Exception as e:
+                            self.logger.error(f"❌ [COORDINATOR] Direct copy fallback also failed: {e}")
+                            result = None
                 elif label == "advanced_mev":
                     self.logger.info(f"[EXECUTOR_ATTEMPT] → Calling Advanced MEV executor...")
                     result = await self._execute_advanced_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
