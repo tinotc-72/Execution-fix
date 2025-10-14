@@ -1466,12 +1466,29 @@ def build_and_sign(
     ixs.append(close_account_ix)
     logger.info("🔒 Added CloseAccount instruction for WSOL unwrap")
     
-    # 6. Fetch fresh blockhash right before signing
+    # 6. Extract address lookup tables from backfilled transaction if available
+    address_lookup_tables = []
+    if trade_info and "transaction" in trade_info:
+        try:
+            tx_data = trade_info["transaction"]
+            msg = tx_data.get("message", {})
+            alt_lookups = msg.get("addressTableLookups", [])
+            if alt_lookups:
+                from solders.address_lookup_table_account import AddressLookupTableAccount
+                # Note: We need the actual account data to reconstruct ALTs
+                # For now, we'll pass empty list as we don't have the account data
+                logger.info(f"⚠️ Found {len(alt_lookups)} ALT lookups in source tx (not yet implemented)")
+            else:
+                logger.info("📋 No address lookup tables in source transaction")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not extract ALTs: {e}")
+    
+    # 7. Fetch fresh blockhash right before signing
     bh, last_valid_height = rpc.get_latest_blockhash()
     logger.info(f"📡 Fetched fresh blockhash: {bh}")
     
-    # 7. Build and sign v0 transaction
-    msg = MessageV0.try_compile(payer, ixs, [], bh)
+    # 8. Build and sign v0 transaction
+    msg = MessageV0.try_compile(payer, ixs, address_lookup_tables, bh)
     vtx = VersionedTransaction(msg, [keypair])
     
     logger.info(f"✅ Built and signed transaction with {len(ixs)} instructions")
