@@ -658,6 +658,11 @@ class ExecutionCoordinator:
         """Execute direct copy buy using transaction cloner"""
         from transaction_cloner import clone_tx_from_signature
         
+        # Guard: Skip cloning slippage-failed source transactions
+        if trade_info and trade_info.get("retry_hint") == "requote":
+            logger.info("ℹ️ [CLONE] Skipping clone of a slippage-failed source — using builders first")
+            return None
+        
         # Get signature from trade_info
         sig = trade_info.get("signature") if trade_info else None
         if not sig:
