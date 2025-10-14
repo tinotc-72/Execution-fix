@@ -601,66 +601,66 @@ class ExecutionCoordinator:
             return None  # Do not fallback, skip execution
     
     async def _execute_direct_copy_buy(self, token_mint: str, source_wallet: str, *, amount_sol: float = 0.001, trade_info: dict = None, **kwargs):
-        """Execute direct copy buy using MEVDirectCopyExecutor (copies transaction structure directly)"""
+        """Execute direct copy buy using transaction cloner"""
+        from transaction_cloner import clone_tx_from_signature
+        
+        # Get signature from trade_info
+        sig = trade_info.get("signature") if trade_info else None
+        if not sig:
+            logger.error("❌ [COORDINATOR] direct_copy requested but no signature present")
+            return {'success': False, 'error': 'No signature for direct_copy'}
+        
+        logger.info(f"🚀 [COORDINATOR] Executing via direct_copy for signature {sig[:12]}...")
+        
         try:
-            from mev_direct_copy_executor import MEVDirectCopyExecutor, MEVDirectCopyConfig
-            logger.info(f"[COPY] Using MEVDirectCopyExecutor for direct copy trade: {token_mint[:8]}")
-            # Prepare config
-            config = MEVDirectCopyConfig(
-                pumpfun_priority_fee=2_000_000,
-                compute_limit=400_000,
-                use_jito_bundles=self.jito_service is not None,
-                max_copy_time_ms=500.0,
-                jito_tip_amount=100_000
-            )
-            # Get env_keys object and private key
+            # Get RPC URL and keypair
             import env_keys
             env = env_keys.EnvKeys()
-            private_key = env.PHANTOM_PRIVATE_KEY
-            self.logger.info(f"Creating MEVDirectCopyExecutor with private key from env_keys")
-            # Pass env_keys object to executor
-            executor = MEVDirectCopyExecutor(private_key, config, jito_service=self.jito_service, env_keys=env)
-            # Fetch original transaction data
-            original_signature = None
-            if trade_info:
-                original_signature = trade_info.get('signature')
-            if not original_signature:
-                logger.error("❌ No original signature provided for direct copy trade")
-                return {'success': False, 'error': 'No original signature for direct copy trade'}
-            # Fetch transaction from RPC
-            import httpx
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                rpc_payload = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "getTransaction",
-                    "params": [
-                        original_signature,
-                        {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}
-                    ]
-                }
-                resp = await client.post(env.HELIUS_RPC_URL, json=rpc_payload)
-                tx_data = resp.json().get('result', {})
-            # Prepare detected_trade dict
-            detected_trade = {
-                'router': 'pumpfun',
-                'wallet_address': source_wallet
-            }
-            # Use direct copy method
-            result = await executor.copy_pumpfun_transaction_direct(
-                tx_data,
-                source_wallet,
-                detected_trade
+            rpc_url = env.HELIUS_RPC_URL
+            
+            # Get keypair for new payer
+            keypair = self._get_keypair()
+            
+            # Call the cloner
+            vtx = await clone_tx_from_signature(
+                rpc=rpc_url,
+                signature=sig,
+                new_payer=keypair
             )
-            if result and result.get('success'):
-                logger.info(f"✅ Pump.fun direct copy executed successfully for token {token_mint[:8]}...")
-                return result
-            else:
-                logger.error(f"❌ Pump.fun direct copy execution failed for token {token_mint[:8]}: {result.get('error') if result else 'Unknown error'}")
-                return {'success': False, 'error': result.get('error') if result else 'Unknown error'}
         except Exception as e:
-            logger.error(f"❌ Exception during Pump.fun direct copy execution for token {token_mint[:8]}: {e}")
-            return {'success': False, 'error': str(e)}
+            logger.error(f"❌ [COORDINATOR] Cloner failed: {e}")
+            return {'success': False, 'error': f'Cloner exception: {str(e)}'}
+        
+        if not vtx:
+            logger.error("❌ [PREFLIGHT] No valid VersionedTransaction from cloner — skipping execution")
+            return {'success': False, 'error': 'Cloner returned None'}
+        
+        # Submit using existing executor path (Jito first, fallback RPC)
+        try:
+            # Use fast_executor if available for submission
+            if self.fast_executor:
+                tx_sig = await self.fast_executor.submit_transaction(vtx)
+            else:
+                # Fallback: create a temporary fast executor
+                from fast_executor import FastExecutor
+                temp_executor = FastExecutor(
+                    keypair=keypair,
+                    rpc_url=rpc_url,
+                    jito_service=self.jito_service
+                )
+                await temp_executor.initialize()
+                tx_sig = await temp_executor.submit_transaction(vtx)
+                await temp_executor.close()
+            
+            if tx_sig:
+                logger.info(f"✅ [EXECUTION] direct_copy submitted: {tx_sig}")
+                return {'success': True, 'signature': tx_sig, 'method': 'direct_copy'}
+            else:
+                logger.error("❌ [EXECUTION] Submission returned no signature")
+                return {'success': False, 'error': 'Submission failed - no signature'}
+        except Exception as e:
+            logger.error(f"❌ [EXECUTION] Submission failed: {e}")
+            return {'success': False, 'error': f'Submission exception: {str(e)}'}
     
     async def _execute_raydium_mev_buy(self, token_mint: str, source_wallet: str, **kwargs):
         """Execute Raydium CPMM buy using dedicated Raydium MEV executor"""

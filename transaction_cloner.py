@@ -340,6 +340,46 @@ class TransactionCloner:
         tasks = [process_one(sig) for sig in signatures]
         await asyncio.gather(*tasks)
 
+async def clone_tx_from_signature(
+    rpc: str, 
+    signature: str, 
+    new_payer: "Keypair"
+) -> Optional[VersionedTransaction]:
+    """
+    Thin wrapper for cloning a transaction from its signature.
+    
+    Fetches the transaction by signature, rebuilds it with the new payer wallet,
+    updates with a fresh blockhash, re-signs, and returns a VersionedTransaction.
+    
+    Args:
+        rpc: RPC URL to use for fetching transaction and blockhash
+        signature: Transaction signature to clone
+        new_payer: Keypair that will be the new payer (fee payer and signer)
+        
+    Returns:
+        VersionedTransaction if successful, None if cloning fails
+    """
+    try:
+        logger.info(f"ℹ️ [CLONER] Starting transaction clone for signature: {signature[:12]}...")
+        
+        # Create cloner instance
+        cloner = TransactionCloner(rpc_url=rpc, payer=new_payer)
+        
+        # Clone the transaction (fetches, rebuilds with new payer, updates blockhash, signs)
+        vtx = await cloner.clone_transaction(signature)
+        
+        if vtx:
+            logger.info(f"✅ [CLONER] Successfully cloned transaction: {signature[:12]}...")
+            return vtx
+        else:
+            logger.error(f"❌ [CLONER] Failed to clone transaction: {signature[:12]}...")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ [CLONER] Exception during clone: {e}")
+        return None
+
+
 # Example usage (to be integrated with the main copy bot):
 # cloner = TransactionCloner(rpc_url, payer_keypair)
 # tx = cloner.clone_transaction(target_signature, override_accounts={0: my_pubkey})
