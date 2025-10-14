@@ -3811,6 +3811,46 @@ class TradeProcessor:
         
         inferred_fields = []
         
+        # Last-chance fetch if we have a signature but no logs/tx
+        logs = trade_info.get("logs")
+        tx_obj = trade_info.get("transaction")
+        
+        if not logs and not tx_obj and trade_info.get("signature"):
+            sig = trade_info["signature"]
+            if sig and sig != 'unknown' and self.rpc_client:
+                try:
+                    logger.info(f"🔎 [TRADE_PROCESSOR] Last-chance fetch for signature {sig[:12]}...")
+                    # Use asyncio to call the async RPC method synchronously
+                    import asyncio
+                    from utils import fetch_json_rpc_with_url
+                    
+                    loop = asyncio.get_event_loop()
+                    result = loop.run_until_complete(
+                        fetch_json_rpc_with_url(
+                            self.rpc_client.rpc_url,
+                            "getTransaction",
+                            [
+                                sig,
+                                {
+                                    "encoding": "jsonParsed",
+                                    "maxSupportedTransactionVersion": 0
+                                }
+                            ]
+                        )
+                    )
+                    
+                    if result and "result" in result and result["result"]:
+                        tx = result["result"]
+                        meta = tx.get("meta") or {}
+                        trade_info["logs"] = meta.get("logMessages") or []
+                        trade_info["transaction"] = tx.get("transaction")
+                        logger.info("🔎 [TRADE_PROCESSOR] Attached missing logs/tx via signature fetch")
+                        inferred_fields.append('logs/transaction (last-chance fetch)')
+                    else:
+                        logger.warning(f"⚠️ [TRADE_PROCESSOR] No transaction data returned for {sig[:12]}...")
+                except Exception as e:
+                    logger.warning(f"⚠️ [TRADE_PROCESSOR] Signature fetch failed: {e}")
+        
         # 1. Infer signature if missing
         if not trade_info.get('signature') or trade_info.get('signature') == 'unknown':
             sig = self._infer_signature_from_transaction(trade_info)
