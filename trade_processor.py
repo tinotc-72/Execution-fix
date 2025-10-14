@@ -457,7 +457,7 @@ class TradeProcessor:
         Permissive validation allowing inferred fields with comprehensive logging.
         
         Allow either:
-          (a) signature present, OR
+          (a) signature present (even if mint is unknown - use direct_copy), OR
           (b) actionable fields for building: dex + action + mint (+ optional amount)
         
         This method now accepts inferred/default values to enable permissive execution.
@@ -465,6 +465,30 @@ class TradeProcessor:
         logger.info(f"[VALIDATION] 🔍 Starting trade validation...")
         logger.debug(f"[VALIDATION] Trade keys: {list(trade.keys())}")
         
+        # Extract key fields
+        token_mint = trade.get("token_mint") or trade.get("mint") or ""
+        token_mint = token_mint.strip() if token_mint else ""
+        has_sig = bool((trade.get("signature") or "").strip() and trade.get("signature") != "unknown")
+        has_any_data = has_sig or trade.get("logs") or trade.get("transaction")
+        
+        # If we have zero data, stop here
+        if not has_any_data:
+            logger.warning("🛑 [VALIDATION] Insufficient data (no signature/logs/tx) — skipping")
+            return False
+        
+        # If mint is still unknown but we have a signature, allow direct_copy
+        if token_mint in (None, "", "PENDING_ANALYSIS", "UNKNOWN"):
+            if has_sig:
+                trade["route_hint"] = trade.get("route_hint") or "direct_copy"
+                trade["dex"] = trade.get("dex") or trade.get("dex_type") or "unknown"
+                trade["action"] = trade.get("action") or "swap"
+                logger.info("✅ [VALIDATION] Allowing execution via direct_copy (mint unresolved but signature present)")
+                return True
+            else:
+                logger.warning("🛑 [VALIDATION] Mint unresolved and no signature — skipping")
+                return False
+        
+        # Otherwise check for actionable fields (existing validation logic)
         sig = (trade.get("signature") or "").strip()
         if sig and sig != "unknown":
             logger.info(f"[VALIDATION] ✅ Signature present: {sig[:12]}... - trade approved")
@@ -473,7 +497,7 @@ class TradeProcessor:
         # Check for actionable fields (including inferred/default values)
         dex = (trade.get("dex") or trade.get("dex_type") or "").strip().lower()
         action = (trade.get("action") or "").strip().lower()
-        mint = (trade.get("mint") or trade.get("token_mint") or "").strip()
+        mint = token_mint
         
         logger.debug(f"[VALIDATION] DEX: {dex}")
         logger.debug(f"[VALIDATION] Action: {action}")
