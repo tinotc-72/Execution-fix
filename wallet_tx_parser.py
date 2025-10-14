@@ -36,6 +36,12 @@ JUPITER_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 METEORA_AGGREGATOR = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
+# Meteora program IDs for DEX detection
+METEORA_PROGRAM_IDS = {
+    "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",  # Meteora AMM (seen in our log)
+    "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",  # alt id observed in your executor init
+}
+
 def enhance_from_logs_and_meta(trade: dict) -> dict:
     """
     Enhanced log/meta-based parser for Jupiter/Meteora transactions.
@@ -671,16 +677,14 @@ class WalletTransactionParser:
         if "transaction" in tx_data:
             tx = tx_data.get("transaction", {})
         
-        # METEORA_PID constant
-        METEORA_PID = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
-        
-        # 1) DEX detection
+        # 1) DEX detection - Detect Meteora
         for ix in (tx.get("message", {}).get("instructions") or []):
             pid = ix.get("programId") or ix.get("program")
-            if pid == METEORA_PID:
+            if pid in METEORA_PROGRAM_IDS:
                 parsed["dex"] = "meteora"
-                parsed.setdefault("action", "swap")
-                self.logger.info(f"✅ [PARSER] Meteora detected: programId={METEORA_PID[:8]}...")
+                if parsed.get("action") in (None, "unknown"):
+                    parsed["action"] = "swap"
+                self.logger.info(f"✅ [PARSER] Meteora detected: programId={pid[:8]}...")
                 break
         
         # 2) Real source wallet (wallet being copied)
