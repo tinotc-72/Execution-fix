@@ -158,6 +158,9 @@ class ExecutionCoordinator:
         trade_info = trade_info or {}
         dex_key = normalize_dex(trade_info.get("dex_type") or "unknown")
         route_hint = trade_info.get("route_hint", "").strip()
+        retry_hint = trade_info.get("retry_hint", "").strip()
+        source_tx_failed = trade_info.get("source_tx_failed", False)
+        have_mint = bool(token_mint and token_mint != "UNKNOWN")
         
         # Log trade info summary for debugging
         self.logger.info(f"[EXECUTION_SUMMARY] 📊 Trade details:")
@@ -169,25 +172,46 @@ class ExecutionCoordinator:
         self.logger.info(f"   - Source wallet: {source_wallet[:12] if source_wallet else 'N/A'}...")
         if route_hint:
             self.logger.info(f"   - Route hint: {route_hint}")
+        if retry_hint:
+            self.logger.info(f"   - Retry hint: {retry_hint}")
+        if source_tx_failed:
+            self.logger.info(f"   - Source TX failed: {source_tx_failed}")
         
         # Enhanced routing logic with route_hint priority
         signature = (trade_info.get("signature") or "").strip()
         
+        # NEW ROUTING LOGIC: Handle special cases first
+        # 1) Meteora path with retry support
+        if dex_key == "meteora":
+            self.logger.info("🧭 [COORDINATOR] Route=meteora")
+            plan = ["meteora", "jupiter", "direct_copy"]
+            self.logger.info(f"[ROUTING] Meteora detected - plan: {plan}")
+            if retry_hint == "requote":
+                self.logger.info(f"[ROUTING] ⚡ retry_hint='requote' - will force fresh quote/wider slippage for Meteora")
+        # 2) Unknown but mint present → Jupiter first
+        elif dex_key == "unknown" and have_mint:
+            self.logger.info("🧭 [COORDINATOR] Route=unknown; mint present → Jupiter → Meteora → Clone")
+            plan = ["jupiter", "meteora", "direct_copy"]
+        # 3) Unknown and no mint → if source failed, avoid clone first
+        elif dex_key == "unknown" and not have_mint:
+            if source_tx_failed:
+                self.logger.info("🧭 [COORDINATOR] Source failed → avoid clone; try builders first")
+                plan = ["jupiter", "meteora", "direct_copy"]
+            else:
+                # Use existing logic for unknown without mint
+                plan = ROUTE_MAP.get(dex_key, ROUTE_MAP["unknown"])
         # Priority 1: Check for route_hint == 'direct_copy' (from validation when mint is unresolved)
-        if route_hint == "direct_copy":
+        elif route_hint == "direct_copy":
             plan = ["direct_copy", "jupiter", "raydium", "meteora"]
             self.logger.info(f"[ROUTING] ✅ route_hint='direct_copy' detected - prioritizing direct_copy executor")
         # Priority 2: Check for signature presence
-        elif signature:
+        elif signature and not source_tx_failed:  # Don't prioritize direct_copy if source failed
             plan = ["direct_copy", "jupiter", "raydium", "meteora"]
             self.logger.info(f"[ROUTING] ✅ Signature present - using signature plan: {signature[:12]}...")
         # Priority 3: Use DEX-specific routing from ROUTE_MAP
         else:
             plan = ROUTE_MAP.get(dex_key, ROUTE_MAP["unknown"])
             self.logger.info(f"[ROUTING] Using ROUTE_MAP for dex='{dex_key}': {plan}")
-            # Special logging for meteora routing
-            if dex_key == "meteora":
-                self.logger.info(f"[ROUTING] ℹ️  Meteora detected - route prioritizes meteora executor first")
         
         if getattr(self.config, "execution_debug", False):
             self.logger.debug(f"[COPY BUY] Plan: {plan}")
@@ -215,20 +239,23 @@ class ExecutionCoordinator:
                 elif label == "meteora":
                     self.logger.info("🧭 [COORDINATOR] Route=meteora → trying Meteora executor")
                     try:
-                        result = await self._execute_meteora_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
+                        # Pass force_requote flag if retry_hint == "requote"
+                        force_requote = retry_hint == "requote"
+                        if force_requote:
+                            self.logger.info("⚡ [METEORA] force_requote=True - requesting fresh quote with wider slippage")
+                        result = await self._execute_meteora_buy(
+                            token_mint, source_wallet, 
+                            amount_sol=amount_sol, 
+                            trade_info=trade_info, 
+                            force_requote=force_requote,
+                            **kwargs
+                        )
                     except Exception as e:
                         self.logger.error(f"❌ [METEORA] Build failed: {e}")
                         result = None
                     
-                    # If Meteora executor failed or returned None, try direct_copy fallback
-                    if not result or not (result.get("ok") or result.get("success")):
-                        self.logger.warning("⚠️ [COORDINATOR] Meteora build returned no tx — falling back to direct_copy")
-                        # Try direct_copy as immediate fallback
-                        try:
-                            result = await self._execute_direct_copy_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
-                        except Exception as e:
-                            self.logger.error(f"❌ [COORDINATOR] Direct copy fallback also failed: {e}")
-                            result = None
+                    # Meteora executor is standalone now, no immediate fallback to direct_copy
+                    # Let the routing plan continue to next executor
                 elif label == "advanced_mev":
                     self.logger.info(f"[EXECUTOR_ATTEMPT] → Calling Advanced MEV executor...")
                     result = await self._execute_advanced_mev_buy(token_mint, source_wallet, amount_sol=amount_sol, trade_info=trade_info, **kwargs)
@@ -867,6 +894,10 @@ class ExecutionCoordinator:
         logger.debug(f"   Source Wallet: {source_wallet}")
         logger.debug(f"   Additional kwargs: {kwargs}")
         
+        force_requote = kwargs.get('force_requote', False)
+        if force_requote:
+            logger.info(f"⚡ [METEORA_BUY] force_requote=True - will request fresh quote with wider slippage")
+        
         try:
             logger.info(f"🎯 Executing MEV Meteora DAMM v2 buy for {token_mint[:8]}...")
             # Use new MEV wrapper function for compatibility
@@ -892,7 +923,8 @@ class ExecutionCoordinator:
                 token_mint=token_mint,
                 amount_sol=amount_sol,
                 detected_action="buy",
-                jito_service=self.jito_service
+                jito_service=self.jito_service,
+                force_requote=force_requote  # Pass force_requote flag
             )
             logger.debug(f"🚀 [METEORA_BUY] Executing mev_meteora_copy_trade with parameters:")
             logger.debug(f"   wallet_keypair: {type(wallet_keypair)}")
@@ -901,6 +933,7 @@ class ExecutionCoordinator:
             logger.debug(f"   source_wallet: {source_wallet}")
             logger.debug(f"   token_mint: {token_mint}")
             logger.debug(f"   amount_sol: {amount_sol}")
+            logger.debug(f"   force_requote: {force_requote}")
             
             if result:
                 logger.info(f"✅ [METEORA_BUY] MEV Meteora DAMM v2 buy executed successfully: {result}")
