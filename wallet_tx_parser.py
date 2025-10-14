@@ -663,17 +663,30 @@ class WalletTransactionParser:
                     return "unknown"
                 return label.lower()
         
-        # EARLY METEORA DETECTION: Check all instructions for Meteora program ID
-        instructions = tx_data.get("instructions", [])
-        meteora_program_id = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
-        early_meteora_detected = False
+        # Initialize parsed result
+        parsed = {}
         
-        for ix in instructions:
+        # Get transaction structure - handle both formats
+        tx = tx_data
+        if "transaction" in tx_data:
+            tx = tx_data.get("transaction", {})
+        
+        # METEORA_PID constant
+        METEORA_PID = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
+        
+        # 1) DEX detection
+        for ix in (tx.get("message", {}).get("instructions") or []):
             pid = ix.get("programId") or ix.get("program")
-            if pid == meteora_program_id:
-                early_meteora_detected = True
-                self.logger.info(f"✅ [PARSER] Early Meteora detection: programId={meteora_program_id[:8]}...")
+            if pid == METEORA_PID:
+                parsed["dex"] = "meteora"
+                parsed.setdefault("action", "swap")
+                self.logger.info(f"✅ [PARSER] Meteora detected: programId={METEORA_PID[:8]}...")
                 break
+        
+        # 2) Real source wallet (wallet being copied)
+        signers = [k["pubkey"] for k in (tx.get("message", {}).get("accountKeys") or []) if k.get("signer")]
+        if signers:
+            parsed["wallet_address"] = signers[0]
         
         # Get original decoder result
         dex_type = self.identify_dex(tx_data)
@@ -682,73 +695,72 @@ class WalletTransactionParser:
         # Extract standardized information
         signature = tx_data.get("signature", None)
         
-        # Extract DEX from decoder result
-        dex_raw = decoder_result.get("dex", dex_type)
-        # Ensure proper normalization (handle case-insensitive matching)
-        if dex_raw:
-            dex = normalize_dex(dex_raw.lower().replace(".", ""))
-        else:
-            dex = "unknown"
+        # Extract DEX from decoder result or use parsed dex
+        dex = parsed.get("dex")
+        if not dex:
+            dex_raw = decoder_result.get("dex", dex_type)
+            # Ensure proper normalization (handle case-insensitive matching)
+            if dex_raw:
+                dex = normalize_dex(dex_raw.lower().replace(".", ""))
+            else:
+                dex = "unknown"
         
-        # Apply early Meteora detection override
-        if early_meteora_detected:
-            dex = "meteora"
-            self.logger.info(f"✅ [PARSER] Applied early Meteora detection override: dex=meteora")
-        
-        # Extract action from decoder result
-        action = "unknown"
+        # Extract action from decoder result or use parsed action
+        action = parsed.get("action", "unknown")
         mint = None
         amount = None
-        source_wallet = None
+        wallet_address = parsed.get("wallet_address")
         
-        # Get action and other info from the decoder result based on DEX type
-        if dex == "jupiter":
-            swap_info = decoder_result.get("swap_info", {})
-            action = swap_info.get("action", "swap")
-            mint = swap_info.get("out_token")  # For swaps, we care about the output token
-            amount = swap_info.get("amount_in")
-            source_wallet = swap_info.get("user_wallet")
-            
-        elif dex == "raydium":
-            raydium_info = decoder_result.get("raydium_info", {})
-            action = raydium_info.get("action", "swap")
-            mint = raydium_info.get("out_token") or raydium_info.get("in_token")
-            amount = raydium_info.get("amount_in")
-            source_wallet = raydium_info.get("user_wallet")
-            
-        elif dex == "pumpfun":
-            pumpfun_info = decoder_result.get("pumpfun_info", {})
-            action = pumpfun_info.get("action", "buy")
-            mint = pumpfun_info.get("token_mint")
-            amount = pumpfun_info.get("amount_in")
-            source_wallet = pumpfun_info.get("user_wallet")
-            
-        elif dex == "meteora":
-            meteora_info = decoder_result.get("meteora_info", {})
-            action = meteora_info.get("action", "swap")
-            source_wallet = meteora_info.get("user_wallet")
-            
-        elif dex == "orca":
-            orca_info = decoder_result.get("orca_info", {})
-            action = orca_info.get("action", "swap")
-            source_wallet = orca_info.get("user_wallet")
-            
-        else:
-            # Unknown DEX - try to extract from unknown_info
-            unknown_info = decoder_result.get("unknown_info", {})
-            action = unknown_info.get("action", "unknown")
-            source_wallet = unknown_info.get("user_wallet")
+        # Get action and other info from the decoder result based on DEX type (only if not already set)
+        if action == "unknown":
+            if dex == "jupiter":
+                swap_info = decoder_result.get("swap_info", {})
+                action = swap_info.get("action", "swap")
+                mint = swap_info.get("out_token")  # For swaps, we care about the output token
+                amount = swap_info.get("amount_in")
+                if not wallet_address:
+                    wallet_address = swap_info.get("user_wallet")
+                
+            elif dex == "raydium":
+                raydium_info = decoder_result.get("raydium_info", {})
+                action = raydium_info.get("action", "swap")
+                mint = raydium_info.get("out_token") or raydium_info.get("in_token")
+                amount = raydium_info.get("amount_in")
+                if not wallet_address:
+                    wallet_address = raydium_info.get("user_wallet")
+                
+            elif dex == "pumpfun":
+                pumpfun_info = decoder_result.get("pumpfun_info", {})
+                action = pumpfun_info.get("action", "buy")
+                mint = pumpfun_info.get("token_mint")
+                amount = pumpfun_info.get("amount_in")
+                if not wallet_address:
+                    wallet_address = pumpfun_info.get("user_wallet")
+                
+            elif dex == "meteora":
+                meteora_info = decoder_result.get("meteora_info", {})
+                action = meteora_info.get("action", "swap")
+                if not wallet_address:
+                    wallet_address = meteora_info.get("user_wallet")
+                
+            elif dex == "orca":
+                orca_info = decoder_result.get("orca_info", {})
+                action = orca_info.get("action", "swap")
+                if not wallet_address:
+                    wallet_address = orca_info.get("user_wallet")
+                
+            else:
+                # Unknown DEX - try to extract from unknown_info
+                unknown_info = decoder_result.get("unknown_info", {})
+                action = unknown_info.get("action", "unknown")
+                if not wallet_address:
+                    wallet_address = unknown_info.get("user_wallet")
         
         # Fallback: try to extract from general decoder result
         if action == "unknown":
             action = decoder_result.get("detected_action", "unknown")
-        if not source_wallet:
-            source_wallet = tx_data.get("signer")
-        
-        # Apply early Meteora action override if action is still unknown
-        if early_meteora_detected and action in (None, "unknown"):
-            action = "swap"
-            self.logger.info(f"✅ [PARSER] Applied early Meteora action override: action=swap")
+        if not wallet_address:
+            wallet_address = tx_data.get("signer")
         
         # Enhanced log parsing when regular parsing fails or returns unknown
         if dex == "unknown" or action == "unknown" or mint is None:
@@ -763,7 +775,7 @@ class WalletTransactionParser:
                 "token_mint": mint,
                 "amount": amount,
                 "signature": signature,
-                "source_wallet": source_wallet,
+                "source_wallet": wallet_address,
                 "logs": tx_data.get("logs", []),
                 "meta": tx_data.get("meta", {}),
                 "budget_sol": 0.001  # Default budget for buys
@@ -791,7 +803,7 @@ class WalletTransactionParser:
 
         # Log when DEX is still unknown after enhancement
         if dex == "unknown":
-            self.logger.warning(f"[PARSER] DEX=unknown after enhancement; proceeding with fallback route. mint={mint} action={action} amount={amount}")
+            self.logger.warning(f"⚠️ [PARSER] DEX=unknown after enhancement; proceeding with fallback route. mint={mint} action={action} amount={amount}")
         
         # Return standardized format
         return {
@@ -800,7 +812,7 @@ class WalletTransactionParser:
             "mint": mint,
             "amount": amount,
             "signature": signature,
-            "source_wallet": source_wallet,
+            "wallet_address": wallet_address,
             # Include original decoder result for compatibility
             "original_result": decoder_result
         }
