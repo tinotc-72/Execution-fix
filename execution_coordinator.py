@@ -157,6 +157,7 @@ class ExecutionCoordinator:
         
         trade_info = trade_info or {}
         dex_key = normalize_dex(trade_info.get("dex_type") or "unknown")
+        route_hint = trade_info.get("route_hint", "").strip()
         
         # Log trade info summary for debugging
         self.logger.info(f"[EXECUTION_SUMMARY] 📊 Trade details:")
@@ -166,15 +167,27 @@ class ExecutionCoordinator:
         self.logger.info(f"   - Action: {trade_info.get('action', 'N/A')}")
         self.logger.info(f"   - Amount: {amount_sol} SOL")
         self.logger.info(f"   - Source wallet: {source_wallet[:12] if source_wallet else 'N/A'}...")
+        if route_hint:
+            self.logger.info(f"   - Route hint: {route_hint}")
         
-        # E) Enhanced signature-based routing: Use specific plan when signature is present
+        # Enhanced routing logic with route_hint priority
         signature = (trade_info.get("signature") or "").strip()
-        if signature:
+        
+        # Priority 1: Check for route_hint == 'direct_copy' (from validation when mint is unresolved)
+        if route_hint == "direct_copy":
+            plan = ["direct_copy", "jupiter", "raydium", "meteora"]
+            self.logger.info(f"[ROUTING] ✅ route_hint='direct_copy' detected - prioritizing direct_copy executor")
+        # Priority 2: Check for signature presence
+        elif signature:
             plan = ["direct_copy", "jupiter", "raydium", "meteora"]
             self.logger.info(f"[ROUTING] ✅ Signature present - using signature plan: {signature[:12]}...")
+        # Priority 3: Use DEX-specific routing from ROUTE_MAP
         else:
             plan = ROUTE_MAP.get(dex_key, ROUTE_MAP["unknown"])
-            self.logger.info(f"[ROUTING] No signature - using DEX plan for {dex_key}")
+            self.logger.info(f"[ROUTING] Using ROUTE_MAP for dex='{dex_key}': {plan}")
+            # Special logging for meteora routing
+            if dex_key == "meteora":
+                self.logger.info(f"[ROUTING] ℹ️  Meteora detected - route prioritizes meteora executor first")
         
         if getattr(self.config, "execution_debug", False):
             self.logger.debug(f"[COPY BUY] Plan: {plan}")
