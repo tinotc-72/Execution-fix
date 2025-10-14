@@ -256,7 +256,7 @@ class WebSocketHandler:
             else:
                 logger.warning(f"⚠️ Enhanced transaction stream subscription failed: {sub_response}")
         except Exception as e:
-            logger.error(f"❌ Failed to subscribe to enhanced transaction stream: {e}")
+            logger.warning(f"⚠️ Enhanced transaction stream unavailable: {e} — continuing with logs/account + backfill")
     
     async def _subscribe_to_wallet(self, wallet: str, index: int):
         """📡 ENHANCED: Subscribe to ALL wallet activities for comprehensive copying - SEQUENTIAL VERSION"""
