@@ -81,6 +81,141 @@ logger = logging.getLogger(__name__)
 logger.info(f"[ROUTE_MAP LOADED] {ROUTE_MAP}")
 
 
+async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_executor=None, jito_service=None) -> Optional[dict]:
+    """
+    Simplified execution coordinator that tries build_and_sign paths before falling back to clone.
+    
+    For dex=="meteora": Try Meteora build_and_sign → Jupiter → direct_copy
+    For dex=="unknown" with mint: Try Jupiter → Meteora → direct_copy
+    
+    Args:
+        trade_info: Trade information dictionary
+        rpc_url: RPC URL string
+        keypair: Wallet keypair
+        fast_executor: Optional FastExecutor instance for submission
+        jito_service: Optional Jito service for MEV
+        
+    Returns:
+        dict with success/signature on success, or None on failure
+    """
+    dex = (trade_info.get("dex") or "unknown").lower()
+    have_mint = bool(trade_info.get("token_mint"))
+    token_mint_str = trade_info.get("token_mint", "")
+    
+    # Helper to try submitting a VersionedTransaction
+    async def try_submit(vtx) -> bool:
+        if not vtx:
+            return False
+        try:
+            # Use fast_executor if available, otherwise create temp one
+            if fast_executor:
+                sig = await fast_executor.submit_transaction(vtx)
+            else:
+                from fast_executor import FastExecutor
+                temp_executor = FastExecutor(keypair=keypair, rpc_url=rpc_url, jito_service=jito_service)
+                await temp_executor.initialize()
+                sig = await temp_executor.submit_transaction(vtx)
+                await temp_executor.close()
+            
+            if sig:
+                logger.info(f"✅ [EXECUTION] submitted: {sig}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"❌ [EXECUTION] submission failed: {e}")
+            return False
+    
+    # Helper to call direct_copy fallback
+    async def execute_direct_copy_fallback():
+        """Fall back to transaction cloning"""
+        logger.warning("⚠️ Builders failed — falling back to direct_copy")
+        signature = trade_info.get("signature")
+        if not signature:
+            logger.error("❌ [DIRECT_COPY] No signature available for cloning")
+            return None
+            
+        try:
+            from transaction_cloner import clone_tx_from_signature
+            vtx = await clone_tx_from_signature(rpc=rpc_url, signature=signature, new_payer=keypair)
+            if vtx:
+                if await try_submit(vtx):
+                    return {"success": True, "signature": signature, "method": "direct_copy"}
+            return None
+        except Exception as e:
+            logger.error(f"❌ [DIRECT_COPY] Clone failed: {e}")
+            return None
+    
+    # Route 1: dex == "meteora"
+    if dex == "meteora":
+        logger.info("🧭 [COORDINATOR] Route=meteora")
+        
+        # Try Meteora build_and_sign
+        vtx = None
+        try:
+            from mev_meteora_executor import build_and_sign as meteora_build_and_sign
+            from mev_meteora_executor import SimpleRPC, RPCConfig
+            rpc = SimpleRPC(RPCConfig(rpc_url))
+            vtx = meteora_build_and_sign(trade_info, rpc, keypair)
+        except Exception as e:
+            logger.error(f"❌ [METEORA] build error: {e}")
+        
+        if await try_submit(vtx):
+            return {"success": True, "method": "meteora"}
+        
+        # Try Jupiter
+        logger.warning("⚠️ Meteora build failed — trying Jupiter")
+        try:
+            from mev_jupiter_executor import build_buy_tx as jupiter_build_buy_tx
+            if token_mint_str:
+                amount_sol = trade_info.get("amount_sol", 0.001)
+                vtx = jupiter_build_buy_tx(token_mint_str, amount_sol, keypair)
+                # Sign the transaction
+                if vtx and not vtx.signatures:
+                    vtx.sign([keypair])
+        except Exception as e:
+            logger.error(f"❌ [JUPITER] build error: {e}")
+        
+        if await try_submit(vtx):
+            return {"success": True, "method": "jupiter"}
+        
+        # Fallback to direct_copy
+        return await execute_direct_copy_fallback()
+    
+    # Route 2: dex == "unknown" and we have a mint
+    if dex == "unknown" and have_mint:
+        logger.info("🧭 [COORDINATOR] Route=unknown; mint present → Jupiter → Meteora → Clone")
+        
+        # Try Jupiter first
+        try:
+            from mev_jupiter_executor import build_buy_tx as jupiter_build_buy_tx
+            amount_sol = trade_info.get("amount_sol", 0.001)
+            vtx = jupiter_build_buy_tx(token_mint_str, amount_sol, keypair)
+            # Sign the transaction
+            if vtx and not vtx.signatures:
+                vtx.sign([keypair])
+            if await try_submit(vtx):
+                return {"success": True, "method": "jupiter"}
+        except Exception as e:
+            logger.error(f"❌ [BUILDER] Jupiter error: {e}")
+        
+        # Try Meteora
+        try:
+            from mev_meteora_executor import build_and_sign as meteora_build_and_sign
+            from mev_meteora_executor import SimpleRPC, RPCConfig
+            rpc = SimpleRPC(RPCConfig(rpc_url))
+            vtx = meteora_build_and_sign(trade_info, rpc, keypair)
+            if await try_submit(vtx):
+                return {"success": True, "method": "meteora"}
+        except Exception as e:
+            logger.error(f"❌ [BUILDER] Meteora error: {e}")
+        
+        # Fallback to direct_copy
+        return await execute_direct_copy_fallback()
+    
+    # For all other cases, return None (let existing routing handle it)
+    logger.info(f"🧭 [COORDINATOR] Route not handled by maybe_execute: dex={dex}, have_mint={have_mint}")
+    return None
+
 
 @dataclass
 class WalletPosition:
