@@ -38,9 +38,9 @@ def test_meteora_routing():
         (r'if dex == "meteora":', "Checks for dex == 'meteora'"),
         (r'meteora_build_and_sign', "Calls meteora_build_and_sign"),
         (r'jupiter_build_buy_tx', "Falls back to Jupiter"),
-        (r'execute_direct_copy_fallback', "Falls back to direct_copy"),
-        (r'🧭 \[COORDINATOR\] Route=meteora', "Logs meteora route"),
-        (r'⚠️ Meteora build failed — trying Jupiter', "Logs Jupiter fallback"),
+        (r'execute_direct_copy', "Falls back to direct_copy"),
+        (r'🧭 \[ROUTE\] Meteora → build_and_sign', "Logs meteora route"),
+        (r'⚠️ Meteora build failed → trying Jupiter', "Logs Jupiter fallback"),
     ]
     
     passed = 0
@@ -65,10 +65,10 @@ def test_unknown_with_mint_routing():
         content = f.read()
     
     checks = [
-        (r'if dex == "unknown" and have_mint:', "Checks for unknown with mint"),
+        (r'if dex == "unknown" and trade_info\.get\("token_mint"\)', "Checks for unknown with mint"),
         (r'jupiter_build_buy_tx', "Tries Jupiter first"),
-        (r'execute_direct_copy_fallback', "Falls back to direct_copy"),
-        (r'🧭 \[COORDINATOR\] Route=unknown; mint present → Jupiter → Clone', "Logs route"),
+        (r'execute_direct_copy', "Falls back to direct_copy"),
+        (r'🧭 \[ROUTE\] Unknown with mint → Jupiter → Clone', "Logs route"),
     ]
     
     passed = 0
@@ -96,7 +96,7 @@ def test_try_submit_helper():
         (r'async def try_submit\(vtx\)', "try_submit function exists"),
         (r'await fast_executor\.submit_transaction\(vtx\)', "Uses fast_executor.submit_transaction"),
         (r'✅ \[EXECUTION\] submitted:', "Logs successful submission"),
-        (r'❌ \[EXECUTION\] submission failed:', "Logs failed submission"),
+        (r'❌ \[EXECUTION\] submit failed:', "Logs failed submission"),
     ]
     
     passed = 0
@@ -242,8 +242,10 @@ def main():
     if passed == total:
         print("\n  🎉 ALL TESTS PASSED!")
         print("\n  The maybe_execute function implements:")
+        print("  ✅ Initial route logging with dex and prefer_clone")
         print("  ✅ Meteora path: Meteora build_and_sign → Jupiter → direct_copy")
         print("  ✅ Unknown with mint: Jupiter → direct_copy")
+        print("  ✅ try_submit wrapper with loud logging")
         print("  ✅ Emoji logging consistent with existing format")
         print("  ✅ No new dependencies added")
         print("  ✅ Uses existing RPC client and executors")
