@@ -284,8 +284,27 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     """
     Route and execute trade with hard guard validation.
     
+    ⚠️ CRITICAL: This function MUST be called with 'await' in async handlers!
+    
     Only executes when all required fields are truly present and valid.
     Wraps coordinator call in try/except to log any errors.
+    
+    Why await is critical:
+    - Without await, coordinator logs never appear (🧭 [COORDINATOR] Route=...)
+    - Without await, trade execution happens silently in background without error handling
+    - Without await, the calling function returns before execution completes
+    
+    Args:
+        trade_info: Trade information dictionary with required fields
+        rpc: RPC client or RPC URL string
+        keypair: Wallet keypair for signing transactions
+        jito: Optional Jito service for MEV protection
+        
+    Example (CORRECT):
+        await route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
+        
+    Example (WRONG - will fail silently):
+        route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
     """
     if not _have_all_fields(trade_info):
         logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")
@@ -831,7 +850,14 @@ class SimpleCopyTradingBot:
             logger.info("✅ [MODE] Builders %s; Cloner as %s",
                         "ENABLED (complete fields)" if have_all else "DISABLED",
                         "fallback" if have_all else "PRIMARY")
-            # Immediately after inference, call execution coordinator with exact values
+            
+            # ⚠️ CRITICAL: ALWAYS AWAIT coordinator handoff after inference
+            # If you forget to await, coordinator logs never appear and trades fail silently.
+            # This ensures logs and coordinator handoff are not skipped in async code.
+            # route_and_execute is async and must be awaited to ensure:
+            # 1. Coordinator logs appear (🧭 [COORDINATOR] Route=...)
+            # 2. Trade execution happens (✅ [EXECUTION] submitted: ...)
+            # 3. Errors are properly caught and logged
             await route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
             
             # STEP 2: Validate and process
