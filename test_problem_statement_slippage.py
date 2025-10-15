@@ -31,7 +31,7 @@ def main():
     results.append(check_requirement(
         "1. ensure_meta_in_trade_info helper exists and matches specification",
         lambda: bool(re.search(
-            r'def ensure_meta_in_trade_info\(self, trade_info: dict, backfilled: dict \| None\) -> None:',
+            r'def ensure_meta_in_trade_info\(self, trade_info: dict\) -> None:',
             content
         ))
     ))
@@ -49,7 +49,7 @@ def main():
     results.append(check_requirement(
         "3. ensure_meta_in_trade_info attaches meta from backfilled if not present",
         lambda: bool(re.search(
-            r'if trade_info\.get\("meta"\) is None and backfilled and backfilled\.get\("meta"\):\s+trade_info\["meta"\] = backfilled\["meta"\]',
+            r'if "meta" not in trade_info:\s+backfilled = trade_info\.get\("backfilled_tx"\)\s+if backfilled and backfilled\.get\("meta"\):\s+trade_info\["meta"\] = backfilled\["meta"\]',
             content
         ))
     ))
@@ -103,17 +103,17 @@ def main():
     results.append(check_requirement(
         "9. Both helpers called at start of infer_missing_fields",
         lambda: bool(re.search(
-            r'self\.ensure_meta_in_trade_info\(trade_info, backfilled=trade_info\.get\("backfilled_tx"\)\).*?self\.annotate_source_failure\(trade_info\)',
+            r'self\.ensure_meta_in_trade_info\(trade_info\).*?self\.annotate_source_failure\(trade_info\)',
             content,
             re.DOTALL
         ))
     ))
     
-    # Requirement 10: Called with backfilled_tx parameter
+    # Requirement 10: Called with trade_info parameter
     results.append(check_requirement(
-        "10. ensure_meta_in_trade_info called with backfilled=trade_info.get('backfilled_tx')",
+        "10. ensure_meta_in_trade_info called with trade_info",
         lambda: bool(re.search(
-            r'self\.ensure_meta_in_trade_info\(trade_info, backfilled=trade_info\.get\("backfilled_tx"\)\)',
+            r'self\.ensure_meta_in_trade_info\(trade_info\)',
             content
         ))
     ))
