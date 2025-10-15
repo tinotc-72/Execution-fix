@@ -124,13 +124,12 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
                 return True
             return False
         except Exception as e:
-            logger.error(f"❌ [EXECUTION] submission failed: {e}")
+            logger.error(f"❌ [EXECUTION] submission failed: {e}", exc_info=True)
             return False
     
     # Helper to call direct_copy fallback
     async def execute_direct_copy_fallback():
         """Fall back to transaction cloning"""
-        logger.warning("⚠️ Builders failed — falling back to direct_copy")
         signature = trade_info.get("signature")
         if not signature:
             logger.error("❌ [DIRECT_COPY] No signature available for cloning")
@@ -144,12 +143,12 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
                     return {"success": True, "signature": signature, "method": "direct_copy"}
             return None
         except Exception as e:
-            logger.error(f"❌ [DIRECT_COPY] Clone failed: {e}")
+            logger.error(f"❌ [DIRECT_COPY] Clone failed: {e}", exc_info=True)
             return None
     
     # Route 1: dex == "meteora"
     if dex == "meteora":
-        logger.info("🧭 [COORDINATOR] Route=meteora")
+        logger.info("🧭 [COORDINATOR] Route=meteora (prefer_clone=%s)", prefer_clone)
         
         if not prefer_clone:
             # Builders first
@@ -160,7 +159,7 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
                 rpc = SimpleRPC(RPCConfig(rpc_url))
                 vtx = meteora_build_and_sign(trade_info, rpc, keypair)
             except Exception as e:
-                logger.error(f"❌ [METEORA] build error: {e}")
+                logger.error(f"❌ [METEORA] build error: {e}", exc_info=True)
             
             if await try_submit(vtx):
                 return {"success": True, "method": "meteora"}
@@ -177,7 +176,7 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
                     if vtx and not vtx.signatures:
                         vtx.sign([keypair])
             except Exception as e:
-                logger.error(f"❌ [JUPITER] build error: {e}")
+                logger.error(f"❌ [JUPITER] build error: {e}", exc_info=True)
             
             if await try_submit(vtx):
                 return {"success": True, "method": "jupiter"}
@@ -215,12 +214,14 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
             if await try_submit(vtx):
                 return {"success": True, "method": "jupiter"}
         except Exception as e:
-            logger.error(f"❌ [BUILDER] Jupiter error: {e}")
+            logger.error(f"❌ [JUPITER] build error: {e}", exc_info=True)
         
         # Fallback to direct_copy
+        logger.warning("⚠️ Builders failed — falling back to direct_copy")
         return await execute_direct_copy_fallback()
     
     # Unknown & no mint → clone last resort
+    logger.warning("⚠️ No builder available — falling back to direct_copy")
     return await execute_direct_copy_fallback()
 
 
