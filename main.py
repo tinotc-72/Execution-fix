@@ -303,7 +303,7 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     
     ⚠️ CRITICAL: This function MUST be called with 'await' in async handlers!
     
-    Only executes when all required fields are truly present and valid.
+    Always calls coordinator to ensure logging sanity checks, even with incomplete fields.
     Wraps coordinator call in try/except to log any errors.
     
     Why await is critical:
@@ -323,10 +323,12 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     Example (WRONG - will fail silently):
         route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
     """
+    # Always log handoff status, but indicate if fields are incomplete
     if not _have_all_fields(trade_info):
-        logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")
-        return
-    logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
+        logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, but attempting coordinator handoff for logging")
+    else:
+        logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
+    
     # Extract rpc_url from rpc_client if needed
     rpc_url = rpc.rpc_url if hasattr(rpc, 'rpc_url') else rpc
     try:
