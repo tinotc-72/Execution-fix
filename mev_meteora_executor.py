@@ -1429,9 +1429,9 @@ def build_and_sign(
                 
         except Exception as e:
             logger.warning(f"⚠️ Could not extract from backfilled tx: {e}")
-            # Fallback: build basic swap instruction
-            SWAP_DISCRIMINATOR = bytes([248, 198, 158, 145, 225, 117, 135, 200])
-            ix_data = SWAP_DISCRIMINATOR + struct.pack('<QQ', lamports_in, min_out)
+            # Fallback: build basic swap instruction with Swap2 discriminator
+            SWAP2_DISCRIMINATOR = bytes([65, 75, 63, 76, 235, 91, 91, 136])
+            ix_data = SWAP2_DISCRIMINATOR + struct.pack('<QQ', lamports_in, min_out)
             # Note: This fallback won't work without proper pool accounts
             swap_ix = Instruction(
                 program_id=METEORA_PROGRAM_ID,
@@ -1440,9 +1440,9 @@ def build_and_sign(
             )
             logger.warning("⚠️ Using fallback swap instruction (may fail without proper accounts)")
     else:
-        # No trade_info - build basic instruction
-        SWAP_DISCRIMINATOR = bytes([248, 198, 158, 145, 225, 117, 135, 200])
-        ix_data = SWAP_DISCRIMINATOR + struct.pack('<QQ', lamports_in, min_out)
+        # No trade_info - build basic instruction with Swap2 discriminator
+        SWAP2_DISCRIMINATOR = bytes([65, 75, 63, 76, 235, 91, 91, 136])
+        ix_data = SWAP2_DISCRIMINATOR + struct.pack('<QQ', lamports_in, min_out)
         swap_ix = Instruction(
             program_id=METEORA_PROGRAM_ID,
             accounts=[],  # Placeholder - needs proper pool resolution
