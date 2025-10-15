@@ -160,7 +160,8 @@ def test_called_after_inference():
         return False
     
     # Check that route_and_execute is called within a few lines after the debug log
-    if route_and_execute_line > debug_log_line and route_and_execute_line - debug_log_line <= 5:
+    # Updated to allow for mode setting and logging (problem statement requirement)
+    if route_and_execute_line > debug_log_line and route_and_execute_line - debug_log_line <= 10:
         print(f"  ✅ route_and_execute called after 'After infer_missing_fields' debug log")
         print(f"     Debug log at line {debug_log_line + 1}")
         print(f"     route_and_execute at line {route_and_execute_line + 1}")
