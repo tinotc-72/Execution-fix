@@ -85,7 +85,8 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
     """
     Simplified execution coordinator that tries build_and_sign paths before falling back to clone.
     
-    For dex=="meteora": Try Meteora build_and_sign → Jupiter → direct_copy
+    For dex=="meteora" and use_universal_cloner=False: Try Meteora build_and_sign → Jupiter → direct_copy
+    For dex=="meteora" and use_universal_cloner=True: Try builders if mint exists, else direct_copy
     For dex=="unknown" with mint: Try Jupiter → Meteora → direct_copy
     
     Args:
@@ -100,6 +101,7 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
     """
     dex = (trade_info.get("dex") or "unknown").lower()
     have_mint = bool(trade_info.get("token_mint"))
+    prefer_clone = bool(trade_info.get("use_universal_cloner"))
     token_mint_str = trade_info.get("token_mint", "")
     
     # Helper to try submitting a VersionedTransaction
@@ -149,41 +151,58 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
     if dex == "meteora":
         logger.info("🧭 [COORDINATOR] Route=meteora")
         
-        # Try Meteora build_and_sign
-        vtx = None
-        try:
-            from mev_meteora_executor import build_and_sign as meteora_build_and_sign
-            from mev_meteora_executor import SimpleRPC, RPCConfig
-            rpc = SimpleRPC(RPCConfig(rpc_url))
-            vtx = meteora_build_and_sign(trade_info, rpc, keypair)
-        except Exception as e:
-            logger.error(f"❌ [METEORA] build error: {e}")
-        
-        if await try_submit(vtx):
-            return {"success": True, "method": "meteora"}
-        
-        # Try Jupiter
-        logger.warning("⚠️ Meteora build failed — trying Jupiter")
-        try:
-            from mev_jupiter_executor import build_buy_tx as jupiter_build_buy_tx
-            if token_mint_str:
-                amount_sol = trade_info.get("amount_sol", 0.001)
-                vtx = jupiter_build_buy_tx(token_mint_str, amount_sol, keypair)
-                # Sign the transaction
-                if vtx and not vtx.signatures:
-                    vtx.sign([keypair])
-        except Exception as e:
-            logger.error(f"❌ [JUPITER] build error: {e}")
-        
-        if await try_submit(vtx):
-            return {"success": True, "method": "jupiter"}
-        
-        # Fallback to direct_copy
-        return await execute_direct_copy_fallback()
+        if not prefer_clone:
+            # Builders first
+            vtx = None
+            try:
+                from mev_meteora_executor import build_and_sign as meteora_build_and_sign
+                from mev_meteora_executor import SimpleRPC, RPCConfig
+                rpc = SimpleRPC(RPCConfig(rpc_url))
+                vtx = meteora_build_and_sign(trade_info, rpc, keypair)
+            except Exception as e:
+                logger.error(f"❌ [METEORA] build error: {e}")
+            
+            if await try_submit(vtx):
+                return {"success": True, "method": "meteora"}
+            
+            # Try Jupiter
+            logger.warning("⚠️ Meteora build failed — trying Jupiter")
+            vtx = None
+            try:
+                from mev_jupiter_executor import build_buy_tx as jupiter_build_buy_tx
+                if token_mint_str:
+                    amount_sol = trade_info.get("amount_sol", 0.001)
+                    vtx = jupiter_build_buy_tx(token_mint_str, amount_sol, keypair)
+                    # Sign the transaction
+                    if vtx and not vtx.signatures:
+                        vtx.sign([keypair])
+            except Exception as e:
+                logger.error(f"❌ [JUPITER] build error: {e}")
+            
+            if await try_submit(vtx):
+                return {"success": True, "method": "jupiter"}
+            
+            # Fallback to direct_copy
+            logger.warning("⚠️ Builders failed — falling back to direct_copy")
+            return await execute_direct_copy_fallback()
+        else:
+            # Prefer clone, but if we have a mint, still attempt builders first
+            if have_mint:
+                vtx = None
+                try:
+                    from mev_meteora_executor import build_and_sign as meteora_build_and_sign
+                    from mev_meteora_executor import SimpleRPC, RPCConfig
+                    rpc = SimpleRPC(RPCConfig(rpc_url))
+                    vtx = meteora_build_and_sign(trade_info, rpc, keypair)
+                except Exception:
+                    vtx = None
+                if await try_submit(vtx):
+                    return {"success": True, "method": "meteora"}
+            return await execute_direct_copy_fallback()
     
     # Route 2: dex == "unknown" and we have a mint
     if dex == "unknown" and have_mint:
-        logger.info("🧭 [COORDINATOR] Route=unknown; mint present → Jupiter → Meteora → Clone")
+        logger.info("🧭 [COORDINATOR] Route=unknown; mint present → Jupiter → Clone")
         
         # Try Jupiter first
         try:
@@ -198,23 +217,11 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
         except Exception as e:
             logger.error(f"❌ [BUILDER] Jupiter error: {e}")
         
-        # Try Meteora
-        try:
-            from mev_meteora_executor import build_and_sign as meteora_build_and_sign
-            from mev_meteora_executor import SimpleRPC, RPCConfig
-            rpc = SimpleRPC(RPCConfig(rpc_url))
-            vtx = meteora_build_and_sign(trade_info, rpc, keypair)
-            if await try_submit(vtx):
-                return {"success": True, "method": "meteora"}
-        except Exception as e:
-            logger.error(f"❌ [BUILDER] Meteora error: {e}")
-        
         # Fallback to direct_copy
         return await execute_direct_copy_fallback()
     
-    # For all other cases, return None (let existing routing handle it)
-    logger.info(f"🧭 [COORDINATOR] Route not handled by maybe_execute: dex={dex}, have_mint={have_mint}")
-    return None
+    # Unknown & no mint → clone last resort
+    return await execute_direct_copy_fallback()
 
 
 @dataclass
