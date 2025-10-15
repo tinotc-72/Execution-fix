@@ -87,7 +87,7 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
     
     For dex=="meteora" and use_universal_cloner=False: Try Meteora build_and_sign → Jupiter → direct_copy
     For dex=="meteora" and use_universal_cloner=True: Try builders if mint exists, else direct_copy
-    For dex=="unknown" with mint: Try Jupiter → Meteora → direct_copy
+    For dex=="unknown" with mint: Try Jupiter → direct_copy
     
     Args:
         trade_info: Trade information dictionary
@@ -202,7 +202,7 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
     
     # Route 2: dex == "unknown" and we have a mint
     if dex == "unknown" and have_mint:
-        logger.info("🧭 [COORDINATOR] Route=unknown; mint present → Jupiter → Meteora → Clone")
+        logger.info("🧭 [COORDINATOR] Route=unknown; mint present → Jupiter → Clone")
         
         # Try Jupiter first
         try:
@@ -216,20 +216,6 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
                 return {"success": True, "method": "jupiter"}
         except Exception as e:
             logger.error(f"❌ [BUILDER] Jupiter error: {e}")
-        
-        # Try Meteora
-        logger.warning("⚠️ Jupiter build failed — trying Meteora")
-        vtx = None
-        try:
-            from mev_meteora_executor import build_and_sign as meteora_build_and_sign
-            from mev_meteora_executor import SimpleRPC, RPCConfig
-            rpc = SimpleRPC(RPCConfig(rpc_url))
-            vtx = meteora_build_and_sign(trade_info, rpc, keypair)
-        except Exception as e:
-            logger.error(f"❌ [METEORA] build error: {e}")
-        
-        if await try_submit(vtx):
-            return {"success": True, "method": "meteora"}
         
         # Fallback to direct_copy
         return await execute_direct_copy_fallback()
