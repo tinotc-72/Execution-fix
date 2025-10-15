@@ -87,7 +87,7 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
     
     For dex=="meteora" and use_universal_cloner=False: Try Meteora build_and_sign → Jupiter → direct_copy
     For dex=="meteora" and use_universal_cloner=True: Try builders if mint exists, else direct_copy
-    For dex=="unknown" with mint: Try Jupiter → Meteora → direct_copy
+    For dex=="unknown" with mint: Try Jupiter → direct_copy
     
     Args:
         trade_info: Trade information dictionary
