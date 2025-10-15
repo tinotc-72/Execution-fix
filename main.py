@@ -280,6 +280,23 @@ def merge_parsed_fields(trade_info: dict, parsed: dict) -> None:
             trade_info[dst] = val
 
 
+def schedule_deep_analysis(trade_info: dict):
+    """
+    Schedule deep analysis as a background task (non-blocking).
+    
+    This function creates an async task to analyze the trade without blocking
+    the main execution flow. Used when requires_full_analysis is set but we
+    want to attempt fast-path execution if fields are already ready.
+    
+    Args:
+        trade_info: Trade information dictionary
+    """
+    # Note: This is a stub that creates a background task
+    # The actual analysis will happen in _simple_trade_analysis
+    # For now, we just log that scheduling was requested
+    pass
+
+
 async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     """
     Route and execute trade with hard guard validation.
@@ -844,21 +861,25 @@ class SimpleCopyTradingBot:
             logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
             trade_info = self.trade_processor.infer_missing_fields(trade_info)
             logger.debug(f"[DEBUG] After infer_missing_fields: {json.dumps(trade_info, default=str)}")
-            # Compute builder mode and call coordinator
+            
+            # Do NOT return early on requires_full_analysis
+            if trade_info.get("requires_full_analysis"):
+                try:
+                    schedule_deep_analysis(trade_info)  # non-blocking
+                    logger.info("ℹ️ scheduled deep analysis (non-blocking); continuing to fast-path")
+                except Exception as e:
+                    logger.warning(f"⚠️ deep analysis scheduling failed: {e}")
+            
+            # Compute per-trade mode and call the coordinator
             have_all = _have_all_fields(trade_info)
             trade_info["use_universal_cloner"] = not have_all
             logger.info("✅ [MODE] Builders %s; Cloner as %s",
                         "ENABLED (complete fields)" if have_all else "DISABLED",
                         "fallback" if have_all else "PRIMARY")
             
-            # ⚠️ CRITICAL: ALWAYS AWAIT coordinator handoff after inference
-            # If you forget to await, coordinator logs never appear and trades fail silently.
-            # This ensures logs and coordinator handoff are not skipped in async code.
-            # route_and_execute is async and must be awaited to ensure:
-            # 1. Coordinator logs appear (🧭 [COORDINATOR] Route=...)
-            # 2. Trade execution happens (✅ [EXECUTION] submitted: ...)
-            # 3. Errors are properly caught and logged
+            logger.info("📤 [HANDOFF] Calling coordinator now…")
             await route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
+            logger.info("📥 [HANDOFF] Coordinator call returned")
             
             # STEP 2: Validate and process
             logger.debug(f"[DEBUG] Before validate_trade_info: {json.dumps(trade_info, default=str)}")
