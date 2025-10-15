@@ -157,14 +157,14 @@ def test_code_structure():
         print("❌ Dynamic cloner logic not found")
         return False
     
-    # Check for the mode logging
-    if "Builders enabled (complete fields)" in content:
+    # Check for the mode logging (per problem statement patch)
+    if "ENABLED (complete fields)" in content and 'Builders %s; Cloner as %s' in content:
         print("✅ Builder mode logging found")
     else:
         print("❌ Builder mode logging not found")
         return False
     
-    if "Universal Cloner mode active (incomplete fields)" in content:
+    if '"fallback" if have_all else "PRIMARY"' in content:
         print("✅ Cloner mode logging found")
     else:
         print("❌ Cloner mode logging not found")
