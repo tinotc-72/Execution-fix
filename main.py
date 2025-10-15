@@ -801,8 +801,8 @@ class SimpleCopyTradingBot:
             # 🚀 FALLBACK: Full analysis if immediate copy not possible
             if trade_info.get('requires_analysis'):
                 logger.debug(f"[DEBUG] requires_analysis: {trade_info.get('requires_analysis')}")
-                signature = trade_info['signature']
-                wallet_address = trade_info['wallet_address']
+                signature = trade_info.get('signature')
+                wallet_address = trade_info.get('wallet_address')
                 logger.debug(f"[DEBUG] Starting simple_trade_analysis for signature={signature}, wallet_address={wallet_address}")
                 if signature and wallet_address:
                     # Use fast analysis with timeout
@@ -815,11 +815,10 @@ class SimpleCopyTradingBot:
                         if result:
                             trade_info.update(result)
                         else:
-                            logger.warning(f"⚠️ Fast analysis failed for {signature[:8]}... - skipping")
-                            return
+                            logger.warning(f"⚠️ Fast analysis failed for {signature[:8]}... - will attempt fast path execution if fields are ready")
                     except Exception as e:
-                        logger.error(f"[DEBUG] Exception in simple_trade_analysis: {e}")
-                        return
+                        logger.warning(f"⚠️ Deep analysis scheduling failed: {e}")
+                    # DO NOT return here — still attempt fast path execution if fields are ready
 
             # STEP 1: Infer missing fields before validation
             logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
