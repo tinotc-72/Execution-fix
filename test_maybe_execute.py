@@ -67,9 +67,8 @@ def test_unknown_with_mint_routing():
     checks = [
         (r'if dex == "unknown" and have_mint:', "Checks for unknown with mint"),
         (r'jupiter_build_buy_tx', "Tries Jupiter first"),
-        (r'meteora_build_and_sign', "Tries Meteora second"),
         (r'execute_direct_copy_fallback', "Falls back to direct_copy"),
-        (r'🧭 \[COORDINATOR\] Route=unknown; mint present → Jupiter → Meteora → Clone', "Logs route"),
+        (r'🧭 \[COORDINATOR\] Route=unknown; mint present → Jupiter → Clone', "Logs route"),
     ]
     
     passed = 0
@@ -244,7 +243,7 @@ def main():
         print("\n  🎉 ALL TESTS PASSED!")
         print("\n  The maybe_execute function implements:")
         print("  ✅ Meteora path: Meteora build_and_sign → Jupiter → direct_copy")
-        print("  ✅ Unknown with mint: Jupiter → Meteora → direct_copy")
+        print("  ✅ Unknown with mint: Jupiter → direct_copy")
         print("  ✅ Emoji logging consistent with existing format")
         print("  ✅ No new dependencies added")
         print("  ✅ Uses existing RPC client and executors")
