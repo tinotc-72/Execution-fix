@@ -220,7 +220,7 @@ except ImportError:
 bot_instance = None
 
 
-from execution_coordinator import normalize_dex, ROUTE_MAP
+from execution_coordinator import normalize_dex, ROUTE_MAP, maybe_execute
 
 
 def merge_parsed_fields(trade_info: dict, parsed: dict) -> None:
@@ -254,6 +254,24 @@ def merge_parsed_fields(trade_info: dict, parsed: dict) -> None:
         val = parsed.get(src)
         if val and trade_info.get(dst) in (None, "", "unknown", "PENDING_ANALYSIS"):
             trade_info[dst] = val
+
+
+async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
+    """
+    Route and execute trade with hard guard validation.
+    
+    Only executes when all required fields are truly present and valid.
+    """
+    # Hard guard: only execute when we truly have the fields
+    required_ok = all(trade_info.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS")
+                      for k in ("dex", "action", "wallet_address", "token_mint"))
+    if not required_ok:
+        logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")
+        return
+    logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
+    # Extract rpc_url from rpc_client if needed
+    rpc_url = rpc.rpc_url if hasattr(rpc, 'rpc_url') else rpc
+    await maybe_execute(trade_info, rpc_url, keypair, jito_service=jito)
 
 
 class SimpleCopyTradingBot:
@@ -781,6 +799,9 @@ class SimpleCopyTradingBot:
             logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
             trade_info = self.trade_processor.infer_missing_fields(trade_info)
             logger.debug(f"[DEBUG] After infer_missing_fields: {json.dumps(trade_info, default=str)}")
+            
+            # Immediately after inference, call execution coordinator with exact values
+            await route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
             
             # STEP 2: Validate and process
             logger.debug(f"[DEBUG] Before validate_trade_info: {json.dumps(trade_info, default=str)}")
