@@ -1259,7 +1259,7 @@ def build_and_sign(
     2. ATA creation for token_mint (idempotent with existence check)
     3. System transfer to wrap SOL
     4. SyncNative to update WSOL balance
-    5. Meteora Swap instruction (using program Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB)
+    5. Meteora Swap instruction (using program dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN)
     6. CloseAccount to unwrap remaining WSOL
     
     Args:
@@ -1276,7 +1276,7 @@ def build_and_sign(
     
     # Constants
     WSOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
-    METEORA_PROGRAM_ID = Pubkey.from_string("Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB")
+    METEORA_PROGRAM_ID = Pubkey.from_string("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN")
     SPL_TOKEN_PROGRAM = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     SYSTEM_PROGRAM = Pubkey.from_string("11111111111111111111111111111111")
     
