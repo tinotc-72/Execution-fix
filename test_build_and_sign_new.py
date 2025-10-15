@@ -74,16 +74,16 @@ def test_program_id():
     
     func_body = func_match.group(1)
     
-    # Check for the new program ID
-    new_program_id = "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB"
-    if new_program_id in func_body:
-        print(f"✅ PASS: Using new Meteora program ID: {new_program_id}")
+    # Check for the correct program ID
+    correct_program_id = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
+    if correct_program_id in func_body:
+        print(f"✅ PASS: Using correct Meteora program ID: {correct_program_id}")
     else:
-        print(f"❌ FAIL: New program ID {new_program_id} not found")
+        print(f"❌ FAIL: Correct program ID {correct_program_id} not found")
         return False
     
     # Check that old program ID is not used
-    old_program_id = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
+    old_program_id = "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB"
     if old_program_id in func_body:
         print(f"⚠️  WARNING: Old program ID {old_program_id} still present in function")
     else:
