@@ -403,10 +403,14 @@ class WebSocketHandler:
                 'meta': meta,
                 'transaction': transaction
             }
-            asyncio.create_task(
-                self._safe_callback(trade_info),
-                name=f"enhanced_tx_callback_{signature[:8]}"
-            )
+            # Pattern B: Properly await async pipeline with explicit logging
+            logger.info(f"🧩 [CALLBACK] SCHEDULED pipeline for enhanced_tx {signature[:8]}...")
+            try:
+                logger.info(f"🧩 [CALLBACK] START pipeline (async) for {signature[:8]}...")
+                await self.trade_callback(trade_info)
+                logger.info(f"🧩 [CALLBACK] END pipeline finished successfully for {signature[:8]}")
+            except Exception as e:
+                logger.error(f"❌ [CALLBACK] ERROR pipeline crashed for {signature[:8]}: {e}", exc_info=True)
         except Exception as e:
             logger.error(f"❌ Error handling enhanced transaction notification: {e}")
     
@@ -489,10 +493,14 @@ class WebSocketHandler:
                     'meta': meta,
                     'transaction': transaction
                 }
-                asyncio.create_task(
-                    self._safe_callback(trade_info),
-                    name=f"trade_callback_{signature[:8]}"
-                )
+                # Pattern B: Properly await async pipeline with explicit logging
+                logger.info(f"🧩 [CALLBACK] SCHEDULED pipeline for logs_trade {signature[:8]}...")
+                try:
+                    logger.info(f"🧩 [CALLBACK] START pipeline (async) for {signature[:8]}...")
+                    await self.trade_callback(trade_info)
+                    logger.info(f"🧩 [CALLBACK] END pipeline finished successfully for {signature[:8]}")
+                except Exception as e:
+                    logger.error(f"❌ [CALLBACK] ERROR pipeline crashed for {signature[:8]}: {e}", exc_info=True)
             else:
                 logger.debug(f"ℹ️ Non-trade transaction: {signature[:8]}...")
         except Exception as e:
@@ -532,10 +540,14 @@ class WebSocketHandler:
                     logger.warning("⚠️ [BACKFILL] No signature available and backfill returned nothing")
             
             # Let the callback handle the full analysis
-            asyncio.create_task(
-                self._safe_callback(trade_info),
-                name="account_change_callback"
-            )
+            # Pattern B: Properly await async pipeline with explicit logging
+            logger.info(f"🧩 [CALLBACK] SCHEDULED pipeline for account_change...")
+            try:
+                logger.info(f"🧩 [CALLBACK] START pipeline (async) for account_change...")
+                await self.trade_callback(trade_info)
+                logger.info(f"🧩 [CALLBACK] END pipeline finished successfully for account_change")
+            except Exception as e:
+                logger.error(f"❌ [CALLBACK] ERROR pipeline crashed for account_change: {e}", exc_info=True)
             
         except Exception as e:
             logger.error(f"❌ Error handling account notification: {e}")
@@ -582,10 +594,14 @@ class WebSocketHandler:
                     'meta': meta,
                     'transaction': transaction
                 }
-                asyncio.create_task(
-                    self._safe_callback(trade_info),
-                    name=f"signature_callback_{signature[:8]}"
-                )
+                # Pattern B: Properly await async pipeline with explicit logging
+                logger.info(f"🧩 [CALLBACK] SCHEDULED pipeline for signature {signature[:8]}...")
+                try:
+                    logger.info(f"🧩 [CALLBACK] START pipeline (async) for {signature[:8]}...")
+                    await self.trade_callback(trade_info)
+                    logger.info(f"🧩 [CALLBACK] END pipeline finished successfully for {signature[:8]}")
+                except Exception as e:
+                    logger.error(f"❌ [CALLBACK] ERROR pipeline crashed for {signature[:8]}: {e}", exc_info=True)
         except Exception as e:
             logger.error(f"❌ Error handling signature notification: {e}")
     
@@ -780,14 +796,6 @@ class WebSocketHandler:
             
         except Exception:
             return None
-    
-    async def _safe_callback(self, trade_info: Dict[str, Any]):
-        """🛡️ Safely call trade callback with error handling"""
-        try:
-            await self.trade_callback(trade_info)
-        except Exception as e:
-            logger.error(f"❌ Trade callback error: {e}")
-            logger.debug(traceback.format_exc())
     
     async def stop(self):
         """🛑 Stop WebSocket monitoring"""
