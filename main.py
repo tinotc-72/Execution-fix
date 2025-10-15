@@ -262,10 +262,9 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     
     Only executes when all required fields are truly present and valid.
     """
-    # Hard guard: only execute when we truly have the fields
-    required_ok = all(trade_info.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS")
-                      for k in ("dex", "action", "wallet_address", "token_mint"))
-    if not required_ok:
+    required = ("dex", "action", "wallet_address", "token_mint")
+    ready = all(trade_info.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS") for k in required)
+    if not ready:
         logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")
         return
     logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
