@@ -223,6 +223,30 @@ bot_instance = None
 from execution_coordinator import normalize_dex, ROUTE_MAP, maybe_execute
 
 
+def _have_all_fields(trade_info: dict) -> bool:
+    """
+    Check if trade_info has all required fields for execution.
+    
+    Accepts both "mint" and "token_mint" to avoid naming mismatches.
+    Normalizes field names by ensuring token_mint is set if mint exists.
+    
+    Args:
+        trade_info: Trade information dictionary
+        
+    Returns:
+        bool: True if all required fields are present and valid
+    """
+    # Accept both "mint" and "token_mint" to avoid naming mismatches
+    token_mint = trade_info.get("token_mint") or trade_info.get("mint")
+    dex = trade_info.get("dex")
+    action = trade_info.get("action")
+    wallet = trade_info.get("wallet_address")
+    ok = all(v not in (None, "", "unknown", "PENDING_ANALYSIS") for v in (dex, action, wallet, token_mint))
+    if ok and trade_info.get("token_mint") is None and token_mint:
+        trade_info["token_mint"] = token_mint  # normalize
+    return ok
+
+
 def merge_parsed_fields(trade_info: dict, parsed: dict) -> None:
     """
     Merge parser-detected fields into trade_info if the destination fields are empty/unknown.
@@ -261,16 +285,18 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     Route and execute trade with hard guard validation.
     
     Only executes when all required fields are truly present and valid.
+    Wraps coordinator call in try/except to log any errors.
     """
-    required = ("dex", "action", "wallet_address", "token_mint")
-    ready = all(trade_info.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS") for k in required)
-    if not ready:
+    if not _have_all_fields(trade_info):
         logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")
         return
     logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
     # Extract rpc_url from rpc_client if needed
     rpc_url = rpc.rpc_url if hasattr(rpc, 'rpc_url') else rpc
-    await maybe_execute(trade_info, rpc_url, keypair, jito_service=jito)
+    try:
+        await maybe_execute(trade_info, rpc_url, keypair, jito_service=jito)
+    except Exception as e:
+        logger.error(f"❌ [PIPELINE_EXIT] Coordinator crashed: {e}", exc_info=True)
 
 
 class SimpleCopyTradingBot:
@@ -799,9 +825,8 @@ class SimpleCopyTradingBot:
             logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
             trade_info = self.trade_processor.infer_missing_fields(trade_info)
             logger.debug(f"[DEBUG] After infer_missing_fields: {json.dumps(trade_info, default=str)}")
-            # Set use_universal_cloner flag based on field completeness (needed by maybe_execute)
-            have_all = all(trade_info.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS")
-                           for k in ("dex", "action", "token_mint"))
+            # Compute builder mode and call coordinator
+            have_all = _have_all_fields(trade_info)
             trade_info["use_universal_cloner"] = not have_all
             logger.info("✅ [MODE] Builders %s; Cloner as %s",
                         "ENABLED (complete fields)" if have_all else "DISABLED",

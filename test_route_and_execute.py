@@ -63,9 +63,9 @@ def test_hard_guard_logic():
         content = f.read()
     
     checks = [
-        ('required = ("dex", "action", "wallet_address", "token_mint")', '✅ Required fields tuple defined'),
-        ('ready = all(trade_info.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS") for k in required)', '✅ Ready validation check implemented'),
-        ('if not ready:', '✅ Validation conditional present'),
+        ('def _have_all_fields(trade_info: dict) -> bool:', '✅ _have_all_fields helper function defined'),
+        ('if not _have_all_fields(trade_info):', '✅ Validation uses _have_all_fields'),
+        ('ok = all(v not in (None, "", "unknown", "PENDING_ANALYSIS")', '✅ Field validation check implemented'),
     ]
     
     passed = 0
@@ -83,7 +83,7 @@ def test_hard_guard_logic():
 def test_emoji_logging():
     """Test that emoji logging is present"""
     print("=" * 80)
-    print("TEST 4: Emoji Logging")
+    print("TEST 4: Emoji Logging and Error Handling")
     print("=" * 80)
     
     with open('main.py', 'r') as f:
@@ -92,6 +92,8 @@ def test_emoji_logging():
     checks = [
         ('logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")', '✅ Warning log with emoji'),
         ('logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")', '✅ Info log with emoji'),
+        ('except Exception as e:', '✅ Exception handling present'),
+        ('logger.error(f"❌ [PIPELINE_EXIT] Coordinator crashed: {e}", exc_info=True)', '✅ Error logging with exc_info'),
     ]
     
     passed = 0
