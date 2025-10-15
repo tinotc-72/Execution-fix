@@ -800,19 +800,8 @@ class SimpleCopyTradingBot:
             logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
             trade_info = self.trade_processor.infer_missing_fields(trade_info)
             logger.debug(f"[DEBUG] After infer_missing_fields: {json.dumps(trade_info, default=str)}")
-            
-            # Dynamic cloner mode: After parsing + inference, right before route_and_execute
-            # Check if all critical fields are present and valid
-            have_all = all(trade_info.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS")
-                           for k in ("dex", "action", "token_mint"))
-            if have_all:
-                use_universal_cloner = False
-                logger.info("✅ [MODE] Builders enabled (complete fields). Cloner kept as fallback.")
-            else:
-                use_universal_cloner = True
-                logger.info("ℹ️ [MODE] Universal Cloner mode active (incomplete fields).")
-            trade_info["use_universal_cloner"] = use_universal_cloner
-            
+            # Set use_universal_cloner flag based on field completeness (needed by maybe_execute)
+            trade_info["use_universal_cloner"] = not all(trade_info.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS") for k in ("dex", "action", "token_mint"))
             # Immediately after inference, call execution coordinator with exact values
             await route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
             
