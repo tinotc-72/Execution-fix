@@ -3767,16 +3767,17 @@ class TradeProcessor:
         
         return None
 
-    def ensure_meta_in_trade_info(self, trade_info: dict, backfilled: dict | None) -> None:
+    def ensure_meta_in_trade_info(self, trade_info: dict) -> None:
         """
         Ensure trade_info has meta attached from backfilled transaction.
         
         Args:
             trade_info: Trade information dict
-            backfilled: Backfilled transaction data (optional)
         """
-        if trade_info.get("meta") is None and backfilled and backfilled.get("meta"):
-            trade_info["meta"] = backfilled["meta"]
+        if "meta" not in trade_info:
+            backfilled = trade_info.get("backfilled_tx")
+            if backfilled and backfilled.get("meta"):
+                trade_info["meta"] = backfilled["meta"]
 
     def annotate_source_failure(self, trade_info: dict) -> None:
         """
@@ -3826,7 +3827,7 @@ class TradeProcessor:
         logger.info("🔍 [FIELD_INFERENCE] Starting comprehensive field inference...")
         
         # 0) Make sure meta is attached (from backfill; pipeline already populates it in many cases)
-        self.ensure_meta_in_trade_info(trade_info, backfilled=trade_info.get("backfilled_tx"))
+        self.ensure_meta_in_trade_info(trade_info)
         
         # 0b) Mark error context (prevents clone of a failed tx)
         self.annotate_source_failure(trade_info)
@@ -3983,10 +3984,7 @@ class TradeProcessor:
             logger.info("🔍 [MINT_INFERENCE] Token mint missing or pending, attempting inference...")
             
             # Ensure meta is present in trade_info for inference helpers
-            if "meta" not in trade_info:
-                backfilled_tx = trade_info.get('transaction') or trade_info.get('transaction_full')
-                if backfilled_tx and backfilled_tx.get("meta"):
-                    trade_info["meta"] = backfilled_tx["meta"]
+            self.ensure_meta_in_trade_info(trade_info)
             
             # Try enhanced log extraction (primary method)
             logs = trade_info.get('logs', [])
