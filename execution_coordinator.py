@@ -1370,7 +1370,7 @@ class ExecutionCoordinator:
                 logger.info("✅ Fast executor initialized successfully")
                 return fast_executor
             except Exception:
-                logger.warning("⚠️ MeteoraFastExecutor not available - using fallback")
+                logger.info("⚠️ MeteoraFastExecutor not available - using fallback")
                 return None
         except Exception as e:
             logger.error(f"❌ Error initializing fast executor: {e}")
