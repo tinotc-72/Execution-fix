@@ -63,9 +63,9 @@ def test_hard_guard_logic():
         content = f.read()
     
     checks = [
-        ('required_ok = all(trade_info.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS")', '✅ Hard guard check implemented'),
-        ('for k in ("dex", "action", "wallet_address", "token_mint")', '✅ Checks all required fields'),
-        ('if not required_ok:', '✅ Validation conditional present'),
+        ('required = ("dex", "action", "wallet_address", "token_mint")', '✅ Required fields tuple defined'),
+        ('ready = all(trade_info.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS") for k in required)', '✅ Ready validation check implemented'),
+        ('if not ready:', '✅ Validation conditional present'),
     ]
     
     passed = 0
