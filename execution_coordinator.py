@@ -89,6 +89,8 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
     For dex=="meteora" and use_universal_cloner=True: Try builders if mint exists, else direct_copy
     For dex=="unknown" with mint: Try Jupiter → direct_copy
     
+    Always logs sanity check messages even when fields are incomplete.
+    
     Args:
         trade_info: Trade information dictionary
         rpc_url: RPC URL string
@@ -102,6 +104,14 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
     dex = (trade_info.get("dex") or "unknown").lower()
     prefer_clone = bool(trade_info.get("use_universal_cloner"))
     logger.info("🧭 [COORDINATOR] route start: dex=%s, prefer_clone=%s", dex, prefer_clone)
+    
+    # Check if we have required fields for actual execution
+    token_mint = trade_info.get("token_mint")
+    if not token_mint or token_mint in ("UNKNOWN", "PENDING_ANALYSIS", "unknown", ""):
+        logger.error("❌ [COORDINATOR] Missing or invalid token_mint, cannot execute")
+        logger.info("🧭 [ROUTE] Skipped → missing token_mint")
+        logger.error("❌ [EXECUTION] Failed: missing required fields")
+        return None
     
     async def try_submit(vtx):
         if not vtx:
