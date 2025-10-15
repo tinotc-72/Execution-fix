@@ -115,10 +115,7 @@ def test_meta_ensured_before_mint_inference():
     
     tests = [
         (r'# Ensure meta is present in trade_info for inference helpers', '✅ Has meta attachment comment'),
-        (r'if "meta" not in trade_info:', '✅ Checks if meta is missing'),
-        (r'backfilled_tx = trade_info\.get\(\'transaction\'\) or trade_info\.get\(\'transaction_full\'\)', '✅ Gets backfilled transaction'),
-        (r'if backfilled_tx and backfilled_tx\.get\("meta"\):', '✅ Checks if backfilled_tx has meta'),
-        (r'trade_info\["meta"\] = backfilled_tx\["meta"\]', '✅ Attaches meta from backfilled_tx'),
+        (r'self\.ensure_meta_in_trade_info\(trade_info\)', '✅ Calls ensure_meta_in_trade_info method'),
     ]
     
     passed = 0

@@ -23,7 +23,7 @@ def test_helpers_exist():
         content = f.read()
     
     tests = [
-        (r'def ensure_meta_in_trade_info\(self, trade_info: dict, backfilled: dict \| None\) -> None:',
+        (r'def ensure_meta_in_trade_info\(self, trade_info: dict\) -> None:',
          '✅ ensure_meta_in_trade_info method exists with correct signature'),
         (r'def annotate_source_failure\(self, trade_info: dict\) -> None:',
          '✅ annotate_source_failure method exists with correct signature'),
@@ -64,8 +64,9 @@ def test_ensure_meta_implementation():
     method = match.group(0)
     
     tests = [
-        (r'if trade_info\.get\("meta"\) is None', '✅ Checks if meta is missing'),
-        (r'and backfilled and backfilled\.get\("meta"\)', '✅ Checks backfilled has meta'),
+        (r'if "meta" not in trade_info:', '✅ Checks if meta is missing'),
+        (r'backfilled = trade_info\.get\("backfilled_tx"\)', '✅ Gets backfilled_tx from trade_info'),
+        (r'if backfilled and backfilled\.get\("meta"\):', '✅ Checks backfilled has meta'),
         (r'trade_info\["meta"\] = backfilled\["meta"\]', '✅ Attaches meta from backfilled'),
     ]
     
@@ -151,8 +152,8 @@ def test_helpers_called_at_start():
     
     tests = [
         (r'# 0\) Make sure meta is attached', '✅ Has comment for step 0'),
-        (r'self\.ensure_meta_in_trade_info\(trade_info, backfilled=trade_info\.get\("backfilled_tx"\)\)',
-         '✅ Calls ensure_meta_in_trade_info with backfilled_tx'),
+        (r'self\.ensure_meta_in_trade_info\(trade_info\)',
+         '✅ Calls ensure_meta_in_trade_info'),
         (r'# 0b\) Mark error context', '✅ Has comment for step 0b'),
         (r'self\.annotate_source_failure\(trade_info\)', '✅ Calls annotate_source_failure'),
     ]
