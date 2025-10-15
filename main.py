@@ -799,8 +799,9 @@ class SimpleCopyTradingBot:
                     logger.warning(f"⚠️ Unknown action '{likely_action}' - proceeding with full analysis")
 
             # 🚀 FALLBACK: Full analysis if immediate copy not possible
-            if trade_info.get('requires_analysis'):
-                logger.debug(f"[DEBUG] requires_analysis: {trade_info.get('requires_analysis')}")
+            # Support both requires_analysis and requires_full_analysis field names
+            if trade_info.get('requires_analysis') or trade_info.get('requires_full_analysis'):
+                logger.debug(f"[DEBUG] requires_analysis: {trade_info.get('requires_analysis')}, requires_full_analysis: {trade_info.get('requires_full_analysis')}")
                 signature = trade_info.get('signature')
                 wallet_address = trade_info.get('wallet_address')
                 logger.debug(f"[DEBUG] Starting simple_trade_analysis for signature={signature}, wallet_address={wallet_address}")

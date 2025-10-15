@@ -24,8 +24,8 @@ def test_no_early_return_on_analysis_failure():
     with open('main.py', 'r') as f:
         main = f.read()
     
-    # Find the requires_analysis block
-    pattern = r"if trade_info\.get\('requires_analysis'\):.*?# DO NOT return here"
+    # Find the requires_analysis block (now checks both field names)
+    pattern = r"if trade_info\.get\('requires_analysis'\) or trade_info\.get\('requires_full_analysis'\):.*?# DO NOT return here"
     match = re.search(pattern, main, re.DOTALL)
     
     if not match:
@@ -85,7 +85,7 @@ def test_coordinator_handoff_always_called():
         main = f.read()
     
     # Find the pattern: requires_analysis block followed by route_and_execute
-    pattern = r"if trade_info\.get\('requires_analysis'\):.*?# DO NOT return here.*?await route_and_execute"
+    pattern = r"if trade_info\.get\('requires_analysis'\) or trade_info\.get\('requires_full_analysis'\):.*?# DO NOT return here.*?await route_and_execute"
     match = re.search(pattern, main, re.DOTALL)
     
     if not match:
@@ -124,7 +124,7 @@ def test_analysis_failure_handling():
         main = f.read()
     
     # Find the requires_analysis block
-    pattern = r"if trade_info\.get\('requires_analysis'\):.*?# DO NOT return here"
+    pattern = r"if trade_info\.get\('requires_analysis'\) or trade_info\.get\('requires_full_analysis'\):.*?# DO NOT return here"
     match = re.search(pattern, main, re.DOTALL)
     
     if not match:
@@ -176,14 +176,14 @@ def test_refactored_pattern_matches_problem_statement():
     #         logger.warning(f"⚠️ Deep analysis scheduling failed: {e}")
     #     # DO NOT return here — still attempt fast path execution if fields are ready
     
-    # We use requires_analysis instead of requires_full_analysis
+    # We support both requires_analysis and requires_full_analysis
     # We use simple_trade_analysis instead of schedule_deep_analysis
     # But the pattern should be the same
     
     tests = [
         (
-            r"if trade_info\.get\('requires_analysis'\):",
-            "✅ Checks for requires_analysis flag"
+            r"if trade_info\.get\('requires_analysis'\) or trade_info\.get\('requires_full_analysis'\):",
+            "✅ Checks for both requires_analysis and requires_full_analysis flags"
         ),
         (
             r"try:.*simple_trade_analysis.*except Exception",
