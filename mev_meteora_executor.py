@@ -149,31 +149,21 @@ FEE_RECIPIENT_WRITABLE = PublicKey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV1T6
 logger = logging.getLogger(__name__)
 
 DEFAULT_PRIORITY_FEE = 2_000_000  # 2M micro-lamports (protocol-compliant)
-# Try to import JitoClient from the correct module, create placeholder if not available
+# (removed) legacy Bundle imports — submissions are unified via FastExecutor
+# JitoClient is available from jito_service module when needed by FastExecutor
 try:
     from jito_service import JitoClient
-    from models import Bundle, Transaction as BundleTransaction
     JITO_AVAILABLE = True
     logger.info("✅ Jito service available - MEV protection ready for Meteora")
 except ImportError:
     try:
         from .jito_service import JitoClient
-        from .models import Bundle, Transaction as BundleTransaction
         JITO_AVAILABLE = True
         logger.info("✅ Jito service available - MEV protection ready for Meteora")
     except ImportError:
         logger.warning("⚠️ JitoClient not available - MEV protection disabled")
         JITO_AVAILABLE = False
-        class JitoClient:
-            """Placeholder JitoClient for testing"""
-            async def send_bundle(self, bundle):
-                return None
-            
-            async def initialize(self):
-                pass
-            
-            async def close(self):
-                pass
+        # (removed) placeholder legacy JitoClient bundle stub — use jito_service.JitoClient instead
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
