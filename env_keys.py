@@ -194,9 +194,14 @@ class EnvKeys:
         self.BULLX_NEO_PRIVATE_KEY_QM = os.getenv("BULLX_NEO_PRIVATE_KEY_QM", "")
 
         # === Jito Settings ===
-        self.JITO_UUID = os.getenv('JITO_UUID')
-        self.JITO_AUTH_TOKEN = os.getenv('JITO_AUTH_TOKEN')
-        self.JITO_BUNDLE_ENDPOINT = os.getenv('JITO_BUNDLE_ENDPOINT')
+        # JITO_UUID is the primary auth token for Jito Block Engine
+        self.JITO_UUID = os.getenv('JITO_UUID', '').strip()
+        # JITO_AUTH_TOKEN is an optional alternative auth token
+        self.JITO_AUTH_TOKEN = os.getenv('JITO_AUTH_TOKEN', '').strip()
+        # Use JITO_UUID as primary, fallback to JITO_AUTH_TOKEN if not set
+        if not self.JITO_UUID and self.JITO_AUTH_TOKEN:
+            self.JITO_UUID = self.JITO_AUTH_TOKEN
+        self.JITO_BUNDLE_ENDPOINT = os.getenv('JITO_BUNDLE_ENDPOINT', 'https://mainnet.block-engine.jito.wtf').strip()
 
         # === Jupiter API Settings ===
         # Updated to use current working Jupiter API v6 endpoints

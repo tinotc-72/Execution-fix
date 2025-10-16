@@ -12,7 +12,15 @@ from solders.transaction import Transaction, VersionedTransaction
 from solders.message import MessageV0
 from solders.instruction import CompiledInstruction, Instruction
 from solders.hash import Hash
-from jito_service import JitoClient, Bundle  # Import Bundle directly from jito_client
+from models import Bundle  # Bundle is always available from models
+
+# Make Jito imports optional
+try:
+    from jito_service import JitoClient
+    JITO_AVAILABLE = True
+except ImportError:
+    JITO_AVAILABLE = False
+    JitoClient = None
 
 # ✅ ENHANCED JITO INTEGRATION - Import Jupiter utilities for Jito transaction building
 try:
@@ -65,7 +73,11 @@ class FastExecutor:
         self.keypair = keypair
         self.session = None
         self.helius_url = rpc_url if rpc_url else HELIUS_RPC_URL
-        self.jito_client = jito_client if jito_client else JitoClient()
+        # Initialize Jito client only if available
+        if JITO_AVAILABLE:
+            self.jito_client = jito_client if jito_client else (JitoClient() if JitoClient else None)
+        else:
+            self.jito_client = None
         
         # ✅ ENHANCED JITO SERVICE INTEGRATION from main.py
         self.jito_service = jito_service
@@ -85,11 +97,15 @@ class FastExecutor:
         }
         
         print(f"🔐 Initializing FastExecutor with wallet: {keypair.pubkey()}")
-        print(f"🌍 Using Jito endpoint: {self.jito_endpoint}")
-        print(f"🔑 Auth configured: {JITO_AUTH_TOKEN[:8]}...")
-        print(f"🚀 Jupiter utilities: {'Available' if self.jupiter_available else 'Fallback mode'}")
-        print(f"⚡ Enhanced Jito: {'Available' if self.jito_enhanced_available else 'Basic mode'}")
-        print("💫 MEV Protection: Enabled (Official Jito Configuration)")
+        if JITO_AVAILABLE:
+            print(f"🌍 Using Jito endpoint: {self.jito_endpoint}")
+            print(f"🔑 Auth configured: {JITO_AUTH_TOKEN[:8] if JITO_AUTH_TOKEN else 'None'}...")
+            print(f"🚀 Jupiter utilities: {'Available' if self.jupiter_available else 'Fallback mode'}")
+            print(f"⚡ Enhanced Jito: {'Available' if self.jito_enhanced_available else 'Basic mode'}")
+            print("💫 MEV Protection: Enabled (Official Jito Configuration)")
+        else:
+            print("📡 Jito not available - using pure RPC path")
+            print(f"🔗 RPC URL: {self.helius_url}")
 
     def _get_jito_endpoint(self, region: str) -> str:
         """Get the appropriate Jito endpoint based on region - per official docs"""
@@ -106,6 +122,11 @@ class FastExecutor:
 
     async def get_official_tip_accounts(self) -> List[str]:
         """Get official tip accounts from Jito API - per docs.jito.wtf/getTipAccounts"""
+        # If Jito is not available, return hardcoded accounts
+        if not JITO_AVAILABLE:
+            print(f"ℹ️ Jito not available - using hardcoded tip accounts")
+            return [str(account) for account in VALID_JITO_TIP_ACCOUNTS]
+            
         try:
             print(f"📡 Fetching official tip accounts from Jito API...")
             
@@ -193,16 +214,23 @@ class FastExecutor:
                 print(f"❌ Enhanced Jito Service initialization error: {e}")
                 print("⚠️ Falling back to basic Jito client")
         
-        # ✅ FETCH OFFICIAL TIP ACCOUNTS per docs.jito.wtf
-        await self.get_official_tip_accounts()
-        
-        # ✅ GET CURRENT TIP INFORMATION for better bidding
-        await self.get_current_tip_floor()
-        
-        print("✅ FastExecutor session initialized with official Jito configuration")
+        # ✅ FETCH OFFICIAL TIP ACCOUNTS per docs.jito.wtf (only if Jito available)
+        if JITO_AVAILABLE:
+            await self.get_official_tip_accounts()
+            
+            # ✅ GET CURRENT TIP INFORMATION for better bidding
+            await self.get_current_tip_floor()
+            
+            print("✅ FastExecutor session initialized with official Jito configuration")
+        else:
+            print("✅ FastExecutor session initialized (pure RPC mode - no Jito)")
 
     async def create_jito_bundle(self, tx: VersionedTransaction, custom_tip: int = None) -> Optional[Bundle]:
         """Create a Jito bundle following official docs.jito.wtf requirements"""
+        if not JITO_AVAILABLE:
+            print("ℹ️ Jito not available - returning simple bundle without tip")
+            return Bundle(transactions=[tx])
+            
         try:
             if not isinstance(tx, VersionedTransaction):
                 print(f"❌ Invalid transaction type: {type(tx)}")
@@ -662,6 +690,11 @@ class FastExecutor:
             print(f"💰 Fee payer: {self.keypair.pubkey()}")
             print(f"📝 Transaction size: {len(bytes(tx))} bytes")
 
+            # If Jito is not available, go straight to RPC
+            if not JITO_AVAILABLE:
+                print("📡 Jito not available - using pure RPC path")
+                return await self._submit_to_rpc(tx)
+
             # ✅ PRIORITY 1: Enhanced Jito Service (from main.py integration)
             if self.jito_service and self.jito_enhanced_initialized:
                 try:
@@ -683,22 +716,23 @@ class FastExecutor:
                     print(f"📡 Falling back to official Jito Bundle API...")
 
             # ✅ PRIORITY 2: Official Jito Bundle Submission - Following docs.jito.wtf
-            try:
-                print("\n📦 Submitting to Official Jito Bundle API...")
-                print(f"Bundle type: {type(bundle)}")
-                print(f"Bundle size: {len(bundle.transactions)} transactions")
-                
-                # Use official Jito bundle submission
-                success = await self._submit_jito_bundle_official(bundle)
-                if success:
-                    print(f"✅ Bundle submitted successfully via Official Jito API")
-                    return "bundle_submitted"  # Bundle doesn't return individual tx signature
-                else:
-                    print(f"❌ Official Jito bundle submission failed")
+            if JITO_AVAILABLE:
+                try:
+                    print("\n📦 Submitting to Official Jito Bundle API...")
+                    print(f"Bundle type: {type(bundle)}")
+                    print(f"Bundle size: {len(bundle.transactions)} transactions")
                     
-            except Exception as e:
-                print(f"⚠️ Official Jito bundle submission failed: {str(e)}")
-                traceback.print_exc()
+                    # Use official Jito bundle submission
+                    success = await self._submit_jito_bundle_official(bundle)
+                    if success:
+                        print(f"✅ Bundle submitted successfully via Official Jito API")
+                        return "bundle_submitted"  # Bundle doesn't return individual tx signature
+                    else:
+                        print(f"❌ Official Jito bundle submission failed")
+                        
+                except Exception as e:
+                    print(f"⚠️ Official Jito bundle submission failed: {str(e)}")
+                    traceback.print_exc()
 
             # Fallback to RPC
             print("\n📡 Falling back to regular RPC submission...")
@@ -878,7 +912,8 @@ class FastExecutor:
         """Close the sessions"""
         if self.session:
             await self.session.close()
-            await self.jito_client.close()
+            if self.jito_client and hasattr(self.jito_client, 'close'):
+                await self.jito_client.close()
             self.session = None
             print("👋 FastExecutor session closed")
     

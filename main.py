@@ -689,8 +689,20 @@ class SimpleCopyTradingBot:
         if self.config.use_jito and JITO_AVAILABLE:
             try:
                 logger.info("🚀 Initializing Jito service for MEV protection...")
-                self.jito_service = JitoClient()
-                logger.info("✅ Jito service initialized - transactions will use MEV protection")
+                # Get auth token from EnvKeys (JITO_UUID or JITO_AUTH_TOKEN)
+                from env_keys import kz
+                auth_token = kz.JITO_UUID or kz.JITO_AUTH_TOKEN
+                block_engine_base = kz.JITO_BUNDLE_ENDPOINT or "https://mainnet.block-engine.jito.wtf"
+                
+                # Initialize with proper parameters
+                self.jito_service = JitoClient(auth_token=auth_token, block_engine_base=block_engine_base)
+                
+                if auth_token:
+                    logger.info(f"✅ Jito service initialized with auth token: {auth_token[:8]}...")
+                else:
+                    logger.info("✅ Jito service initialized without auth token (default rate limits)")
+                logger.info(f"   Block engine: {block_engine_base}")
+                logger.info("   Transactions will use MEV protection")
             except Exception as jito_init_error:
                 logger.error(f"❌ Failed to initialize Jito service: {jito_init_error}")
                 import traceback
