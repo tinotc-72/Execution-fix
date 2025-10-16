@@ -14,6 +14,10 @@ from solders.instruction import Instruction, AccountMeta
 from solders.system_program import ID as SYS_PROGRAM_ID
 from solders.compute_budget import ID as COMPUTE_BUDGET_ID
 
+def _as_mint_str(m) -> str:
+    """Coerce any Pubkey or object to string for safe use in API calls."""
+    return str(m) if not isinstance(m, Pubkey) else str(m)
+
 from env_keys import EnvKeys
 from utils import (
     RPCClient,
@@ -86,6 +90,10 @@ def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps:
     """
     import traceback
     
+    # Coerce mints to strings before any processing
+    input_mint = _as_mint_str(input_mint)
+    output_mint = _as_mint_str(output_mint)
+    
     logger.info(f"[JUPITER_QUOTE] 🔍 Requesting quote...")
     logger.debug(f"[JUPITER_QUOTE] Input mint: {input_mint}")
     logger.debug(f"[JUPITER_QUOTE] Output mint: {output_mint}")
@@ -132,6 +140,12 @@ def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps:
                 response.raise_for_status()  # Official: Raise for HTTP errors
                 
                 data = response.json()
+                
+                # Check if route is None or not a dict before accessing .keys()
+                if not isinstance(data, dict):
+                    logger.error("[JUPITER_QUOTE] no route; endpoints failed")
+                    return None
+                
                 logger.debug(f"[JUPITER_QUOTE] Response data keys: {list(data.keys())}")
                 
                 if 'error' in data:
