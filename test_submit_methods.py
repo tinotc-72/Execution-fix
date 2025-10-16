@@ -211,7 +211,8 @@ def test_jito_client_send_transaction_usage():
         # Check for JitoClient.send_transaction call
         patterns = [
             "result = await self.jito_client.send_transaction(signed_tx_bytes)",
-            'signature = result.get("signature")',
+            '# JSON-RPC shape: {"jsonrpc":"2.0","id":1,"result":"<signature>"}',
+            'signature = result.get("result")',
         ]
         
         for pattern in patterns:
