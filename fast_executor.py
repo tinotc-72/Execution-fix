@@ -1,5 +1,8 @@
 # fast_executor.py - Jito JSON-RPC Client Integration
 
+import pathlib
+print(f"[FAST_EXECUTOR] using: {pathlib.Path(__file__).resolve()}")
+
 import httpx
 import asyncio
 import aiohttp
