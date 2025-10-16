@@ -348,6 +348,27 @@ def build_sell_tx(token_mint: str, wallet: Keypair, slippage: float = 3.0) -> Ve
     return VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
 
 
+def build_and_sign(trade_info: dict, rpc: str, keypair: Keypair) -> VersionedTransaction:
+    """
+    Build and sign a Jupiter swap transaction.
+    
+    Args:
+        trade_info: Dictionary containing token_mint and amount_sol
+        rpc: RPC URL (unused, kept for API compatibility)
+        keypair: Wallet keypair for signing
+    
+    Returns:
+        VersionedTransaction ready to submit
+    """
+    token_mint = trade_info.get("token_mint")
+    amount_sol = trade_info.get("amount_sol", 0.001)
+    
+    if not token_mint:
+        raise ValueError("token_mint is required in trade_info")
+    
+    return build_buy_tx(token_mint, amount_sol, keypair)
+
+
 class MEVJupiterExecutor:
     """
     Jupiter aggregator executor implementing official Solana best practices.
