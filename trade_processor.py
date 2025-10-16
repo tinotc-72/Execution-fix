@@ -740,6 +740,71 @@ class TradeProcessor:
             else:
                 logger.warning(f"⚠️ [ENHANCED_DEX] Could not detect DEX - using fallback")
             
+            # === JUPITER-SPECIFIC TOKEN MINT INFERENCE ===
+            # When dex is 'jupiter', if token_mint is missing but postTokenBalances are present,
+            # set token_mint to the non-WSOL mint with the largest positive delta (post - pre).
+            # If no positive deltas, leave token_mint=None and let the Jupiter executor default to an input-only swap.
+            if (trade_info.get('dex_type') == 'jupiter' and 
+                token_mint in ['UNKNOWN', 'PENDING_ANALYSIS', None, '']):
+                
+                logger.info(f"🎯 [JUPITER_MINT_INFERENCE] Attempting Jupiter-specific token mint inference...")
+                
+                try:
+                    meta = trade_info.get('meta') or (trade_info.get('transaction_full', {}) or {}).get('meta', {})
+                    
+                    if meta:
+                        pre_token_balances = meta.get('preTokenBalances', [])
+                        post_token_balances = meta.get('postTokenBalances', [])
+                        
+                        if post_token_balances:
+                            logger.debug(f"[JUPITER_MINT_INFERENCE] Found {len(post_token_balances)} postTokenBalances")
+                            
+                            # Build pre-balance map by (owner, mint)
+                            pre_map = {}
+                            for balance in pre_token_balances:
+                                owner = balance.get('owner')
+                                mint = balance.get('mint')
+                                amount = float(balance.get('uiTokenAmount', {}).get('uiAmount') or 0)
+                                if owner and mint:
+                                    pre_map[(owner, mint)] = amount
+                            
+                            # Calculate deltas and find the non-WSOL mint with largest positive delta
+                            WSOL = "So11111111111111111111111111111111111111112"
+                            best_mint = None
+                            best_delta = 0.0
+                            
+                            for balance in post_token_balances:
+                                owner = balance.get('owner')
+                                mint = balance.get('mint')
+                                post_amount = float(balance.get('uiTokenAmount', {}).get('uiAmount') or 0)
+                                
+                                if mint and mint != WSOL:
+                                    pre_amount = pre_map.get((owner, mint), 0)
+                                    delta = post_amount - pre_amount
+                                    
+                                    # Only consider positive deltas (tokens acquired)
+                                    if delta > best_delta:
+                                        best_delta = delta
+                                        best_mint = mint
+                                        logger.debug(f"[JUPITER_MINT_INFERENCE] Found candidate: {mint[:8]}... with delta +{delta:.6f}")
+                            
+                            if best_mint:
+                                token_mint = best_mint
+                                trade_info['token_mint'] = best_mint
+                                logger.info(f"✅ [JUPITER_MINT_INFERENCE] Set token_mint to {best_mint[:8]}... (largest positive delta: +{best_delta:.6f})")
+                            else:
+                                # No positive deltas found - leave token_mint=None for input-only swap
+                                logger.info(f"⚠️ [JUPITER_MINT_INFERENCE] No positive deltas found - leaving token_mint=None for input-only swap")
+                                token_mint = None
+                                trade_info['token_mint'] = None
+                        else:
+                            logger.debug(f"[JUPITER_MINT_INFERENCE] No postTokenBalances available")
+                    else:
+                        logger.debug(f"[JUPITER_MINT_INFERENCE] No meta information available")
+                        
+                except Exception as e:
+                    logger.error(f"❌ [JUPITER_MINT_INFERENCE] Exception during Jupiter mint inference: {e}")
+            
             # === MINT/ACTION UNCERTAINTY DEBUGGING ===
             if action == 'unknown' or token_mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
                 logger.error(f"❌ [UNCERTAINTY] Final action/mint still uncertain: action={action}, token_mint={token_mint}")
