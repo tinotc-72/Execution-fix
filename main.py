@@ -783,7 +783,8 @@ class SimpleCopyTradingBot:
             if 'transaction' in trade_info:
                 # Parse and decode transaction before analysis/execution
                 logger.debug(f"[PIPELINE_ENTRY] Parsing transaction with wallet_tx_parser...")
-                parsed_tx = self.tx_parser.parse_transaction(trade_info['transaction'])
+                # Pass trade_info which contains both transaction and meta
+                parsed_tx = self.tx_parser.parse_transaction(trade_info)
                 trade_info['parsed_tx'] = parsed_tx
                 logger.debug(f"[PIPELINE_ENTRY] ✅ Transaction parsed successfully")
                 # Merge parser-detected fields into trade_info before any defaulting logic
@@ -939,6 +940,21 @@ class SimpleCopyTradingBot:
                     return  # Return without marking as skipped
                 
                 logger.info("✅ [BACKFILL] Backfill succeeded — proceeding to validation")
+                
+                # Parse the newly backfilled transaction and merge fields
+                try:
+                    if 'transaction' in trade_info:
+                        logger.debug(f"[BACKFILL] Parsing backfilled transaction...")
+                        # Pass both transaction and meta to parser as per problem statement
+                        tx_with_meta = {
+                            "transaction": trade_info.get("transaction", {}),
+                            "meta": trade_info.get("meta")
+                        }
+                        parsed = self.tx_parser.parse_transaction(tx_with_meta)
+                        merge_parsed_fields(trade_info, parsed)
+                        logger.debug(f"[BACKFILL] ✅ Merged fields from backfilled transaction")
+                except Exception as e:
+                    logger.error(f"[BACKFILL] ❌ Error parsing backfilled transaction: {e}")
             
             # STEP 1: Infer missing fields before validation
             logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
