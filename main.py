@@ -969,16 +969,17 @@ class SimpleCopyTradingBot:
                 except Exception as e:
                     logger.warning(f"⚠️ deep analysis scheduling failed: {e}")
             
-            # Compute per-trade mode and call the coordinator
+            # Check if we have all required fields and call coordinator
             have_all = _have_all_fields(trade_info)
+            trade_info["token_mint"] = trade_info.get("token_mint") or trade_info.get("mint")
             trade_info["use_universal_cloner"] = not have_all
-            logger.info("✅ [MODE] Builders %s; Cloner as %s",
-                        "ENABLED (complete fields)" if have_all else "DISABLED",
-                        "fallback" if have_all else "PRIMARY")
-            
-            logger.info("📤 [HANDOFF] Calling coordinator now…")
-            await route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
-            logger.info("📥 [HANDOFF] Coordinator call returned")
+            if have_all:
+                logger.info("🧭 [PIPELINE_EXIT] Final fields ready → coordinator")
+                # Extract rpc_url from rpc_client if needed
+                rpc_url = self.rpc_client.rpc_url if hasattr(self.rpc_client, 'rpc_url') else self.rpc_client
+                await maybe_execute(trade_info, rpc_url, self.wallet, jito_service=self.jito_service)
+            else:
+                logger.warning("🛑 [PIPELINE_EXIT] Incomplete fields")
             
             # STEP 2: Validate and process
             logger.debug(f"[DEBUG] Before validate_trade_info: {json.dumps(trade_info, default=str)}")
