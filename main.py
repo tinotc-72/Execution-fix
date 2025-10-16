@@ -223,28 +223,21 @@ bot_instance = None
 from execution_coordinator import normalize_dex, ROUTE_MAP, maybe_execute
 
 
-def _have_all_fields(trade_info: dict) -> bool:
+def _have_all_fields(ti):
     """
     Check if trade_info has all required fields for execution.
     
-    Accepts both "mint" and "token_mint" to avoid naming mismatches.
-    Normalizes field names by ensuring token_mint is set if mint exists.
+    Returns True only if dex, action, wallet_address are all present and valid,
+    AND token_mint (or mint) is present.
     
     Args:
-        trade_info: Trade information dictionary
+        ti: Trade information dictionary
         
     Returns:
         bool: True if all required fields are present and valid
     """
-    # Accept both "mint" and "token_mint" to avoid naming mismatches
-    token_mint = trade_info.get("token_mint") or trade_info.get("mint")
-    dex = trade_info.get("dex")
-    action = trade_info.get("action")
-    wallet = trade_info.get("wallet_address")
-    ok = all(v not in (None, "", "unknown", "PENDING_ANALYSIS") for v in (dex, action, wallet, token_mint))
-    if ok and trade_info.get("token_mint") is None and token_mint:
-        trade_info["token_mint"] = token_mint  # normalize
-    return ok
+    tok = ti.get("token_mint") or ti.get("mint")
+    return all(ti.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS") for k in ("dex","action","wallet_address")) and bool(tok)
 
 
 def merge_parsed_fields(trade_info: dict, parsed: dict) -> None:
