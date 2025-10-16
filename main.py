@@ -297,6 +297,73 @@ def schedule_deep_analysis(trade_info: dict):
     pass
 
 
+async def try_backfill(trade_info: dict, rpc_client) -> bool:
+    """
+    Try to backfill missing signature and transaction data.
+    
+    This function attempts to fetch the latest transaction signature and full transaction
+    data when trade_info is missing a signature (common for websocket_account_change events).
+    
+    Args:
+        trade_info: Trade information dictionary that may be missing signature
+        rpc_client: RPC client for fetching signature and transaction data
+        
+    Returns:
+        bool: True if signature exists or was successfully backfilled, False otherwise
+    """
+    # If signature already exists, return True immediately
+    sig = (trade_info.get("signature") or "").strip()
+    if sig and sig != "unknown":
+        logger.debug(f"[BACKFILL] Signature already present: {sig[:12]}...")
+        return True
+    
+    # Get wallet address for backfill
+    wallet_address = trade_info.get("wallet_address")
+    if not wallet_address:
+        logger.warning("⏳ [BACKFILL] No wallet address — cannot backfill")
+        return False
+    
+    try:
+        # Import backfill_latest_tx from websocket_handler
+        from websocket_handler import backfill_latest_tx
+        
+        # Get RPC URL from client
+        rpc_url = rpc_client.rpc_url if hasattr(rpc_client, 'rpc_url') else str(rpc_client)
+        
+        # Fetch latest signature via RPC
+        logger.info(f"🔍 [BACKFILL] Attempting to fetch latest signature for wallet {wallet_address[:12]}...")
+        backfill_result = await backfill_latest_tx(rpc_url, wallet_address)
+        
+        if not backfill_result:
+            logger.info("⏳ [BACKFILL] No recent signature — waiting for logs event")
+            return False
+        
+        # Check if we got a signature
+        signature = backfill_result.get("signature")
+        if not signature:
+            logger.info("⏳ [BACKFILL] No recent signature — waiting for logs event")
+            return False
+        
+        # Check if transaction data is available
+        transaction = backfill_result.get("transaction")
+        if not transaction:
+            logger.info("⏳ [BACKFILL] getTransaction returned None — waiting for logs event")
+            return False
+        
+        # Successfully backfilled - attach all data to trade_info
+        trade_info["signature"] = signature
+        trade_info["transaction"] = transaction
+        trade_info["meta"] = backfill_result.get("meta")
+        trade_info["logs"] = backfill_result.get("logs", [])
+        
+        logger.info(f"✅ [BACKFILL] Successfully backfilled signature {signature[:12]}... with transaction data")
+        return True
+        
+    except Exception as e:
+        logger.warning(f"⏳ [BACKFILL] Backfill failed: {e} — waiting for logs event")
+        return False
+
+
 async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     """
     Route and execute trade with hard guard validation.
@@ -859,6 +926,20 @@ class SimpleCopyTradingBot:
                         logger.warning(f"⚠️ Deep analysis scheduling failed: {e}")
                     # DO NOT return here — still attempt fast path execution if fields are ready
 
+            # STEP 0: For websocket_account_change, try backfill before proceeding
+            detection_method = trade_info.get("detection_method", "")
+            if detection_method == "websocket_account_change":
+                logger.info("🔍 [BACKFILL] websocket_account_change detected — attempting backfill...")
+                backfill_success = await try_backfill(trade_info, self.rpc_client)
+                
+                if not backfill_success:
+                    # Backfill failed, log and wait for subsequent logs event
+                    logger.info("⏳ [BACKFILL] Backfill failed — waiting for subsequent websocket_logs event")
+                    logger.info("ℹ️ [PIPELINE] Not marking as skipped to allow logs event to proceed")
+                    return  # Return without marking as skipped
+                
+                logger.info("✅ [BACKFILL] Backfill succeeded — proceeding to validation")
+            
             # STEP 1: Infer missing fields before validation
             logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
             trade_info = self.trade_processor.infer_missing_fields(trade_info)
