@@ -74,6 +74,9 @@ import signal
 import sys
 import traceback
 import time
+import os
+import inspect
+import pathlib
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
@@ -87,17 +90,37 @@ from utils import get_transaction_with_logs, load_keypair, RPCClient
 # Import specialized modules
 from copy_trade_logger import get_copy_trade_logger
 
-# Import execution coordinator for trading
-from execution_coordinator import ExecutionCoordinator
+# Import transaction cloner
 from transaction_cloner import TransactionCloner
 
 # Import trade processor for clean logic separation
-
 from trade_processor import TradeProcessor
 from wallet_tx_parser import WalletTransactionParser
 
-# Import core services
+# Runtime diagnostics to detect stale module imports
+def _origin(mod):
+    try:
+        return pathlib.Path(inspect.getfile(mod)).resolve()
+    except Exception:
+        return None
 
+def _warn_origin(name, mod, repo_root: pathlib.Path):
+    p = _origin(mod)
+    print(f"[RUNTIME] {name} path: {p}")
+    if p and repo_root not in p.parents and p != repo_root:
+        print(f"[RUNTIME][WARN] {name} is being imported from OUTSIDE repo: {p}")
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent
+
+# Import core services with diagnostics
+import fast_executor, jito_service, env_keys, execution_coordinator
+_warn_origin("fast_executor", fast_executor, REPO_ROOT)
+_warn_origin("jito_service", jito_service, REPO_ROOT)
+_warn_origin("env_keys", env_keys, REPO_ROOT)
+_warn_origin("execution_coordinator", execution_coordinator, REPO_ROOT)
+
+# Import execution coordinator for trading
+from execution_coordinator import ExecutionCoordinator
 
 try:
     from env_keys import EnvKeys
