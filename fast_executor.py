@@ -61,7 +61,8 @@ JITO_MAINNET_ENDPOINT = "https://mainnet.block-engine.jito.wtf"
 JITO_LONDON_ENDPOINT = "https://london.mainnet.block-engine.jito.wtf"  # Closest to user location
 JITO_BUNDLE_ENDPOINT = "/api/v1/bundles"
 JITO_TRANSACTION_ENDPOINT = "/api/v1/transactions"
-JITO_TIP_ACCOUNTS_ENDPOINT = "/api/v1/getTipAccounts"
+# Tip accounts are fetched via JSON-RPC method 'getTipAccounts' on /api/v1/bundles
+JITO_TIP_ACCOUNTS_ENDPOINT = None  # unused; logic lives in JitoClient.get_tip_accounts()
 
 # ✅ MINIMUM TIP REQUIREMENTS - Per Jito Documentation
 MIN_JITO_TIP_LAMPORTS = 1000  # Minimum 1000 lamports per docs
@@ -148,7 +149,7 @@ class FastExecutor:
             }
             
             async with self.session.post(
-                f"{self.jito_endpoint}{JITO_TIP_ACCOUNTS_ENDPOINT}",
+                f"{self.jito_endpoint}{JITO_BUNDLE_ENDPOINT}",
                 json=payload,
                 headers=self.jito_headers,
                 timeout=aiohttp.ClientTimeout(total=5)
