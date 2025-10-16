@@ -1,270 +1,295 @@
-# Executor Integration Fixes - Before & After
+# Executor Fixes: Before & After Comparison
 
-## Visual Summary
+## 1. mev_jupiter_executor.py Changes
 
-### ❌ BEFORE (Runtime Errors)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    EXECUTOR FAILURES                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  1. Jupiter Executor                                        │
-│     ❌ AttributeError: 'CopyTradeConfig' has no            │
-│        attribute 'setdefault'                               │
-│     → config.setdefault('min_sol_amount', 0.001) fails     │
-│                                                             │
-│  2. Raydium Executor                                        │
-│     ❌ AttributeError: 'ExecutionCoordinator' has no       │
-│        attribute '_submit_with_retries'                     │
-│     → Retry logic completely missing                        │
-│                                                             │
-│  3. Advanced MEV Bot Executor                               │
-│     ❌ AttributeError: 'AdvancedMEVTradeResult' has no     │
-│        attribute 'get'                                      │
-│     → result.get('success') fails on dataclass             │
-│     ❌ TypeError: MEVAdvancedBotExecutor() expects         │
-│        Keypair, got WalletWithSign                          │
-│                                                             │
-│  4. Meteora Executor                                        │
-│     ⚠️  Missing source transaction signature               │
-│     → No extraction from trade_info                         │
-│     → Execution without transaction context                 │
-│                                                             │
-│  5. General Error Handling                                  │
-│     ❌ AttributeError: 'ExecutionCoordinator' has no       │
-│        attribute 'exec_err'                                 │
-│     → self.exec_err() fails (it's module-level)            │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### ✅ AFTER (All Fixed)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                 ALL EXECUTORS WORKING                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  1. Jupiter Executor ✅                                     │
-│     config.get('min_sol_amount', 0.001)        → Works!    │
-│     config.setdefault('test', 'value')         → Works!    │
-│     config['custom_field'] = 'value'           → Works!    │
-│     Dict-like methods: get, __getitem__,                    │
-│     __setitem__, setdefault                                 │
-│                                                             │
-│  2. Raydium Executor ✅                                     │
-│     _submit_with_retries implemented with:                  │
-│     • Configurable max_retries (default: 3)                │
-│     • Configurable retry_delay (default: 1.0s)             │
-│     • Async sleep between retries                          │
-│     • Comprehensive error logging                          │
-│     • Returns standardized error dict                      │
-│                                                             │
-│  3. Advanced MEV Bot Executor ✅                            │
-│     Keypair Extraction:                                     │
-│     • wallet_keypair = self._get_keypair()                 │
-│     • Properly extracts from WalletWithSign                │
-│     Result Access:                                          │
-│     • result.success    (dot notation)                     │
-│     • result.signature  (dot notation)                     │
-│     • result.error      (dot notation)                     │
-│                                                             │
-│  4. Meteora Executor ✅                                     │
-│     Source transaction extraction:                          │
-│     1. trade_info.get('signature')  (primary)              │
-│     2. kwargs.get('original_signature')  (fallback)        │
-│     3. Warning logged if missing                           │
-│                                                             │
-│  5. General Error Handling ✅                               │
-│     exec_err("executor", "message")  → Works!              │
-│     Module-level function usage                            │
-│     Standardized error format:                             │
-│     {'success': False, 'executor': '...', 'error': '...'}  │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Code Changes
-
-### 1. Config Dict Methods (Jupiter Fix)
+### BEFORE: Type Crashes and Null Pointer Issues
 
 ```python
-# BEFORE - Config didn't support dict-like access
-config.setdefault('min_sol_amount', 0.001)  # ❌ AttributeError
-
-# AFTER - Added dict methods to CopyTradeConfig
-class CopyTradeConfig:
-    def get(self, key, default=None):
-        """Get config value with default fallback"""
-        return getattr(self, key, default)
+def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 300) -> Optional[dict]:
+    # No type coercion - crashes if Pubkey objects passed
+    logger.info(f"[JUPITER_QUOTE] 🔍 Requesting quote...")
+    logger.debug(f"[JUPITER_QUOTE] Input mint: {input_mint}")
+    logger.debug(f"[JUPITER_QUOTE] Output mint: {output_mint}")
     
-    def __getitem__(self, key):
-        """Allow dict-style access config['key']"""
-        if hasattr(self, key):
-            return getattr(self, key)
-        raise KeyError(f"Config key '{key}' not found")
-    
-    def __setitem__(self, key, value):
-        """Allow dict-style assignment"""
-        setattr(self, key, value)
-    
-    def setdefault(self, key, default=None):
-        """Set default value if key doesn't exist"""
-        if not hasattr(self, key):
-            setattr(self, key, default)
-        return getattr(self, key)
-
-# NOW WORKS ✅
-config.get('min_sol_amount', 0.001)
-config.setdefault('test_field', 'test_value')
-config['custom_field'] = 'custom_value'
-```
-
-### 2. Retry Logic (Raydium Fix)
-
-```python
-# BEFORE - No retry method
-result = await self._submit_with_retries(...)  # ❌ AttributeError
-
-# AFTER - Implemented _submit_with_retries
-async def _submit_with_retries(self, executor_func, *args, 
-                                max_retries=3, retry_delay=1.0, **kwargs):
-    """Submit transaction with retry logic"""
-    # Get retries from config if available
-    if self.config:
-        max_retries = getattr(self.config, 'max_retries', max_retries)
-        retry_delay = getattr(self.config, 'retry_delay', retry_delay)
-    
-    for attempt in range(max_retries):
+    try:
+        # Validate and sanitize token mint
         try:
-            result = await executor_func(*args, **kwargs)
-            if result and result.get('success'):
-                return result
+            Pubkey.from_string(input_mint)  # Crashes if input_mint is Pubkey object
+            Pubkey.from_string(output_mint)  # Crashes if output_mint is Pubkey object
             
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-        except Exception as e:
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
+        params = {
+            "inputMint": input_mint,  # Might pass Pubkey object to API
+            "outputMint": output_mint,  # Might pass Pubkey object to API
+            ...
+        }
+        
+        ...
+        response = requests.get(endpoint_url, params=params, ...)
+        data = response.json()
+        
+        # CRASH RISK: If data is None or not a dict
+        logger.debug(f"[JUPITER_QUOTE] Response data keys: {list(data.keys())}")  # AttributeError if data is None
+        
+        if 'error' in data:
+            ...
+```
+
+### AFTER: Safe Type Coercion and Null Checks
+
+```python
+def _as_mint_str(m) -> str:
+    """Coerce any Pubkey or object to string for safe use in API calls."""
+    return str(m) if not isinstance(m, Pubkey) else str(m)
+
+def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 300) -> Optional[dict]:
+    import traceback
     
-    return {'success': False, 'error': f'All retry attempts failed'}
+    # ✅ SAFE: Coerce mints to strings before any processing
+    input_mint = _as_mint_str(input_mint)
+    output_mint = _as_mint_str(output_mint)
+    
+    logger.info(f"[JUPITER_QUOTE] 🔍 Requesting quote...")
+    logger.debug(f"[JUPITER_QUOTE] Input mint: {input_mint}")
+    logger.debug(f"[JUPITER_QUOTE] Output mint: {output_mint}")
+    
+    try:
+        # Validate and sanitize token mint
+        try:
+            Pubkey.from_string(input_mint)  # ✅ Now always receives string
+            Pubkey.from_string(output_mint)  # ✅ Now always receives string
+            
+        params = {
+            "inputMint": input_mint,  # ✅ Always string
+            "outputMint": output_mint,  # ✅ Always string
+            ...
+        }
+        
+        ...
+        response = requests.get(endpoint_url, params=params, ...)
+        data = response.json()
+        
+        # ✅ SAFE: Check if route is None or not a dict before accessing .keys()
+        if not isinstance(data, dict):
+            logger.error("[JUPITER_QUOTE] no route; endpoints failed")
+            return None
+        
+        logger.debug(f"[JUPITER_QUOTE] Response data keys: {list(data.keys())}")  # ✅ Safe now
+        
+        if 'error' in data:
+            ...
+```
 
-# NOW WORKS ✅
-result = await self._submit_with_retries(
-    self._try_single_executor_buy,
-    dex_name, buy_executor, token_mint, source_wallet,
-    **kwargs
+## 2. fast_executor.py Changes
+
+### BEFORE: Jito Required, Config-Based
+
+```python
+# ❌ Import fails if jito_service not available
+from jito_service import JitoClient
+
+from config import (
+    HELIUS_RPC_URL,
+    JITO_AUTH_TOKEN,  # ❌ Hardcoded from config
+    JITO_BLOCK_ENGINE,
+    JITO_HEADERS,
+    ...
 )
+
+class FastExecutor:
+    def __init__(self, ...):
+        self.jito_client = jito_client if jito_client else JitoClient()  # ❌ Crashes if not available
+        
+        # ❌ Uses hardcoded config values
+        self.jito_headers = {
+            "Content-Type": "application/json",
+            "x-jito-auth": JITO_AUTH_TOKEN  # ❌ From config
+        }
+        
+    # ❌ No unified submit method - scattered logic
+    async def submit_transaction(self, bundle_or_tx):
+        # Complex bundle handling
+        ...
+        # Direct Jito submission
+        ...
+        # No clean fallback
 ```
 
-### 3. Advanced MEV Bot Fixes
-
-#### Keypair Extraction
+### AFTER: Optional Jito, EnvKeys-Based, Unified Logic
 
 ```python
-# BEFORE - Passed wallet wrapper directly
-self.advanced_mev_executor = MEVAdvancedBotExecutor(
-    self.wallet,  # ❌ TypeError: expected Keypair, got WalletWithSign
-    self.rpc_client,
-    self.jito_service
+# ✅ Optional import - never fails at import time
+try:
+    from jito_service import JitoClient
+    JITO_AVAILABLE = True
+except ImportError:
+    JITO_AVAILABLE = False
+    JitoClient = None
+
+# ✅ Use EnvKeys for configuration
+from env_keys import EnvKeys
+
+from config import (
+    HELIUS_RPC_URL,
+    # Removed: JITO_AUTH_TOKEN, JITO_BLOCK_ENGINE, JITO_HEADERS
+    ...
 )
 
-# AFTER - Extract Keypair first
-wallet_keypair = self._get_keypair()  # Extracts Keypair from wrapper
-self.advanced_mev_executor = MEVAdvancedBotExecutor(
-    wallet_keypair,  # ✅ Correct type
-    self.rpc_client,
-    self.jito_service
-)
+class FastExecutor:
+    def __init__(self, ...):
+        # ✅ Use EnvKeys for Jito configuration
+        env_keys = EnvKeys()
+        
+        # ✅ Optional Jito client
+        if JITO_AVAILABLE:
+            self.jito_client = jito_client if jito_client else (JitoClient() if JitoClient else None)
+        else:
+            self.jito_client = None
+        
+        # ✅ Uses EnvKeys values
+        jito_uuid = env_keys.JITO_UUID
+        jito_region_url = env_keys.JITO_BUNDLE_ENDPOINT
+        
+        self.jito_endpoint = self._get_jito_endpoint(preferred_region, jito_region_url)
+        
+        self.jito_headers = {
+            "Content-Type": "application/json",
+            "x-jito-auth": jito_uuid  # ✅ From EnvKeys
+        }
+    
+    # ✅ Unified submit logic with fallback chain
+    async def send_and_confirm(self, vtx: VersionedTransaction) -> Optional[str]:
+        """
+        Unified submit logic: tries Jito first, then RPC fallback.
+        """
+        try:
+            if not isinstance(vtx, VersionedTransaction):
+                print(f"❌ Invalid transaction type: {type(vtx)}")
+                return None
+            
+            print("\n🚀 Unified transaction submission (Jito → RPC fallback)")
+            
+            # ✅ Try Jito first if available
+            if JITO_AVAILABLE and self.jito_client:
+                try:
+                    print("⚡ Attempting Jito submission...")
+                    # Try enhanced service first
+                    if self.jito_service and self.jito_enhanced_initialized:
+                        result = await self.jito_service.send_transaction(signed_tx_bytes)
+                        signature = result.get("signature") if isinstance(result, dict) else None
+                        if signature:
+                            return signature
+                    
+                    # Fallback to basic Jito client
+                    if self.jito_client:
+                        result = await self.jito_client.send_transaction(signed_tx_bytes)
+                        signature = result.get("signature") if isinstance(result, dict) else None
+                        if signature:
+                            return signature
+                    
+                except Exception as jito_error:
+                    print(f"⚠️ Jito submission error: {jito_error}")
+                    print("📡 Falling back to RPC...")
+            
+            # ✅ RPC fallback (always available)
+            print("📡 Submitting via RPC...")
+            return await self._submit_to_rpc(vtx)
+            
+        except Exception as e:
+            print(f"❌ send_and_confirm error: {e}")
+            return None
+    
+    # ✅ New helper for tip accounts
+    async def get_tip_accounts(self) -> List[str]:
+        """Get Jito tip accounts for transaction tips."""
+        if not JITO_AVAILABLE:
+            return [str(account) for account in VALID_JITO_TIP_ACCOUNTS]
+        return await self.get_official_tip_accounts()
 ```
 
-#### Result Access
+## 3. Key Improvements Summary
 
+| Issue | Before | After |
+|-------|--------|-------|
+| **Type Safety** | Crashes if Pubkey passed to get_best_route | ✅ Coerces to string automatically |
+| **Null Safety** | Crashes on None route response | ✅ Checks isinstance before .keys() |
+| **Jito Import** | Import failure breaks entire module | ✅ Optional import, pure RPC fallback |
+| **Configuration** | Hardcoded from config | ✅ Uses EnvKeys for flexibility |
+| **Submit Logic** | Scattered, no fallback | ✅ Unified send_and_confirm() method |
+| **Tip Accounts** | No helper method | ✅ get_tip_accounts() helper added |
+| **Error Handling** | Crashes on failures | ✅ Returns None cleanly, coordinator can fallback |
+
+## 4. Usage Examples
+
+### Jupiter Executor - Before
 ```python
-# BEFORE - Used .get() on dataclass
-result = await self.advanced_mev_executor.execute_buy(params)
-if result and result.get('success'):  # ❌ AttributeError
-    signature = result.get('signature')  # ❌ AttributeError
-
-# AFTER - Use dot notation for dataclass
-result = await self.advanced_mev_executor.execute_buy(params)
-if result and result.success:  # ✅ Works
-    signature = result.signature  # ✅ Works
+# ❌ CRASH if token_mint is Pubkey object
+route = get_best_route(token_mint, SOL_MINT, amount)  # Type error!
 ```
 
-### 4. Meteora Signature Extraction
-
+### Jupiter Executor - After
 ```python
-# BEFORE - No source transaction extraction
-original_signature = kwargs.get('original_signature', '')
-# Missing: trade_info extraction
-
-# AFTER - Extract from multiple sources
-trade_info = kwargs.get('trade_info', {})
-original_signature = trade_info.get('signature') if trade_info else \
-                     kwargs.get('original_signature', '')
-
-if not original_signature:
-    logger.warning("⚠️ No source transaction signature provided")
+# ✅ SAFE - works with Pubkey or string
+route = get_best_route(token_mint, SOL_MINT, amount)  # Automatically coerced
+if not route:  # ✅ Returns None cleanly on failure
+    logger.error("No route available")
+    # Coordinator can try different DEX
 ```
 
-### 5. Error Handling Fix
-
+### Fast Executor - Before
 ```python
-# BEFORE - Called as method
-return self.exec_err("All executors failed")  # ❌ AttributeError
-
-# AFTER - Use module-level function
-return exec_err("all_executors", "All executors failed")  # ✅ Works
+# ❌ Complex, no clear fallback
+result = await executor.submit_transaction(bundle)
+# If Jito fails, transaction might be lost
 ```
 
-## Validation Results
-
+### Fast Executor - After
+```python
+# ✅ Simple, guaranteed fallback
+signature = await executor.send_and_confirm(transaction)
+if signature:
+    logger.info(f"Success: {signature}")
+else:
+    logger.error("All paths failed")
+    # Clean failure, coordinator can retry
 ```
-🎉 ALL TESTS PASSED: 6/6
 
-✅ Test 1: Config Dict Methods         → 6/6 checks
-✅ Test 2: exec_err Function Usage     → 4/4 checks
-✅ Test 3: _submit_with_retries        → 6/6 checks
-✅ Test 4: Advanced MEV Dot Notation   → 4/4 checks
-✅ Test 5: Meteora Signature           → 3/3 checks
-✅ Test 6: Keypair Extraction          → 4/4 checks
+## Test Coverage
+
+All changes are validated with comprehensive tests:
+
+```bash
+$ python3 test_executor_fixes.py
+
+================================================================================
+EXECUTOR FIXES VALIDATION TEST SUITE
+================================================================================
+
+✅ PASS: _as_mint_str() Helper
+✅ PASS: Null-Safety Check
+✅ PASS: Mint Coercion in get_best_route
+✅ PASS: Jito Optional Import
+✅ PASS: send_and_confirm() Method
+✅ PASS: get_tip_accounts() Helper
+✅ PASS: EnvKeys Usage
+
+Total: 7/7 tests passed
+🎉 All tests passed!
 ```
 
 ## Impact
 
-### Execution Flow
+### For Jupiter Executor
+- **No more type crashes** when passing Pubkey objects
+- **No more null pointer errors** on failed routes
+- **Clean None returns** allow coordinator to fallback gracefully
 
-```
-BEFORE:
-Trade Detected → Route to Executor → ❌ CRASH
+### For Fast Executor
+- **Jito is truly optional** - pure RPC always works
+- **Unified submission path** with automatic fallback
+- **Better configuration** via EnvKeys
+- **New helpers** for common operations
 
-AFTER:
-Trade Detected → Route to Executor → Extract Config → Extract Keypair
-    → Execute with Retry → Handle Errors → ✅ SUCCESS or Graceful Fallback
-```
-
-### Supported DEXs
-
-All MEV executors now work correctly:
-
-- ✅ **Pump.fun** - MEVDirectCopyExecutor
-- ✅ **Jupiter** - MEVJupiterExecutor (with dict config)
-- ✅ **Raydium** - MEVRaydiumExecutor (with retries)
-- ✅ **Meteora** - MEVMeteoraExecutor (with source tx)
-- ✅ **Advanced MEV Bot** - MEVAdvancedBotExecutor (with proper types)
-
-## Files Changed
-
-```
-config.py                      (+23 lines) - Added dict methods
-execution_coordinator.py       (+80 lines) - All executor fixes
-validate_executor_fixes.py     (new file)  - Validation suite
-EXECUTOR_FIXES_SUMMARY.md      (new file)  - Documentation
-EXECUTOR_FIXES_BEFORE_AFTER.md (new file)  - This file
-```
-
-## Conclusion
-
-**All runtime errors and executor integration problems have been successfully resolved. The MEV copy trading bot now executes trades robustly across all supported DEXs with proper error handling, retry logic, and type safety.**
+### For Execution Coordinator
+- **Reliable fallback** when Jupiter fails
+- **Predictable behavior** with None returns
+- **Multiple execution paths** (Jito → RPC) automatically handled
