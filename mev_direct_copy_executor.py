@@ -37,7 +37,7 @@ from solders.instruction import Instruction, AccountMeta
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from complete_mev_bot import CompleteMEVBot, CompleteMEVConfig
 from env_keys import EnvKeys
-from execution_coordinator import exec_ok, exec_err
+from executor_utils import exec_ok, exec_err
 
 # Import JitoClient for MEV protection
 try:

@@ -58,23 +58,7 @@ from mev_advanced_bot_executor import MEVAdvancedBotExecutor, AdvancedMEVTradePa
 
 # Import logging utilities
 from copy_trade_logger import log_successful_copy_trade, log_failed_copy_trade
-
-
-# ================================
-# EXECUTOR RESULT STANDARDIZATION
-# ================================
-
-def exec_ok(executor_name: str, signature: str, details: dict | None = None):
-    """Standard success result for executors"""
-    return {"ok": True, "executor": executor_name, "signature": signature, "details": details or {}}
-
-def exec_err(executor_name: str, error: str, details: dict | None = None):
-    """Standard error result for executors"""
-    return {"ok": False, "executor": executor_name, "error": error, "details": details or {}}
-
-def is_success(result: dict | None) -> bool:
-    """Check if executor result indicates success"""
-    return bool(result and isinstance(result, dict) and result.get("ok") is True and isinstance(result.get("signature"), str))
+from executor_utils import exec_ok, exec_err, is_success
 
 
 logger = logging.getLogger(__name__)
