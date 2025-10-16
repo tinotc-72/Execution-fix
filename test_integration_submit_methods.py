@@ -72,7 +72,7 @@ def test_submit_via_jito_implementation():
             'Convert to bytes': 'signed_tx_bytes = bytes(vtx)' in method_content,
             'Enhanced service': 'if self.jito_service and self.jito_enhanced_initialized:' in method_content,
             'JitoClient call': 'await self.jito_client.send_transaction(signed_tx_bytes)' in method_content,
-            'Extract signature': 'signature = result.get("signature")' in method_content,
+            'Extract signature': 'signature = result.get("result")' in method_content or 'signature = result.get("signature")' in method_content,
             'Error handling': 'except Exception as e:' in method_content,
         }
         

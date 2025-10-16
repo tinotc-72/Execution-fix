@@ -983,7 +983,8 @@ class FastExecutor:
             # Fallback to basic Jito client
             try:
                 result = await self.jito_client.send_transaction(signed_tx_bytes)
-                signature = result.get("signature") if isinstance(result, dict) else None
+                # JSON-RPC shape: {"jsonrpc":"2.0","id":1,"result":"<signature>"}
+                signature = result.get("result") if isinstance(result, dict) else None
                 if signature:
                     print(f"✅ Jito Basic Client success: {signature}")
                     return signature
