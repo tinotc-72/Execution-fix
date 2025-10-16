@@ -942,10 +942,96 @@ class FastExecutor:
             self.session = None
             print("👋 FastExecutor session closed")
     
+    async def submit_via_jito(self, vtx: VersionedTransaction) -> Optional[str]:
+        """
+        Submit transaction via Jito using JitoClient.send_transaction
+        
+        Args:
+            vtx: VersionedTransaction to submit
+            
+        Returns:
+            Signature string on success, None on failure
+        """
+        try:
+            if not isinstance(vtx, VersionedTransaction):
+                print(f"❌ Invalid transaction type: {type(vtx)}")
+                return None
+            
+            # Check if Jito is available
+            if not JITO_AVAILABLE or not self.jito_client:
+                print("❌ Jito client not available")
+                return None
+            
+            # Initialize session if needed
+            if not self.session:
+                await self.initialize()
+            
+            print("⚡ Submitting via Jito...")
+            signed_tx_bytes = bytes(vtx)
+            
+            # Try enhanced service first if available
+            if self.jito_service and self.jito_enhanced_initialized:
+                try:
+                    result = await self.jito_service.send_transaction(signed_tx_bytes)
+                    signature = result.get("signature") if isinstance(result, dict) else None
+                    if signature:
+                        print(f"✅ Jito Enhanced Service success: {signature}")
+                        return signature
+                except Exception as e:
+                    print(f"⚠️ Enhanced Jito service error: {e}")
+            
+            # Fallback to basic Jito client
+            try:
+                result = await self.jito_client.send_transaction(signed_tx_bytes)
+                signature = result.get("signature") if isinstance(result, dict) else None
+                if signature:
+                    print(f"✅ Jito Basic Client success: {signature}")
+                    return signature
+                else:
+                    print(f"❌ Jito submission failed: {result}")
+                    return None
+            except Exception as e:
+                print(f"❌ Jito submission error: {e}")
+                traceback.print_exc()
+                return None
+                
+        except Exception as e:
+            print(f"❌ submit_via_jito error: {e}")
+            traceback.print_exc()
+            return None
+    
+    async def submit_via_rpc(self, vtx: VersionedTransaction) -> Optional[str]:
+        """
+        Submit transaction via RPC (existing path)
+        
+        Args:
+            vtx: VersionedTransaction to submit
+            
+        Returns:
+            Signature string on success, None on failure
+        """
+        try:
+            if not isinstance(vtx, VersionedTransaction):
+                print(f"❌ Invalid transaction type: {type(vtx)}")
+                return None
+            
+            # Initialize session if needed
+            if not self.session:
+                await self.initialize()
+            
+            print("📡 Submitting via RPC...")
+            return await self._submit_to_rpc(vtx)
+            
+        except Exception as e:
+            print(f"❌ submit_via_rpc error: {e}")
+            traceback.print_exc()
+            return None
+    
     async def send_and_confirm(self, vtx: VersionedTransaction) -> Optional[str]:
         """
         Unified submit logic: tries Jito first, then RPC fallback.
         This is the main method for submitting transactions with dual-path execution.
+        Logs which route succeeded.
         
         Args:
             vtx: VersionedTransaction to submit
@@ -968,23 +1054,20 @@ class FastExecutor:
             if JITO_AVAILABLE and self.jito_client:
                 try:
                     print("⚡ Attempting Jito submission...")
-                    signed_tx_bytes = bytes(vtx)
+                    # Extract region from endpoint for logging
+                    region = "unknown"
+                    if self.jito_endpoint:
+                        # Parse region from endpoint URL (e.g., "https://london.mainnet.block-engine.jito.wtf")
+                        parts = self.jito_endpoint.split("//")
+                        if len(parts) > 1:
+                            domain_parts = parts[1].split(".")
+                            if len(domain_parts) > 0:
+                                region = domain_parts[0].replace("mainnet", "mainnet").strip()
                     
-                    # Try enhanced service first if available
-                    if self.jito_service and self.jito_enhanced_initialized:
-                        result = await self.jito_service.send_transaction(signed_tx_bytes)
-                        signature = result.get("signature") if isinstance(result, dict) else None
-                        if signature:
-                            print(f"✅ Jito Enhanced Service success: {signature}")
-                            return signature
-                    
-                    # Fallback to basic Jito client
-                    if self.jito_client:
-                        result = await self.jito_client.send_transaction(signed_tx_bytes)
-                        signature = result.get("signature") if isinstance(result, dict) else None
-                        if signature:
-                            print(f"✅ Jito Basic Client success: {signature}")
-                            return signature
+                    signature = await self.submit_via_jito(vtx)
+                    if signature:
+                        print(f"[SUBMIT_JITO] region={region} signature={signature}")
+                        return signature
                     
                     print("⏭️ Jito submission unsuccessful, falling back to RPC")
                     
@@ -994,7 +1077,10 @@ class FastExecutor:
             
             # RPC fallback (always available)
             print("📡 Submitting via RPC...")
-            return await self._submit_to_rpc(vtx)
+            signature = await self.submit_via_rpc(vtx)
+            if signature:
+                print(f"[SUBMIT_RPC] signature={signature}")
+            return signature
             
         except Exception as e:
             print(f"❌ send_and_confirm error: {e}")
