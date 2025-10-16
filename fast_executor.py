@@ -1,8 +1,9 @@
 # fast_executor.py - Jito JSON-RPC Client Integration
 
+import httpx
+import asyncio
 import aiohttp
 import base64
-import asyncio
 import json
 import traceback
 import uuid
@@ -38,6 +39,9 @@ class FastExecutor:
         
         # Use EnvKeys for Jito configuration
         env_keys = EnvKeys()
+        
+        # Store RPC URL for confirmation calls
+        self._rpc_url = getattr(env_keys, "HELIUS_RPC_URL", None)
         
         # Initialize Jito client with auth from env_keys
         if JITO_AVAILABLE:
@@ -166,6 +170,30 @@ class FastExecutor:
             traceback.print_exc()
             return None
 
+    async def _confirm_once(self, sig: str) -> dict | None:
+        if not self._rpc_url:
+            self.logger.warning("[CONFIRM] no RPC url configured")
+            return None
+        payload = {"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[[sig], {"searchTransactionHistory": True}]}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(self._rpc_url, json=payload)
+            r.raise_for_status()
+            return r.json()
+
+    async def _confirm_with_retries(self, sig: str, attempts: int = 5, delay_s: float = 0.8) -> dict | None:
+        for i in range(attempts):
+            data = await self._confirm_once(sig)
+            try:
+                value = ((data or {}).get("result") or {}).get("value") or []
+                status = value[0] if value else None
+                self.logger.info(f"[CONFIRM] attempt={i+1}/{attempts} status={status}")
+                if status:  # seen by cluster (err could be None or object)
+                    return status
+            except Exception:
+                pass
+            await asyncio.sleep(delay_s)
+        return None
+
     async def close(self):
         """Close the sessions"""
         if self.session:
@@ -180,4 +208,11 @@ class FastExecutor:
         Unified submit logic: tries Jito first, then RPC fallback.
         This is the main method for submitting transactions.
         """
-        return await self.submit_transaction(vtx)
+        sig = await self._submit_via_jito(vtx)
+        if not sig:
+            sig = await self._submit_to_rpc(vtx)
+        if not sig:
+            return None
+        status = await self._confirm_with_retries(sig)
+        self.logger.info(f"[CONFIRM][FINAL] sig={sig} status={status}")
+        return sig
