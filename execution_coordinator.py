@@ -840,8 +840,8 @@ class ExecutionCoordinator:
             env = env_keys.EnvKeys()
             rpc_url = env.HELIUS_RPC_URL
             
-            # Get keypair for new payer
-            keypair = self._get_keypair()
+            # Get keypair for new payer - explicit validation, no fallback
+            keypair = self._require_keypair()
             
             # Call the cloner
             vtx = await clone_tx_from_signature(
@@ -1080,8 +1080,8 @@ class ExecutionCoordinator:
             if not original_signature:
                 logger.warning(f"⚠️ [METEORA_BUY] No source transaction signature provided - may affect execution")
             
-            # Extract keypair with proper validation
-            wallet_keypair = self._get_keypair()
+            # Extract keypair with proper validation - explicit validation, no fallback
+            wallet_keypair = self._require_keypair()
             self.logger.info(f"Using wallet keypair for mev_meteora_copy_trade: {type(wallet_keypair)}")
             result = await mev_meteora_copy_trade(
                 wallet_keypair=wallet_keypair,
@@ -1136,8 +1136,8 @@ class ExecutionCoordinator:
             # MEV + fresh build path (no cloning)
             from mev_jupiter_executor import MEVJupiterExecutor
 
-            # Use proper wallet validation for MEVJupiterExecutor
-            wallet_keypair = self._get_keypair()
+            # Use proper wallet validation for MEVJupiterExecutor - explicit validation, no fallback
+            wallet_keypair = self._require_keypair()
             if getattr(self.config, "deep_debug", False):
                 self.logger.debug(f"Creating MEVJupiterExecutor with wallet type: {type(wallet_keypair)}")
             
@@ -1323,8 +1323,8 @@ class ExecutionCoordinator:
             
         try:
             from mev_advanced_bot_executor import MEVAdvancedBotExecutor
-            # MEVAdvancedBotExecutor requires a proper Keypair, extract it from wallet
-            wallet_keypair = self._get_keypair()
+            # MEVAdvancedBotExecutor requires a proper Keypair - explicit validation, no fallback
+            wallet_keypair = self._require_keypair()
             self.logger.info(f"Initializing MEVAdvancedBotExecutor with wallet type: {type(wallet_keypair)}")
             self.advanced_mev_executor = MEVAdvancedBotExecutor(wallet_keypair, self.rpc_client, self.jito_service)
         except ImportError:
@@ -1333,8 +1333,8 @@ class ExecutionCoordinator:
             
         try:
             from mev_meteora_executor import MEVMeteoraExecutor
-            # MEVMeteoraExecutor requires a proper Keypair
-            wallet_keypair = self._get_keypair()
+            # MEVMeteoraExecutor requires a proper Keypair - explicit validation, no fallback
+            wallet_keypair = self._require_keypair()
             self.logger.info(f"Initializing MEVMeteoraExecutor with wallet type: {type(wallet_keypair)}")
             self.meteora_executor = MEVMeteoraExecutor(wallet_keypair, self.rpc_client, jito_service=self.jito_service)
         except ImportError:
@@ -1375,10 +1375,17 @@ class ExecutionCoordinator:
     
     def _get_keypair(self):
         """
-        Deprecated: Use _require_keypair() instead for explicit validation.
+        DEPRECATED: Use _require_keypair() instead for explicit validation.
         
-        Extract Keypair from wallet wrapper with proper type validation.
+        This method is retained only for backward compatibility.
+        All new code should use _require_keypair() directly.
         """
+        import warnings
+        warnings.warn(
+            "_get_keypair() is deprecated, use _require_keypair() instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
         return self._require_keypair()
 
     def _get_wallet_pubkey(self):
