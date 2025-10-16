@@ -1207,6 +1207,9 @@ def _replace_user_accounts(metas: list[AccountMeta], src_wallet: Pubkey, dst_wal
 
 # Solders-only buy builder
 def _build_meteora_buy_solders(rpc: SimpleRPC, owner: Keypair, token_mint: Pubkey, lamports_in: int, min_tokens: int, trade_info: dict) -> VersionedTransaction:
+    # Assert owner is a valid Keypair before proceeding
+    assert isinstance(owner, Keypair), f"owner must be a Keypair, got {type(owner)}"
+    
     resolver = ContextPoolResolverMeteora(rpc, trade_info)
     source_data, source_metas, program_id = resolver.extract_ix()
     metas = _replace_user_accounts(source_metas, Pubkey.from_string(trade_info.get("wallet_address", "")), owner.pubkey(), token_mint)
@@ -1226,6 +1229,9 @@ def _build_meteora_buy_solders(rpc: SimpleRPC, owner: Keypair, token_mint: Pubke
 
 # Solders-only sell builder
 def _build_meteora_sell_solders(rpc: SimpleRPC, owner: Keypair, token_mint: Pubkey, token_amount: int, min_sol: int, trade_info: dict) -> VersionedTransaction:
+    # Assert owner is a valid Keypair before proceeding
+    assert isinstance(owner, Keypair), f"owner must be a Keypair, got {type(owner)}"
+    
     resolver = ContextPoolResolverMeteora(rpc, trade_info)
     source_data, source_metas, program_id = resolver.extract_ix()
     metas = _replace_user_accounts(source_metas, Pubkey.from_string(trade_info.get("wallet_address", "")), owner.pubkey(), token_mint)
@@ -1488,6 +1494,9 @@ def build_and_sign(
     logger.info(f"📡 Fetched fresh blockhash: {bh}")
     
     # 8. Build and sign v0 transaction
+    # Assert keypair is a valid Keypair before creating VersionedTransaction
+    assert isinstance(keypair, Keypair), f"keypair must be a Keypair, got {type(keypair)}"
+    
     msg = MessageV0.try_compile(payer, ixs, address_lookup_tables, bh)
     vtx = VersionedTransaction(msg, [keypair])
     

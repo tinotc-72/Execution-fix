@@ -1343,19 +1343,43 @@ class ExecutionCoordinator:
             
         self.logger.info(f"✅ Execution Coordinator initialized with wallet {self.wallet}")
 
-    def _get_keypair(self):
-        """Extract Keypair from wallet wrapper with proper type validation"""
+    def _require_keypair(self):
+        """
+        Fetch and validate the real Keypair from wallet configuration.
+        
+        Never fabricates a random keypair. If the configured wallet isn't loaded or 
+        is not a valid Keypair, raises TypeError.
+        
+        Returns:
+            solders.keypair.Keypair: The raw keypair object
+            
+        Raises:
+            TypeError: If wallet is not loaded or not a valid Keypair
+        """
         if hasattr(self.wallet, 'keypair'):
             keypair = self.wallet.keypair
+            # Assert the extracted keypair is actually a Keypair instance
+            if not isinstance(keypair, Keypair):
+                error_msg = f"Wallet.keypair is not a Keypair instance: {type(keypair)}"
+                self.logger.error(error_msg)
+                raise TypeError(error_msg)
             self.logger.info(f"Extracted keypair from wallet wrapper: {type(self.wallet)} -> {type(keypair)}")
             return keypair
         elif isinstance(self.wallet, Keypair):
             self.logger.info(f"Wallet is already a Keypair: {type(self.wallet)}")
             return self.wallet
         else:
-            error_msg = f"Wallet object of type {type(self.wallet)} is not convertible to Keypair"
+            error_msg = f"Configured wallet not loaded or invalid: {type(self.wallet)}"
             self.logger.error(error_msg)
             raise TypeError(error_msg)
+    
+    def _get_keypair(self):
+        """
+        Deprecated: Use _require_keypair() instead for explicit validation.
+        
+        Extract Keypair from wallet wrapper with proper type validation.
+        """
+        return self._require_keypair()
 
     def _get_wallet_pubkey(self):
         """Extract public key from wallet with proper type validation"""
@@ -1411,19 +1435,23 @@ class ExecutionCoordinator:
         
         try:
             logger.debug(f"   🎯 Trying {dex_name.upper()} for {token_mint[:8]}... (buy_executor={buy_executor})")
-            # Robust context validation
+            # Robust context validation - NEVER fabricate random keypair
             config = getattr(self, 'config', None)
-            wallet_keypair = getattr(self.wallet, 'keypair', self.wallet) if hasattr(self, 'wallet') else None
+            
+            # Use _require_keypair() to get validated keypair - raises if wallet not loaded
+            try:
+                wallet_keypair = self._require_keypair()
+            except TypeError as e:
+                logger.error(f"[CONTEXT] Cannot execute without valid wallet: {e}")
+                return {'success': False, 'error': f'Wallet not loaded: {e}'}
+            
             investment_amount_sol = None
             if config and hasattr(config, 'investment_amount_sol'):
                 investment_amount_sol = config.investment_amount_sol
             else:
                 logger.warning("[CONTEXT] Missing config or investment_amount_sol, using default 0.001 SOL")
                 investment_amount_sol = 0.001
-            if not wallet_keypair:
-                logger.warning("[CONTEXT] Missing wallet keypair, using fallback Keypair()")
-                from solders.keypair import Keypair
-                wallet_keypair = Keypair()
+            
             # Check if this is the MEV Pump.fun executor that needs different parameter names
             if dex_name.lower() == "pump.fun" or "pumpfun" in dex_name.lower():
                 buy_args = dict(

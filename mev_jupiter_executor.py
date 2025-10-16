@@ -209,6 +209,12 @@ def get_swap_transaction(route: dict, user_pubkey: Pubkey) -> Optional[str]:
     
     logger.info(f"[JUPITER_SWAP] 🔄 Requesting swap transaction...")
     logger.debug(f"[JUPITER_SWAP] User pubkey: {user_pubkey}")
+    
+    # Guard: Check if route is None before accessing .keys()
+    if route is None:
+        logger.error(f"[JUPITER_SWAP] ❌ Route is None, cannot get swap transaction")
+        return None
+    
     logger.debug(f"[JUPITER_SWAP] Route keys: {list(route.keys())}")
     
     # Validate input - route must be a dict from successful quote
@@ -336,13 +342,21 @@ def get_swap_transaction_duplicate(route: dict, wallet_pubkey: Pubkey) -> Option
 
 def build_buy_tx(token_mint: str, amount_sol: float, wallet: Keypair, slippage: float = 3.0) -> VersionedTransaction:
     lamports = int(amount_sol * 1_000_000_000)
-    route = get_best_route(SOL_MINT, token_mint, lamports, slippage_bps=int(slippage * 100))
+    # Coerce token_mint to string in case it's a Pubkey
+    token_mint_str = _as_mint_str(token_mint)
+    route = get_best_route(_as_mint_str(SOL_MINT), token_mint_str, lamports, slippage_bps=int(slippage * 100))
+    if route is None:
+        raise ValueError("Failed to get route from Jupiter")
     swap_tx_b64 = get_swap_transaction(route, wallet.pubkey())
+    if swap_tx_b64 is None:
+        raise ValueError("Failed to get swap transaction from Jupiter")
     return VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
 
 
 def build_sell_tx(token_mint: str, wallet: Keypair, slippage: float = 3.0) -> VersionedTransaction:
-    ata = get_associated_token_address(wallet.pubkey(), Pubkey.from_string(token_mint))
+    # Coerce token_mint to string in case it's a Pubkey
+    token_mint_str = _as_mint_str(token_mint)
+    ata = get_associated_token_address(wallet.pubkey(), Pubkey.from_string(token_mint_str))
     
     # You must fetch token balance to determine sell amount
     res = requests.post(RPC_URL, json={
@@ -357,8 +371,12 @@ def build_sell_tx(token_mint: str, wallet: Keypair, slippage: float = 3.0) -> Ve
     except Exception:
         raise Exception("Failed to fetch token balance for sell transaction")
     
-    route = get_best_route(token_mint, SOL_MINT, amount, slippage_bps=int(slippage * 100))
+    route = get_best_route(token_mint_str, _as_mint_str(SOL_MINT), amount, slippage_bps=int(slippage * 100))
+    if route is None:
+        raise ValueError("Failed to get route from Jupiter")
     swap_tx_b64 = get_swap_transaction(route, wallet.pubkey())
+    if swap_tx_b64 is None:
+        raise ValueError("Failed to get swap transaction from Jupiter")
     return VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
 
 
@@ -457,7 +475,10 @@ class MEVJupiterExecutor:
         Implements the base class abstract method
         """
         try:
-            logger.info(f"🚀 OFFICIAL Jupiter BUY: {amount_sol} SOL → {token_mint[:8]}...")
+            # Coerce token_mint to string in case it's a Pubkey
+            token_mint_str = _as_mint_str(token_mint)
+            
+            logger.info(f"🚀 OFFICIAL Jupiter BUY: {amount_sol} SOL → {token_mint_str[:8]}...")
             
             # Official: Validate inputs
             if amount_sol < self.config.get('min_sol_amount', 0.001):
@@ -477,7 +498,7 @@ class MEVJupiterExecutor:
             
             # Ensure token account exists
             try:
-                token_mint_pubkey = Pubkey.from_string(token_mint)
+                token_mint_pubkey = Pubkey.from_string(token_mint_str)
                 await self.ensure_token_account(token_mint_pubkey)
             except Exception as e:
                 return {
@@ -496,9 +517,9 @@ class MEVJupiterExecutor:
                 try:
                     logger.info(f"   📊 Trying Jupiter with {slippage_bps/100}% slippage...")
                     
-                    # Get Jupiter route
+                    # Get Jupiter route - use token_mint_str which is already coerced
                     lamports = int(amount_sol * 1e9)
-                    route = get_best_route(str(SOL_MINT), token_mint, lamports, int(slippage_bps))
+                    route = get_best_route(_as_mint_str(SOL_MINT), token_mint_str, lamports, int(slippage_bps))
                     
                     if not route:
                         logger.warning(f"   ❌ No Jupiter route for {slippage_bps/100}% slippage")
@@ -521,7 +542,7 @@ class MEVJupiterExecutor:
                         signature = await self.send_transaction_with_retry(transaction)
                         
                         if signature:
-                            logger.info(f"✅ [JUPITER_BUY] SUCCESS: Bought {token_mint[:8]}... with {amount_sol} SOL")
+                            logger.info(f"✅ [JUPITER_BUY] SUCCESS: Bought {token_mint_str[:8]}... with {amount_sol} SOL")
                             logger.info(f"   Signature: {signature}")
                             logger.info(f"   Slippage: {slippage_bps/100}%")
                             return {
@@ -540,7 +561,7 @@ class MEVJupiterExecutor:
                     logger.warning(f"   ❌ Route error at {slippage_bps/100}%: {route_error}")
                     continue
             
-            logger.error(f"❌ [JUPITER_BUY] FAILED: All slippage levels exhausted for {token_mint[:8]}...")
+            logger.error(f"❌ [JUPITER_BUY] FAILED: All slippage levels exhausted for {token_mint_str[:8]}...")
             return {
                 'success': False,
                 'error': 'All Jupiter slippage levels failed',
@@ -549,7 +570,7 @@ class MEVJupiterExecutor:
             
         except Exception as e:
             logger.error(f"❌ [JUPITER_BUY] FAILED with exception: {e}")
-            logger.error(f"   Token: {token_mint[:8]}...")
+            logger.error(f"   Token: {token_mint_str[:8]}...")
             logger.error(f"   Amount: {amount_sol} SOL")
             return {
                 'success': False,
@@ -563,11 +584,14 @@ class MEVJupiterExecutor:
         Implements the base class abstract method
         """
         try:
-            logger.info(f"💸 OFFICIAL Jupiter SELL: {token_mint[:8]}...")
+            # Coerce token_mint to string in case it's a Pubkey
+            token_mint_str = _as_mint_str(token_mint)
+            
+            logger.info(f"💸 OFFICIAL Jupiter SELL: {token_mint_str[:8]}...")
             
             # Get token balance
             try:
-                token_mint_pubkey = Pubkey.from_string(token_mint)
+                token_mint_pubkey = Pubkey.from_string(token_mint_str)
                 token_balance = await self.get_token_balance(token_mint_pubkey)
                 
                 if token_balance <= 0:
@@ -594,8 +618,8 @@ class MEVJupiterExecutor:
                 try:
                     logger.info(f"   📊 Trying Jupiter sell with {slippage_bps/100}% slippage...")
                     
-                    # Get Jupiter route for sell
-                    route = get_best_route(token_mint, str(SOL_MINT), token_balance, int(slippage_bps))
+                    # Get Jupiter route for sell - use token_mint_str which is already coerced
+                    route = get_best_route(token_mint_str, _as_mint_str(SOL_MINT), token_balance, int(slippage_bps))
                     
                     if not route:
                         logger.warning(f"   ❌ No Jupiter sell route for {slippage_bps/100}% slippage")
