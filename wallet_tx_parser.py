@@ -32,6 +32,7 @@ from solders.pubkey import Pubkey
 # from helius import decode_transaction, decode_instruction
 
 # Constants for enhanced log parsing
+JUPITER_PID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 JUPITER_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 METEORA_AGGREGATOR = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -677,20 +678,48 @@ class WalletTransactionParser:
         if "transaction" in tx_data:
             tx = tx_data.get("transaction", {})
         
-        # 1) DEX detection - Detect Meteora
-        for ix in (tx.get("message", {}).get("instructions") or []):
+        # Get message and meta for DEX detection
+        msg = tx.get("message", {})
+        instrs = msg.get("instructions") or []
+        meta = tx_data.get("meta") or {}
+        
+        # 1) DEX detection - Detect Jupiter
+        for ix in instrs:
             pid = ix.get("programId") or ix.get("program")
-            if pid in METEORA_PROGRAM_IDS:
-                parsed["dex"] = "meteora"
-                if parsed.get("action") in (None, "unknown"):
-                    parsed["action"] = "swap"
-                self.logger.info(f"✅ [PARSER] Meteora detected: programId={pid[:8]}...")
+            if pid == JUPITER_PID:
+                parsed["dex"] = "jupiter"
+                parsed.setdefault("action", "swap")
+                self.logger.info(f"✅ [PARSER] Jupiter detected: programId={pid[:8]}...")
                 break
         
-        # 2) Real source wallet (wallet being copied)
-        signers = [k["pubkey"] for k in (tx.get("message", {}).get("accountKeys") or []) if k.get("signer")]
+        # Check logs for Jupiter if not detected by programId
+        if parsed.get("dex") != "jupiter" and meta:
+            logs = " ".join(meta.get("logMessages") or [])
+            if "SharedAccountsRouteV2" in logs or "JUP6LkbZ" in logs:
+                parsed["dex"] = "jupiter"
+                parsed.setdefault("action", "swap")
+                self.logger.info(f"✅ [PARSER] Jupiter detected from logs")
+        
+        # 2) DEX detection - Detect Meteora (if Jupiter not detected)
+        if not parsed.get("dex"):
+            for ix in instrs:
+                pid = ix.get("programId") or ix.get("program")
+                if pid in METEORA_PROGRAM_IDS:
+                    parsed["dex"] = "meteora"
+                    if parsed.get("action") in (None, "unknown"):
+                        parsed["action"] = "swap"
+                    self.logger.info(f"✅ [PARSER] Meteora detected: programId={pid[:8]}...")
+                    break
+        
+        # 3) wallet_address: signer or fee payer (index 0)
+        keys = msg.get("accountKeys") or []
+        # When keys are dicts with .signer:
+        signers = [k["pubkey"] for k in keys if isinstance(k, dict) and k.get("signer")]
         if signers:
             parsed["wallet_address"] = signers[0]
+        elif keys:
+            # v0 messages typically: fee payer at index 0
+            parsed["wallet_address"] = keys[0] if isinstance(keys[0], str) else keys[0].get("pubkey")
         
         # Get original decoder result
         dex_type = self.identify_dex(tx_data)
