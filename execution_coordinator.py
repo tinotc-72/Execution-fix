@@ -85,9 +85,11 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
     """
     Simplified execution coordinator that tries build_and_sign paths before falling back to clone.
     
+    For dex=="jupiter" and use_universal_cloner=False: Try Jupiter build_and_sign → direct_copy fallback
     For dex=="meteora" and use_universal_cloner=False: Try Meteora build_and_sign → Jupiter → direct_copy
     For dex=="meteora" and use_universal_cloner=True: Try builders if mint exists, else direct_copy
     For dex=="unknown" with mint: Try Jupiter → direct_copy
+    For dex=="unknown" with JUP6 in logs/meta: Treat as jupiter and try Jupiter build_and_sign → direct_copy
     
     Always logs sanity check messages even when fields are incomplete.
     
@@ -103,6 +105,23 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
     """
     dex = (trade_info.get("dex") or "unknown").lower()
     prefer_clone = bool(trade_info.get("use_universal_cloner"))
+    
+    # Detect Jupiter from logs/meta if dex is unknown
+    if dex == "unknown":
+        logs = trade_info.get("logs", [])
+        meta = trade_info.get("meta", {})
+        log_text = " ".join(logs) if isinstance(logs, list) else str(logs)
+        
+        # Check for Jupiter program ID in logs or meta
+        if "JUP6" in log_text or "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4" in log_text:
+            logger.info("🧭 [COORDINATOR] Detected Jupiter from logs, treating as jupiter")
+            dex = "jupiter"
+        elif isinstance(meta, dict):
+            meta_str = str(meta)
+            if "JUP6" in meta_str or "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4" in meta_str:
+                logger.info("🧭 [COORDINATOR] Detected Jupiter from meta, treating as jupiter")
+                dex = "jupiter"
+    
     logger.info("🧭 [COORDINATOR] route start: dex=%s, prefer_clone=%s", dex, prefer_clone)
     
     # Check if we have required fields for actual execution
@@ -152,6 +171,19 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
         except Exception as e:
             logger.error(f"❌ [DIRECT_COPY] Clone failed: {e}", exc_info=True)
             return None
+    
+    if dex == "jupiter" and not prefer_clone:
+        logger.info("🧭 [COORDINATOR] Route=jupiter")
+        try:
+            from mev_jupiter_executor import build_and_sign as jupiter_build_and_sign
+            vtx = jupiter_build_and_sign(trade_info, rpc_url, keypair)
+        except Exception as e:
+            logger.error(f"❌ [JUPITER] build error: {e}", exc_info=True)
+            vtx = None
+        if await try_submit(vtx):
+            return {"success": True, "method": "jupiter"}
+        logger.warning("⚠️ Jupiter build failed — falling back to direct_copy")
+        return await execute_direct_copy(trade_info, rpc_url, keypair, jito_service)
     
     if dex == "meteora":
         if not prefer_clone:
