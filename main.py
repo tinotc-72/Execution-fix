@@ -77,6 +77,7 @@ import time
 import os
 import inspect
 import pathlib
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
@@ -86,6 +87,7 @@ from config import WALLET
 
 # Import utilities
 from utils import get_transaction_with_logs, load_keypair, RPCClient
+from debug_utils import set_span_id
 
 # Import specialized modules
 from copy_trade_logger import get_copy_trade_logger
@@ -425,8 +427,32 @@ class SimpleCopyTradingBot:
         - Logs execution decisions
         - Records skipped trades with signature and reason
         """
-        # Get signature for audit trail
+        # Generate correlation ID from signature/event_id/uuid
         sig = (trade_info.get("signature") or "").strip()
+        event_id = trade_info.get("event_id", "")
+        
+        if sig and sig != "unknown":
+            # Use signature as base for correlation ID (safely handle short sigs)
+            correlation_id = sig[:12] if len(sig) >= 12 else sig
+        elif event_id:
+            # Use event_id if available
+            correlation_id = f"evt_{event_id[:8]}" if len(event_id) >= 8 else f"evt_{event_id}"
+        else:
+            # Generate UUID-based correlation ID
+            correlation_id = f"uuid_{str(uuid.uuid4())[:8]}"
+        
+        # Set correlation ID for this thread
+        set_span_id(correlation_id)
+        
+        # Log correlation context
+        logger.info(
+            "🪪 [CTX] corr=%s, dex=%s, wallet=%s",
+            correlation_id,
+            trade_info.get("dex", "unknown"),
+            trade_info.get("wallet_address", "unknown")
+        )
+        
+        # Get signature for audit trail (fallback to NO_SIGNATURE if not available)
         if not sig or sig == "unknown":
             sig = "NO_SIGNATURE"
         
