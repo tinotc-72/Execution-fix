@@ -171,6 +171,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # Ensure DEBUG level
 
+def safe_dump(data: Any) -> str:
+    """
+    Safely serialize data to JSON string for logging, handling non-serializable objects.
+    
+    Args:
+        data: Data to serialize
+        
+    Returns:
+        JSON string representation of data
+    """
+    try:
+        import json
+        return json.dumps(data, default=str)
+    except Exception as e:
+        return f"<unable to serialize: {e}>"
+
 def validate_runtime_env(logger):
     """Validate required environment variables and fail fast with clear message if missing"""
     import os
@@ -251,10 +267,10 @@ from execution_coordinator import normalize_dex, ROUTE_MAP, maybe_execute
 
 def _have_all_fields(trade_info: dict) -> bool:
     """
-    Check if trade_info has all required fields for execution.
+    Check if trade_info has all required fields for execution (LENIENT).
     
-    Returns True only if dex, wallet_address are all present and valid,
-    AND token_mint (or mint) is present.
+    Returns True only if dex, wallet_address, and token_mint (or mint) are all present and valid.
+    Does NOT require action field - action can be inferred during execution.
     
     Treats mint and token_mint as synonyms and normalizes to token_mint.
     
@@ -264,10 +280,19 @@ def _have_all_fields(trade_info: dict) -> bool:
     Returns:
         bool: True if all required fields are present and valid
     """
+    # Normalize mint to token_mint
     token_mint = trade_info.get("token_mint") or trade_info.get("mint")
-    ok = all(v not in (None, "", "unknown", "PENDING_ANALYSIS") for v in (trade_info.get("dex"), trade_info.get("wallet_address"), token_mint))
-    if ok and trade_info.get("token_mint") is None and token_mint:
+    if token_mint and trade_info.get("token_mint") is None:
         trade_info["token_mint"] = token_mint
+    
+    # Only check dex, wallet_address, and token_mint - do not require action
+    dex = trade_info.get("dex")
+    wallet_address = trade_info.get("wallet_address")
+    
+    # All three fields must be present and not placeholder values
+    ok = all(v not in (None, "", "unknown", "PENDING_ANALYSIS") 
+             for v in (dex, wallet_address, token_mint))
+    
     return ok
 
 
@@ -1003,11 +1028,26 @@ class SimpleCopyTradingBot:
                 except Exception as e:
                     logger.error(f"[BACKFILL] ❌ Error parsing backfilled transaction: {e}")
             
-            # STEP 1: Infer missing fields before validation - with error resilience
-            logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
+            # STEP 1: Infer missing fields before validation - with watchdog protection
+            logger.debug("[DEBUG] Before infer_missing_fields: %s", safe_dump(trade_info))
             try:
-                trade_info = self.trade_processor.infer_missing_fields(trade_info)
-                logger.debug(f"[DEBUG] After infer_missing_fields: {json.dumps(trade_info, default=str)}")
+                # Run infer_missing_fields in a thread pool with watchdog timeout protection
+                async def run_inference():
+                    return await asyncio.to_thread(
+                        self.trade_processor.infer_missing_fields,
+                        trade_info
+                    )
+                
+                # Wrap with watchdog (5 second timeout as per problem statement)
+                trade_info = await run_with_watchdog(
+                    run_inference(),
+                    timeout_seconds=5.0,
+                    operation_name="infer_missing_fields",
+                    fallback_value=trade_info,
+                    log_timeout=True,
+                    log_error=True
+                )
+                logger.debug("[DEBUG] After infer_missing_fields: %s", safe_dump(trade_info))
             except Exception as e:
                 logger.error("❌ infer_missing_fields crashed", exc_info=True)
             finally:
@@ -1019,7 +1059,7 @@ class SimpleCopyTradingBot:
                     except Exception as e:
                         logger.warning(f"⚠️ Deep analysis scheduling failed: {e}")
                 
-                # Check if we have all required fields and call coordinator
+                # Check if we have all required fields and set mode
                 have_all = _have_all_fields(trade_info)
                 trade_info["use_universal_cloner"] = not have_all
                 
@@ -1029,59 +1069,14 @@ class SimpleCopyTradingBot:
                 else:
                     logger.info("🧭 [MODE] Cloner fallback (fields incomplete)")
                 
-                # Log handoff to coordinator
+                # Always hand off to route_and_execute - guaranteed execution
                 logger.info("📤 [HANDOFF] Calling coordinator now…")
                 await route_and_execute(trade_info, self.rpc_client, self.wallet, jito=self.jito_service)
                 logger.info("📥 [HANDOFF] Coordinator call returned")
+                # Return after handoff - execution is complete
+                return
             
-            # STEP 2: Validate and process
-            logger.debug(f"[DEBUG] Before validate_trade_info: {json.dumps(trade_info, default=str)}")
-            is_valid = self.trade_processor.validate_trade_info(trade_info)
-            logger.debug(f"[DEBUG] validate_trade_info result: {is_valid}")
-            if is_valid:
-                await self._process_detected_trade(trade_info)
-            else:
-                # Enhanced logging for skipped trades per problem statement requirements
-                logger.warning(f"⚠️ Trade validation failed - skipping")
-                
-                # Log full context for debugging (per problem statement: log raw tx and reason)
-                sig = trade_info.get('signature', 'unknown')
-                logger.error(f"❌ [SKIPPED_TRADE] Signature: {sig}")
-                logger.error(f"❌ [SKIPPED_TRADE] Reason: Validation failed - missing or invalid required fields")
-                
-                # Log what fields failed validation
-                mint = trade_info.get('token_mint') or trade_info.get('mint')
-                action = trade_info.get('action')
-                dex = trade_info.get('dex') or trade_info.get('dex_type')
-                
-                validation_issues = []
-                if not sig or sig == 'unknown':
-                    validation_issues.append("missing signature")
-                if not mint or mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
-                    validation_issues.append(f"invalid/missing mint (got: {mint})")
-                if not action or action == 'unknown':
-                    validation_issues.append(f"invalid/missing action (got: {action})")
-                if not dex or dex == 'unknown':
-                    validation_issues.append(f"unknown DEX (got: {dex})")
-                
-                logger.error(f"❌ [SKIPPED_TRADE] Validation issues: {', '.join(validation_issues)}")
-                
-                # Log raw transaction data for offline analysis (per problem statement)
-                if 'transaction' in trade_info or 'transaction_full' in trade_info:
-                    tx = trade_info.get('transaction') or trade_info.get('transaction_full')
-                    logger.error(f"❌ [SKIPPED_TRADE] Raw transaction keys: {list(tx.keys()) if tx else 'None'}")
-                    if 'logs' in trade_info:
-                        logger.error(f"❌ [SKIPPED_TRADE] Log count: {len(trade_info['logs'])} messages")
-                else:
-                    logger.error(f"❌ [SKIPPED_TRADE] No transaction data available for analysis")
-                
-                # Log to failed_trade_analysis.log for offline debugging
-                log_failed_trade_analysis(
-                    trade_info,
-                    failure_reason=f"validation_failed: {', '.join(validation_issues)}",
-                    retry_count=0,
-                    routing_data=None
-                )
+            # NOTE: Code should never reach here due to return in finally block
 
         except asyncio.TimeoutError:
             logger.warning("⏰ Trade handling timeout - processing anyway")
