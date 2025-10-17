@@ -987,33 +987,36 @@ class SimpleCopyTradingBot:
                 except Exception as e:
                     logger.error(f"[BACKFILL] ❌ Error parsing backfilled transaction: {e}")
             
-            # STEP 1: Infer missing fields before validation
+            # STEP 1: Infer missing fields before validation - with error resilience
             logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
-            trade_info = self.trade_processor.infer_missing_fields(trade_info)
-            logger.debug(f"[DEBUG] After infer_missing_fields: {json.dumps(trade_info, default=str)}")
-            
-            # Do NOT return early on requires_full_analysis
-            if trade_info.get("requires_full_analysis"):
-                try:
-                    schedule_deep_analysis(trade_info)  # fire-and-forget
-                    logger.info("ℹ️ Deep analysis scheduled; continuing fast-path")
-                except Exception as e:
-                    logger.warning(f"⚠️ Deep analysis scheduling failed: {e}")
-            
-            # Check if we have all required fields and call coordinator
-            have_all = _have_all_fields(trade_info)
-            trade_info["use_universal_cloner"] = not have_all
-            
-            # Log mode selection
-            if have_all:
-                logger.info("🧭 [MODE] Builders enabled (all fields complete), Cloner as fallback")
-            else:
-                logger.info("🧭 [MODE] Cloner fallback (fields incomplete)")
-            
-            # Log handoff to coordinator
-            logger.info("📤 [HANDOFF] Calling coordinator now…")
-            await route_and_execute(trade_info, self.rpc_client, self.wallet, jito=self.jito_service)
-            logger.info("📥 [HANDOFF] Coordinator call returned")
+            try:
+                trade_info = self.trade_processor.infer_missing_fields(trade_info)
+                logger.debug(f"[DEBUG] After infer_missing_fields: {json.dumps(trade_info, default=str)}")
+            except Exception as e:
+                logger.error("❌ infer_missing_fields crashed", exc_info=True)
+            finally:
+                # Do NOT return early on requires_full_analysis
+                if trade_info.get("requires_full_analysis"):
+                    try:
+                        schedule_deep_analysis(trade_info)  # fire-and-forget
+                        logger.info("ℹ️ Deep analysis scheduled; continuing fast-path")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Deep analysis scheduling failed: {e}")
+                
+                # Check if we have all required fields and call coordinator
+                have_all = _have_all_fields(trade_info)
+                trade_info["use_universal_cloner"] = not have_all
+                
+                # Log mode selection
+                if have_all:
+                    logger.info("🧭 [MODE] Builders enabled (all fields complete), Cloner as fallback")
+                else:
+                    logger.info("🧭 [MODE] Cloner fallback (fields incomplete)")
+                
+                # Log handoff to coordinator
+                logger.info("📤 [HANDOFF] Calling coordinator now…")
+                await route_and_execute(trade_info, self.rpc_client, self.wallet, jito=self.jito_service)
+                logger.info("📥 [HANDOFF] Coordinator call returned")
             
             # STEP 2: Validate and process
             logger.debug(f"[DEBUG] Before validate_trade_info: {json.dumps(trade_info, default=str)}")
