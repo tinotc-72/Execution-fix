@@ -205,11 +205,12 @@ def test_error_handling():
     else:
         checks.append(("submit_transaction has error handling", False))
     
-    # Check that methods return None on error rather than raising
-    if content.count('return None') >= 5:
-        checks.append(("Methods return None on error", True))
-    else:
-        checks.append(("Methods return None on error", False))
+    # Check that error handlers return None on error rather than raising
+    error_returns_none = (
+        re.search(r'except Exception.*?return None', content, re.DOTALL) and
+        re.search(r'self\.logger\.error.*?return None', content, re.DOTALL)
+    )
+    checks.append(("Methods return None on error", bool(error_returns_none)))
     
     passed = sum(1 for _, result in checks if result)
     

@@ -29,7 +29,7 @@ Controls whether Jito functionality is enabled.
 
 ### When Jito is Disabled (`JITO_ENABLED=false`)
 
-1. **Import**: Skips Jito imports entirely - no `jito_service` code is loaded
+1. **Import**: Skips Jito imports entirely - the conditional import block is not executed, so no `jito_service` code is loaded
 2. **RPC-Only**: Uses only standard RPC submission path
 3. **Clean**: No Jito-related code is executed
 
