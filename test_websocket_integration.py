@@ -57,7 +57,7 @@ async def mock_websocket_handler(trade_info: Dict[str, Any]):
     try:
         logger.info(f"🧩 [CALLBACK] START pipeline (async) for {signature[:8]}...")
         await mock_trade_callback(trade_info)
-        logger.info(f"🧩 [CALLBACK] END pipeline finished successfully for {signature[:8]}")
+        logger.info(f"🧩 [CALLBACK] FINISHED pipeline.")
     except Exception as e:
         logger.error(f"❌ [CALLBACK] ERROR pipeline crashed for {signature[:8]}: {e}", exc_info=True)
 
@@ -82,7 +82,7 @@ async def simulate_successful_trade():
     await mock_websocket_handler(trade_info)
     
     print("\n✅ SUCCESS: All logs appeared in correct order!")
-    print("   You can see: SCHEDULED → START → COORDINATOR → EXECUTION → END")
+    print("   You can see: SCHEDULED → START → COORDINATOR → EXECUTION → FINISHED")
 
 
 async def simulate_failed_trade():
@@ -106,7 +106,7 @@ async def simulate_failed_trade():
     try:
         logger.info(f"🧩 [CALLBACK] START pipeline (async) for {signature[:8]}...")
         await failing_callback(trade_info)
-        logger.info(f"🧩 [CALLBACK] END pipeline finished successfully for {signature[:8]}")
+        logger.info(f"🧩 [CALLBACK] FINISHED pipeline.")
     except Exception as e:
         logger.error(f"❌ [CALLBACK] ERROR pipeline crashed for {signature[:8]}: {e}", exc_info=False)
     
@@ -129,7 +129,7 @@ async def main():
     print("="*80)
     print("\nThe fix ensures:")
     print("  ✅ Pipeline execution is visible in logs")
-    print("  ✅ SCHEDULED → START → COORDINATOR → EXECUTION → END flow")
+    print("  ✅ SCHEDULED → START → COORDINATOR → EXECUTION → FINISHED flow")
     print("  ✅ Errors are properly caught and logged")
     print("  ✅ No silent failures in background tasks")
     print("\nBefore the fix:")
