@@ -37,10 +37,10 @@ def test_meteora_routing():
     checks = [
         (r'if dex == "meteora":', "Checks for dex == 'meteora'"),
         (r'meteora_build_and_sign', "Calls meteora_build_and_sign"),
-        (r'jupiter_build_buy_tx', "Falls back to Jupiter"),
+        (r'jupiter_build_and_sign', "Falls back to Jupiter build_and_sign"),
         (r'execute_direct_copy', "Falls back to direct_copy"),
         (r'🧭 \[ROUTE\] Meteora → build_and_sign', "Logs meteora route"),
-        (r'⚠️ Meteora build failed → trying Jupiter', "Logs Jupiter fallback"),
+        (r'⚠️ \[ROUTE\] Meteora build failed → trying Jupiter', "Logs Jupiter fallback"),
     ]
     
     passed = 0
@@ -83,10 +83,39 @@ def test_unknown_with_mint_routing():
     return passed == len(checks)
 
 
+def test_jupiter_routing():
+    """Test jupiter routing logic"""
+    print("\n" + "=" * 80)
+    print("TEST 4: Jupiter Routing Logic")
+    print("=" * 80)
+    
+    with open('execution_coordinator.py', 'r') as f:
+        content = f.read()
+    
+    checks = [
+        (r'if dex == "jupiter" and not prefer_clone:', "Checks for dex == 'jupiter' and not prefer_clone"),
+        (r'jupiter_build_and_sign', "Calls jupiter_build_and_sign"),
+        (r'execute_direct_copy', "Falls back to direct_copy"),
+        (r'🧭 \[ROUTE\] Jupiter → build_and_sign', "Logs jupiter route"),
+        (r'⚠️ \[ROUTE\] Jupiter build failed — falling back to direct_copy', "Logs direct_copy fallback"),
+    ]
+    
+    passed = 0
+    for pattern, description in checks:
+        if re.search(pattern, content):
+            print(f"  ✅ {description}")
+            passed += 1
+        else:
+            print(f"  ❌ {description}")
+    
+    print(f"\n  Result: {passed}/{len(checks)} checks passed")
+    return passed == len(checks)
+
+
 def test_try_submit_helper():
     """Test try_submit helper function"""
     print("\n" + "=" * 80)
-    print("TEST 4: try_submit Helper Function")
+    print("TEST 5: try_submit Helper Function")
     print("=" * 80)
     
     with open('execution_coordinator.py', 'r') as f:
@@ -114,7 +143,7 @@ def test_try_submit_helper():
 def test_emoji_logging():
     """Test emoji logging consistency"""
     print("\n" + "=" * 80)
-    print("TEST 5: Emoji Logging Consistency")
+    print("TEST 6: Emoji Logging Consistency")
     print("=" * 80)
     
     with open('execution_coordinator.py', 'r') as f:
@@ -150,7 +179,7 @@ def test_emoji_logging():
 def test_no_new_dependencies():
     """Test that no new dependencies are added"""
     print("\n" + "=" * 80)
-    print("TEST 6: No New Dependencies")
+    print("TEST 7: No New Dependencies")
     print("=" * 80)
     
     with open('execution_coordinator.py', 'r') as f:
@@ -209,6 +238,7 @@ def main():
         ("Function Exists", test_maybe_execute_exists),
         ("Meteora Routing", test_meteora_routing),
         ("Unknown with Mint Routing", test_unknown_with_mint_routing),
+        ("Jupiter Routing", test_jupiter_routing),
         ("try_submit Helper", test_try_submit_helper),
         ("Emoji Logging", test_emoji_logging),
         ("No New Dependencies", test_no_new_dependencies),
@@ -243,7 +273,8 @@ def main():
         print("\n  🎉 ALL TESTS PASSED!")
         print("\n  The maybe_execute function implements:")
         print("  ✅ Initial route logging with dex and prefer_clone")
-        print("  ✅ Meteora path: Meteora build_and_sign → Jupiter → direct_copy")
+        print("  ✅ Jupiter path: Jupiter build_and_sign → direct_copy")
+        print("  ✅ Meteora path: Meteora build_and_sign → Jupiter build_and_sign → direct_copy")
         print("  ✅ Unknown with mint: Jupiter → direct_copy")
         print("  ✅ try_submit wrapper with loud logging")
         print("  ✅ Emoji logging consistent with existing format")
