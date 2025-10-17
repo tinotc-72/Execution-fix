@@ -6,11 +6,15 @@
 
 The codebase already meets **100%** of the problem statement requirements. The async/await signatures are perfectly aligned throughout the execution chain from coordinator → try_submit → executor.
 
+**Note:** Line numbers referenced in this report are accurate as of commit 384024d. As the codebase evolves, line numbers may shift, but the function signatures and async/await patterns remain the key verification points.
+
 ## Problem Statement Analysis
 
 The issue requested alignment of async/await signatures in submission helpers for a clean async chain from coordinator → try_submit → executor, with specific requirements:
 
 ### Requirements Checklist
+
+**Note:** Line numbers are accurate as of this verification (commit 384024d). Function names and signatures are the key verification points.
 
 #### A) execution_coordinator.py
 - ✅ **Make try_submit async and always await it**
