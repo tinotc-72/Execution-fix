@@ -67,8 +67,15 @@ def exec_err(executor_name: str, error_message: str) -> dict:
     return {"success": False, "executor": executor_name, "error": error_message}
 
 def jito_is_configured(jito_service) -> bool:
-    """Check if Jito is properly configured and available"""
-    return JITO_AVAILABLE and jito_service is not None
+    """
+    Check if Jito is properly configured and available.
+    
+    Returns True only if:
+    1. JITO_AVAILABLE (jito_service module can be imported)
+    2. jito_service instance is not None
+    3. jito_service has send_transaction method
+    """
+    return JITO_AVAILABLE and jito_service is not None and hasattr(jito_service, 'send_transaction')
 
 from solders.signature import Signature
 
@@ -149,21 +156,15 @@ FEE_RECIPIENT_WRITABLE = PublicKey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV1T6
 logger = logging.getLogger(__name__)
 
 DEFAULT_PRIORITY_FEE = 2_000_000  # 2M micro-lamports (protocol-compliant)
-# (removed) legacy Bundle imports — submissions are unified via FastExecutor
 # JitoClient is available from jito_service module when needed by FastExecutor
 try:
     from jito_service import JitoClient
     JITO_AVAILABLE = True
-    logger.info("✅ Jito service available - MEV protection ready for Meteora")
-except ImportError:
-    try:
-        from .jito_service import JitoClient
-        JITO_AVAILABLE = True
-        logger.info("✅ Jito service available - MEV protection ready for Meteora")
-    except ImportError:
-        logger.warning("⚠️ JitoClient not available - MEV protection disabled")
-        JITO_AVAILABLE = False
-        # (removed) placeholder legacy JitoClient bundle stub — use jito_service.JitoClient instead
+    logger.info("[METEORA] ✅ JitoClient available for MEV protection")
+except ImportError as e:
+    logger.info(f"[METEORA] ℹ️  JitoClient not available: {e}. Will use RPC fallback.")
+    JITO_AVAILABLE = False
+    # (removed) placeholder legacy JitoClient bundle stub — use jito_service.JitoClient instead
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

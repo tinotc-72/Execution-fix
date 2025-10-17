@@ -21,9 +21,11 @@ from solders.hash import Hash
 try:
     from jito_service import JitoClient
     JITO_AVAILABLE = True
-except ImportError:
+    print("[FAST_EXECUTOR] ✅ JitoClient available for MEV protection")
+except ImportError as e:
     JITO_AVAILABLE = False
     JitoClient = None
+    print(f"[FAST_EXECUTOR] ℹ️  JitoClient not available: {e}. Will use RPC fallback.")
 
 from env_keys import EnvKeys
 

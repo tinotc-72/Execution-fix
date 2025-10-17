@@ -39,21 +39,30 @@ from complete_mev_bot import CompleteMEVBot, CompleteMEVConfig
 from env_keys import EnvKeys
 from execution_coordinator import exec_ok, exec_err
 
-# Import JitoClient for MEV protection
+# Import JitoClient for MEV protection - optional dependency
 try:
     from jito_service import JitoClient
     JITO_AVAILABLE = True
-except ImportError:
+    logger.info("[DIRECT_COPY] ✅ JitoClient available for MEV protection")
+except ImportError as e:
     JITO_AVAILABLE = False
     JitoClient = None
+    logger.info(f"[DIRECT_COPY] ℹ️  JitoClient not available: {e}. Will use RPC fallback.")
 
 import logging
 
 logger = logging.getLogger(__name__)
 
 def jito_is_configured(jito_service) -> bool:
-    """Check if Jito is properly configured and available"""
-    return jito_service is not None and hasattr(jito_service, 'send_transaction')
+    """
+    Check if Jito is properly configured and available.
+    
+    Returns True only if:
+    1. JITO_AVAILABLE (jito_service module can be imported)
+    2. jito_service instance is not None
+    3. jito_service has send_transaction method
+    """
+    return JITO_AVAILABLE and jito_service is not None and hasattr(jito_service, 'send_transaction')
 
 
 async def submit_cloned_tx(final_vtx, fast_executor):
