@@ -87,7 +87,8 @@ from config import WALLET
 
 # Import utilities
 from utils import get_transaction_with_logs, load_keypair, RPCClient
-from debug_utils import set_span_id
+from utils.async_timeout import run_with_watchdog
+from debug_utils import set_span_id, DebugSpan
 
 # Import specialized modules
 from copy_trade_logger import get_copy_trade_logger
@@ -465,7 +466,27 @@ class SimpleCopyTradingBot:
         logger.info(f"   Signature: {sig[:12]}...")
         
         # Apply field inference from logs and transaction data
-        trade_info = self.trade_processor.infer_missing_fields(trade_info)
+        # Wrap with DebugSpan for step-level checkpoints and run_with_watchdog for timeout protection
+        original_trade_info = trade_info.copy()  # Preserve original in case of timeout/error
+        
+        with DebugSpan("infer_missing_fields", input_data={"signature": sig[:12]}):
+            # Run infer_missing_fields in a thread pool to avoid blocking the event loop
+            # (it uses asyncio.get_event_loop().run_until_complete() internally)
+            async def run_inference():
+                return await asyncio.to_thread(
+                    self.trade_processor.infer_missing_fields, 
+                    trade_info
+                )
+            
+            # Run with watchdog timeout protection (30 seconds)
+            trade_info = await run_with_watchdog(
+                run_inference(),
+                timeout_seconds=30.0,
+                operation_name="infer_missing_fields",
+                fallback_value=original_trade_info,
+                log_timeout=True,
+                log_error=True
+            )
         
         # Get source wallet
         source_wallet = (
