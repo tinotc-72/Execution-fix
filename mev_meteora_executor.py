@@ -48,14 +48,10 @@ from solders.compute_budget import set_compute_unit_limit, set_compute_unit_pric
 # Set up logger early for import-time logging
 logger = logging.getLogger(__name__)
 
-# Solders-only imports
-from solders.transaction import Transaction, VersionedTransaction
-from solders.message import MessageV0
-from solders.instruction import Instruction, AccountMeta
-from solders.keypair import Keypair
+# Solders-only imports (deduplicated)
+from solders.transaction import Transaction
 from solders.pubkey import Pubkey as PublicKey
 from solders.system_program import transfer, TransferParams
-from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 
 # Standardized result helpers
 def exec_ok(executor_name: str, signature: str, data: dict = None) -> dict:
