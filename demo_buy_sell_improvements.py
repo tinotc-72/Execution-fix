@@ -95,7 +95,7 @@ def demonstrate_improved_logging():
     print("─"*80)
     print("""
 ⚠️ [ACTION_EXTRACTION] Could not determine specific action for 5YHq3xPe...
-⚠️ [ACTION_EXTRACTION] Defaulting to 'buy' (WSOL→token_mint) for improved route selection
+⚠️ [ACTION_EXTRACTION] Defaulting to 'buy' (WSOL→token) for improved route selection
 
 ✅ BENEFIT: When action is completely unknown:
    - System defaults to 'buy' instead of 'swap'

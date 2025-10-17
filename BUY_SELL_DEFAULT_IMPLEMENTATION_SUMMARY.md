@@ -14,7 +14,7 @@ Goal: Improve logs to show action=buy/sell for most swaps, improving route selec
 
 ### 1. Enhanced Fallback Default Action (trade_processor.py)
 
-**Location**: `_extract_action_with_fallback` method (line 3483-3487)
+**Location**: `_extract_action_with_fallback` method
 
 **BEFORE**:
 ```python
@@ -34,7 +34,7 @@ return 'buy'
 
 ### 2. Improved mint_in Default for BUY (trade_processor.py)
 
-**Location**: `detect_buy_sell` method (line 1311-1315)
+**Location**: `detect_buy_sell` method
 
 **BEFORE**:
 ```python
@@ -57,7 +57,7 @@ elif delta > 0:
 
 ### 3. Improved mint_out Default for SELL (trade_processor.py)
 
-**Location**: `detect_buy_sell` method (line 1316-1320)
+**Location**: `detect_buy_sell` method
 
 **BEFORE**:
 ```python
