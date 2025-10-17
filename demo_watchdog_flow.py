@@ -11,6 +11,7 @@ This demonstrates:
 import asyncio
 import logging
 import sys
+import time  # For blocking sleep simulation in tests
 
 # Configure logging
 logging.basicConfig(
@@ -30,18 +31,19 @@ class MockTradeProcessor:
     
     def infer_missing_fields(self, trade_info):
         """Simulate inference that might timeout or fail."""
-        import time
         scenario = trade_info.get('scenario', 'success')
         
         if scenario == 'timeout':
-            # Simulate long-running inference
+            # Simulate long-running inference (intentionally blocking for test)
+            # Note: Using time.sleep() instead of asyncio.sleep() to simulate
+            # a blocking operation that the watchdog should handle
             time.sleep(5.0)
             return {**trade_info, 'action': 'buy', 'token_mint': 'inferred_mint'}
         elif scenario == 'error':
             # Simulate inference error
             raise ValueError("Inference failed - missing required data")
         else:
-            # Simulate successful inference
+            # Simulate successful inference (intentionally blocking for test)
             time.sleep(0.1)
             return {**trade_info, 'action': 'buy', 'token_mint': 'inferred_mint'}
 
@@ -101,7 +103,13 @@ async def demonstrate_flow(scenario_name: str, trade_info: dict):
         )
     
     print(f"✅ [INFERENCE] Completed (with timeout protection)")
-    print(f"📤 [OUTPUT] Trade info after inference: action={trade_info.get('action')}, token_mint={trade_info.get('token_mint', 'UNKNOWN')[:12] if trade_info.get('token_mint') else 'UNKNOWN'}...")
+    
+    # Format token_mint for display
+    token_mint_display = trade_info.get('token_mint', 'UNKNOWN')
+    if token_mint_display and token_mint_display != 'UNKNOWN':
+        token_mint_display = token_mint_display[:12] + '...'
+    
+    print(f"📤 [OUTPUT] Trade info after inference: action={trade_info.get('action')}, token_mint={token_mint_display}")
     
     # STEP 2: Continue to validation and coordinator handoff
     print(f"\n🔍 [VALIDATION] Checking trade intent...")
