@@ -261,10 +261,10 @@ def _have_all_fields(trade_info: dict) -> bool:
     Returns:
         bool: True if all required fields are present and valid
     """
-    tok = trade_info.get("token_mint") or trade_info.get("mint")
-    ok = all(trade_info.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS") for k in ("dex","wallet_address")) and bool(tok)
-    if tok and not trade_info.get("token_mint"):
-        trade_info["token_mint"] = tok
+    token_mint = trade_info.get("token_mint") or trade_info.get("mint")
+    ok = all(v not in (None, "", "unknown", "PENDING_ANALYSIS") for v in (trade_info.get("dex"), trade_info.get("wallet_address"), token_mint))
+    if ok and trade_info.get("token_mint") is None and token_mint:
+        trade_info["token_mint"] = token_mint
     return ok
 
 
@@ -995,10 +995,10 @@ class SimpleCopyTradingBot:
             # Do NOT return early on requires_full_analysis
             if trade_info.get("requires_full_analysis"):
                 try:
-                    schedule_deep_analysis(trade_info)
-                    logger.info("ℹ️ scheduled deep analysis; continuing fast-path")
+                    schedule_deep_analysis(trade_info)  # fire-and-forget
+                    logger.info("ℹ️ Deep analysis scheduled; continuing fast-path")
                 except Exception as e:
-                    logger.warning(f"⚠️ deep analysis scheduling failed: {e}")
+                    logger.warning(f"⚠️ Deep analysis scheduling failed: {e}")
             
             # Check if we have all required fields and call coordinator
             have_all = _have_all_fields(trade_info)
