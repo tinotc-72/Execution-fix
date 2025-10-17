@@ -54,6 +54,12 @@ CANONICAL_KNOWN_WALLETS = {
     "AVATAR_WALLET_1", "AVATAR_WALLET_2", "AVATAR_WALLET_3",
 } | TOKEN_PROGRAMS | set(DEX_PROGRAMS.keys())  # Unify all known programs
 
+# Sanity limits to prevent infinite loops in inference helpers
+MAX_LOG_LINES_TO_SCAN = 500  # Maximum log lines to process
+MAX_ADDRESSES_TO_CHECK = 200  # Maximum addresses to validate
+MAX_INSTRUCTIONS_TO_SCAN = 100  # Maximum instructions to analyze
+MAX_TOKEN_BALANCES_TO_SCAN = 50  # Maximum token balance entries to process
+
 # Simple LRU cache with TTL for pubkey → {is_mint, is_token_account, mint_of_token_account}
 class LRUCacheTTL:
     def __init__(self, maxsize=512, ttl=1800):
@@ -3497,35 +3503,49 @@ class TradeProcessor:
         Returns:
             Action string based on log analysis
         """
-        if not logs:
+        corr_id = get_span_id()
+        with DebugSpan("_analyze_logs_for_action", input_data={"log_count": len(logs) if logs else 0}):
+            if not logs:
+                logger.debug(f"[ACTION_ANALYSIS] No logs provided | corr={corr_id}")
+                return 'unknown'
+            
+            # Sanity check: limit log lines to scan
+            logs_to_scan = logs[:MAX_LOG_LINES_TO_SCAN] if len(logs) > MAX_LOG_LINES_TO_SCAN else logs
+            if len(logs) > MAX_LOG_LINES_TO_SCAN:
+                logger.warning(
+                    f"⚠️ [ACTION_ANALYSIS] Limiting log scan from {len(logs)} to {MAX_LOG_LINES_TO_SCAN} lines | corr={corr_id}"
+                )
+            
+            # Join all logs for analysis
+            log_text = ' '.join(logs_to_scan).lower()
+            
+            # Action indicators in logs
+            buy_indicators = ['buy', 'purchase', 'acquire']
+            sell_indicators = ['sell', 'dispose']
+            swap_indicators = ['swap', 'exchange', 'route', 'sharedaccountsroute']
+            
+            # Count indicators
+            buy_count = sum(1 for indicator in buy_indicators if indicator in log_text)
+            sell_count = sum(1 for indicator in sell_indicators if indicator in log_text)
+            swap_count = sum(1 for indicator in swap_indicators if indicator in log_text)
+            
+            logger.debug(
+                f"[ACTION_ANALYSIS] Indicator counts: buy={buy_count}, sell={sell_count}, swap={swap_count} | corr={corr_id}"
+            )
+            
+            # Determine action based on strongest signal
+            max_count = max(buy_count, sell_count, swap_count)
+            
+            if max_count == 0:
+                return 'unknown'
+            elif buy_count == max_count:
+                return 'buy'
+            elif sell_count == max_count:
+                return 'sell'
+            elif swap_count == max_count:
+                return 'swap'
+            
             return 'unknown'
-        
-        # Join all logs for analysis
-        log_text = ' '.join(logs).lower()
-        
-        # Action indicators in logs
-        buy_indicators = ['buy', 'purchase', 'acquire']
-        sell_indicators = ['sell', 'dispose']
-        swap_indicators = ['swap', 'exchange', 'route', 'sharedaccountsroute']
-        
-        # Count indicators
-        buy_count = sum(1 for indicator in buy_indicators if indicator in log_text)
-        sell_count = sum(1 for indicator in sell_indicators if indicator in log_text)
-        swap_count = sum(1 for indicator in swap_indicators if indicator in log_text)
-        
-        # Determine action based on strongest signal
-        max_count = max(buy_count, sell_count, swap_count)
-        
-        if max_count == 0:
-            return 'unknown'
-        elif buy_count == max_count:
-            return 'buy'
-        elif sell_count == max_count:
-            return 'sell'
-        elif swap_count == max_count:
-            return 'swap'
-        
-        return 'unknown'
 
     def _extract_mint_from_logs_enhanced(self, logs: List[str]) -> Optional[str]:
         """
@@ -3538,53 +3558,76 @@ class TradeProcessor:
         Returns:
             Token mint address if found, None otherwise
         """
-        if not logs:
+        corr_id = get_span_id()
+        with DebugSpan("_extract_mint_from_logs_enhanced", input_data={"log_count": len(logs) if logs else 0}):
+            if not logs:
+                logger.debug(f"[MINT_FROM_LOGS] No logs provided | corr={corr_id}")
+                return None
+            
+            import re
+            
+            # Sanity check: limit log lines to scan
+            logs_to_scan = logs[:MAX_LOG_LINES_TO_SCAN] if len(logs) > MAX_LOG_LINES_TO_SCAN else logs
+            if len(logs) > MAX_LOG_LINES_TO_SCAN:
+                logger.warning(
+                    f"⚠️ [MINT_FROM_LOGS] Limiting log scan from {len(logs)} to {MAX_LOG_LINES_TO_SCAN} lines | corr={corr_id}"
+                )
+            
+            # Pattern to match Solana addresses (base58, 32-44 chars)
+            address_pattern = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
+            
+            # Known system addresses to exclude (expand from DEX_PROGRAMS)
+            system_addresses = {
+                'So11111111111111111111111111111111111111112',  # SOL/WSOL
+                '11111111111111111111111111111111',  # System Program
+                'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',  # Token Program
+                'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',  # Token-2022 Program
+                'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',  # Associated Token Program
+                'ComputeBudget111111111111111111111111111111',  # Compute Budget
+            }
+            # Also exclude known DEX program IDs
+            system_addresses.update(DEX_PROGRAMS.keys())
+            
+            # Extract all potential addresses from logs
+            log_text = ' '.join(logs_to_scan)
+            potential_mints = []
+            
+            # Limit regex matches to prevent DoS
+            match_count = 0
+            for match in re.finditer(address_pattern, log_text):
+                match_count += 1
+                if match_count > MAX_ADDRESSES_TO_CHECK:
+                    logger.warning(
+                        f"⚠️ [MINT_FROM_LOGS] Reached max address check limit ({MAX_ADDRESSES_TO_CHECK}) | corr={corr_id}"
+                    )
+                    break
+                
+                address = match.group(0)
+                if address not in system_addresses and is_valid_solana_address(address):
+                    potential_mints.append(address)
+            
+            logger.debug(
+                f"[MINT_FROM_LOGS] Scanned {match_count} addresses, found {len(potential_mints)} candidates | corr={corr_id}"
+            )
+            
+            # Look for addresses mentioned multiple times (likely the traded token)
+            if potential_mints:
+                from collections import Counter
+                mint_counts = Counter(potential_mints)
+                # Return the most frequently mentioned address
+                most_common = mint_counts.most_common(1)
+                if most_common:
+                    mint, count = most_common[0]
+                    if count >= 2:  # Mentioned at least twice
+                        logger.info(f"🎯 [MINT_FROM_LOGS] Found mint {mint[:8]}... (mentioned {count} times in logs) | corr={corr_id}")
+                        return mint
+                    elif count == 1 and len(potential_mints) == 1:
+                        # Only one candidate, likely the mint
+                        logger.info(f"🎯 [MINT_FROM_LOGS] Found single candidate mint {mint[:8]}... | corr={corr_id}")
+                        return mint
+            
+            logger.debug(f"[MINT_FROM_LOGS] No reliable mint found in {len(logs_to_scan)} log messages | corr={corr_id}")
             return None
-        
-        import re
-        
-        # Pattern to match Solana addresses (base58, 32-44 chars)
-        address_pattern = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
-        
-        # Known system addresses to exclude (expand from DEX_PROGRAMS)
-        system_addresses = {
-            'So11111111111111111111111111111111111111112',  # SOL/WSOL
-            '11111111111111111111111111111111',  # System Program
-            'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',  # Token Program
-            'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',  # Token-2022 Program
-            'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',  # Associated Token Program
-            'ComputeBudget111111111111111111111111111111',  # Compute Budget
-        }
-        # Also exclude known DEX program IDs
-        system_addresses.update(DEX_PROGRAMS.keys())
-        
-        # Extract all potential addresses from logs
-        log_text = ' '.join(logs)
-        potential_mints = []
-        
-        for match in re.finditer(address_pattern, log_text):
-            address = match.group(0)
-            if address not in system_addresses and is_valid_solana_address(address):
-                potential_mints.append(address)
-        
-        # Look for addresses mentioned multiple times (likely the traded token)
-        if potential_mints:
-            from collections import Counter
-            mint_counts = Counter(potential_mints)
-            # Return the most frequently mentioned address
-            most_common = mint_counts.most_common(1)
-            if most_common:
-                mint, count = most_common[0]
-                if count >= 2:  # Mentioned at least twice
-                    logger.info(f"🎯 [MINT_FROM_LOGS] Found mint {mint[:8]}... (mentioned {count} times in logs)")
-                    return mint
-                elif count == 1 and len(potential_mints) == 1:
-                    # Only one candidate, likely the mint
-                    logger.info(f"🎯 [MINT_FROM_LOGS] Found single candidate mint {mint[:8]}...")
-                    return mint
-        
-        logger.debug(f"[MINT_FROM_LOGS] No reliable mint found in {len(logs)} log messages")
-        return None
 
     def _extract_mint_from_token_balances(self, meta: dict) -> Optional[str]:
         """
@@ -3606,31 +3649,66 @@ class TradeProcessor:
         Returns:
             Token mint address if found, None otherwise
         """
-        WSOL = "So11111111111111111111111111111111111111112"
-        pre = {b["accountIndex"]: b for b in (meta.get("preTokenBalances") or [])}
-        post = {b["accountIndex"]: b for b in (meta.get("postTokenBalances") or [])}
+        corr_id = get_span_id()
+        with DebugSpan("_extract_mint_from_token_balances", input_data={"has_meta": bool(meta)}):
+            try:
+                if not meta:
+                    logger.debug(f"[MINT_FROM_BALANCES] No meta provided | corr={corr_id}")
+                    return None
+                
+                WSOL = "So11111111111111111111111111111111111111112"
+                
+                pre_balances = meta.get("preTokenBalances") or []
+                post_balances = meta.get("postTokenBalances") or []
+                
+                # Sanity check: limit token balances to scan
+                if len(pre_balances) > MAX_TOKEN_BALANCES_TO_SCAN:
+                    logger.warning(
+                        f"⚠️ [MINT_FROM_BALANCES] Limiting preTokenBalances scan from {len(pre_balances)} to {MAX_TOKEN_BALANCES_TO_SCAN} | corr={corr_id}"
+                    )
+                    pre_balances = pre_balances[:MAX_TOKEN_BALANCES_TO_SCAN]
+                
+                if len(post_balances) > MAX_TOKEN_BALANCES_TO_SCAN:
+                    logger.warning(
+                        f"⚠️ [MINT_FROM_BALANCES] Limiting postTokenBalances scan from {len(post_balances)} to {MAX_TOKEN_BALANCES_TO_SCAN} | corr={corr_id}"
+                    )
+                    post_balances = post_balances[:MAX_TOKEN_BALANCES_TO_SCAN]
+                
+                pre = {b["accountIndex"]: b for b in pre_balances if isinstance(b, dict) and "accountIndex" in b}
+                post = {b["accountIndex"]: b for b in post_balances if isinstance(b, dict) and "accountIndex" in b}
 
-        best = (None, 0.0)  # (mint, abs_delta)
-        # 1) Prefer biggest absolute UI delta
-        for idx, pb in post.items():
-            mint = pb.get("mint")
-            if not mint or mint == WSOL:
-                continue
-            post_amt = (pb.get("uiTokenAmount") or {}).get("uiAmount") or 0.0
-            pre_amt = ((pre.get(idx, {}).get("uiTokenAmount") or {}).get("uiAmount") or 0.0)
-            delta = abs(float(post_amt) - float(pre_amt))
-            if delta > best[1]:
-                best = (mint, delta)
+                logger.debug(
+                    f"[MINT_FROM_BALANCES] Processing {len(pre)} pre and {len(post)} post token balances | corr={corr_id}"
+                )
 
-        if best[0]:
-            return best[0]
+                best = (None, 0.0)  # (mint, abs_delta)
+                # 1) Prefer biggest absolute UI delta
+                for idx, pb in post.items():
+                    mint = pb.get("mint")
+                    if not mint or mint == WSOL:
+                        continue
+                    post_amt = (pb.get("uiTokenAmount") or {}).get("uiAmount") or 0.0
+                    pre_amt = ((pre.get(idx, {}).get("uiTokenAmount") or {}).get("uiAmount") or 0.0)
+                    delta = abs(float(post_amt) - float(pre_amt))
+                    if delta > best[1]:
+                        best = (mint, delta)
 
-        # 2) Fallback: first non-WSOL mint in post balances
-        for pb in post.values():
-            mint = pb.get("mint")
-            if mint and mint != WSOL:
-                return mint
-        return None
+                if best[0]:
+                    logger.info(f"🎯 [MINT_FROM_BALANCES] Found mint {best[0][:8]}... with delta={best[1]:.6f} | corr={corr_id}")
+                    return best[0]
+
+                # 2) Fallback: first non-WSOL mint in post balances
+                for pb in post.values():
+                    mint = pb.get("mint")
+                    if mint and mint != WSOL:
+                        logger.info(f"🎯 [MINT_FROM_BALANCES] Fallback: using first non-WSOL mint {mint[:8]}... | corr={corr_id}")
+                        return mint
+                
+                logger.debug(f"[MINT_FROM_BALANCES] No mint found in token balances | corr={corr_id}")
+                return None
+            except Exception as e:
+                logger.error(f"❌ [MINT_FROM_BALANCES] Exception: {e} | corr={corr_id}", exc_info=True)
+                return None
 
     def _extract_mint_from_instruction_accounts(self, trade_info: Dict[str, Any]) -> Optional[str]:
         """
@@ -3642,72 +3720,96 @@ class TradeProcessor:
         
         Reference: Solana transaction structure - https://docs.solana.com/developing/programming-model/transactions
         """
-        try:
-            tx = trade_info.get('transaction') or trade_info.get('transaction_full')
-            if not tx:
-                logger.debug("[MINT_FROM_ACCOUNTS] No transaction data available")
+        corr_id = get_span_id()
+        with DebugSpan("_extract_mint_from_instruction_accounts", input_data={"has_trade_info": bool(trade_info)}):
+            try:
+                tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                if not tx:
+                    logger.debug(f"[MINT_FROM_ACCOUNTS] No transaction data available | corr={corr_id}")
+                    return None
+                
+                message = tx.get('transaction', {}).get('message', {})
+                account_keys = message.get('accountKeys', [])
+                instructions = message.get('instructions', [])
+                
+                if not account_keys or not instructions:
+                    logger.debug(f"[MINT_FROM_ACCOUNTS] No account keys or instructions in transaction | corr={corr_id}")
+                    return None
+                
+                # Sanity check: limit instructions to scan
+                instructions_to_scan = instructions[:MAX_INSTRUCTIONS_TO_SCAN] if len(instructions) > MAX_INSTRUCTIONS_TO_SCAN else instructions
+                if len(instructions) > MAX_INSTRUCTIONS_TO_SCAN:
+                    logger.warning(
+                        f"⚠️ [MINT_FROM_ACCOUNTS] Limiting instruction scan from {len(instructions)} to {MAX_INSTRUCTIONS_TO_SCAN} | corr={corr_id}"
+                    )
+                
+                # Known programs to exclude
+                excluded_programs = set(DEX_PROGRAMS.keys()) | TOKEN_PROGRAMS | {
+                    '11111111111111111111111111111111',  # System Program
+                    'ComputeBudget111111111111111111111111111111',  # Compute Budget
+                    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',  # Associated Token Program
+                    'So11111111111111111111111111111111111111112',  # SOL/WSOL
+                }
+                
+                # Collect candidate mints from all instructions
+                candidate_mints = []
+                accounts_checked = 0
+                
+                for ix in instructions_to_scan:
+                    prog_idx = ix.get('programIdIndex')
+                    if prog_idx is None or prog_idx >= len(account_keys):
+                        continue
+                    
+                    prog_id = account_keys[prog_idx]
+                    
+                    # Only look at DEX program instructions
+                    if prog_id not in DEX_PROGRAMS:
+                        continue
+                    
+                    # Get accounts used by this instruction
+                    account_indices = ix.get('accounts', [])
+                    for acc_idx in account_indices:
+                        accounts_checked += 1
+                        if accounts_checked > MAX_ADDRESSES_TO_CHECK:
+                            logger.warning(
+                                f"⚠️ [MINT_FROM_ACCOUNTS] Reached max address check limit ({MAX_ADDRESSES_TO_CHECK}) | corr={corr_id}"
+                            )
+                            break
+                        
+                        if acc_idx < len(account_keys):
+                            account = account_keys[acc_idx]
+                            # Filter out known programs
+                            if account not in excluded_programs and is_valid_solana_address(account):
+                                candidate_mints.append(account)
+                    
+                    if accounts_checked > MAX_ADDRESSES_TO_CHECK:
+                        break
+                
+                logger.debug(
+                    f"[MINT_FROM_ACCOUNTS] Scanned {len(instructions_to_scan)} instructions, checked {accounts_checked} accounts, found {len(candidate_mints)} candidates | corr={corr_id}"
+                )
+                
+                # Return the first valid candidate
+                if candidate_mints:
+                    # Remove duplicates while preserving order
+                    seen = set()
+                    unique_candidates = []
+                    for mint in candidate_mints:
+                        if mint not in seen:
+                            seen.add(mint)
+                            unique_candidates.append(mint)
+                    
+                    # Return the first candidate (most likely the output token)
+                    mint = unique_candidates[0]
+                    logger.info(f"🎯 [MINT_FROM_ACCOUNTS] Found candidate mint from instruction accounts: {mint[:8]}... ({len(unique_candidates)} total candidates) | corr={corr_id}")
+                    return mint
+                
+                logger.debug(f"[MINT_FROM_ACCOUNTS] No valid mint candidates found in instruction accounts | corr={corr_id}")
                 return None
-            
-            message = tx.get('transaction', {}).get('message', {})
-            account_keys = message.get('accountKeys', [])
-            instructions = message.get('instructions', [])
-            
-            if not account_keys or not instructions:
-                logger.debug("[MINT_FROM_ACCOUNTS] No account keys or instructions in transaction")
+                
+            except Exception as e:
+                logger.error(f"❌ [MINT_FROM_ACCOUNTS] Exception: {e} | corr={corr_id}", exc_info=True)
                 return None
-            
-            # Known programs to exclude
-            excluded_programs = set(DEX_PROGRAMS.keys()) | TOKEN_PROGRAMS | {
-                '11111111111111111111111111111111',  # System Program
-                'ComputeBudget111111111111111111111111111111',  # Compute Budget
-                'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',  # Associated Token Program
-                'So11111111111111111111111111111111111111112',  # SOL/WSOL
-            }
-            
-            # Collect candidate mints from all instructions
-            candidate_mints = []
-            
-            for ix in instructions:
-                prog_idx = ix.get('programIdIndex')
-                if prog_idx is None or prog_idx >= len(account_keys):
-                    continue
-                
-                prog_id = account_keys[prog_idx]
-                
-                # Only look at DEX program instructions
-                if prog_id not in DEX_PROGRAMS:
-                    continue
-                
-                # Get accounts used by this instruction
-                account_indices = ix.get('accounts', [])
-                for acc_idx in account_indices:
-                    if acc_idx < len(account_keys):
-                        account = account_keys[acc_idx]
-                        # Filter out known programs
-                        if account not in excluded_programs and is_valid_solana_address(account):
-                            candidate_mints.append(account)
-            
-            # Return the first valid candidate
-            if candidate_mints:
-                # Remove duplicates while preserving order
-                seen = set()
-                unique_candidates = []
-                for mint in candidate_mints:
-                    if mint not in seen:
-                        seen.add(mint)
-                        unique_candidates.append(mint)
-                
-                # Return the first candidate (most likely the output token)
-                mint = unique_candidates[0]
-                logger.info(f"🎯 [MINT_FROM_ACCOUNTS] Found candidate mint from instruction accounts: {mint[:8]}... ({len(unique_candidates)} total candidates)")
-                return mint
-            
-            logger.debug(f"[MINT_FROM_ACCOUNTS] No valid mint candidates found in instruction accounts")
-            return None
-            
-        except Exception as e:
-            logger.warning(f"⚠️ [MINT_FROM_ACCOUNTS] Failed to extract mint from instruction accounts: {e}")
-            return None
     
     def _parse_raydium_accounts(self, trade_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
@@ -3732,85 +3834,94 @@ class TradeProcessor:
         9: output token mint
         10: observation state
         """
-        try:
-            tx = trade_info.get('transaction') or trade_info.get('transaction_full')
-            if not tx:
-                logger.debug("[RAYDIUM_PARSE] No transaction data available")
-                return None
-            
-            # Look for Raydium CPMM program ID
-            RAYDIUM_CPMM_PROGRAM = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
-            
-            message = tx.get('transaction', {}).get('message', {})
-            account_keys = message.get('accountKeys', [])
-            instructions = message.get('instructions', [])
-            
-            # Find Raydium instruction
-            raydium_ix = None
-            for ix in instructions:
-                prog_idx = ix.get('programIdIndex')
-                if prog_idx is not None and prog_idx < len(account_keys):
-                    if account_keys[prog_idx] == RAYDIUM_CPMM_PROGRAM:
-                        raydium_ix = ix
-                        break
-            
-            if not raydium_ix:
-                logger.debug("[RAYDIUM_PARSE] No Raydium CPMM instruction found")
-                return None
-            
-            # Extract account indices from the instruction
-            account_indices = raydium_ix.get('accounts', [])
-            
-            # Standard Raydium CPMM swap instruction account layout:
-            # 0: payer (signer)
-            # 1: authority (amm authority)
-            # 2: amm config
-            # 3: pool state
-            # 4: input token account
-            # 5: output token account
-            # 6: input vault
-            # 7: output vault
-            # 8: input token mint
-            # 9: output token mint
-            # 10: observation state
-            
-            raydium_info = {
-                'program_id': RAYDIUM_CPMM_PROGRAM,
-                'accounts': {}
-            }
-            
-            # Map known account positions (may vary by instruction type)
-            if len(account_indices) >= 10:
-                raydium_info['accounts'] = {
-                    'amm_authority': account_keys[account_indices[1]] if account_indices[1] < len(account_keys) else None,
-                    'pool_config': account_keys[account_indices[2]] if account_indices[2] < len(account_keys) else None,
-                    'pool_state': account_keys[account_indices[3]] if account_indices[3] < len(account_keys) else None,
-                    'input_vault': account_keys[account_indices[6]] if account_indices[6] < len(account_keys) else None,
-                    'output_vault': account_keys[account_indices[7]] if account_indices[7] < len(account_keys) else None,
-                    'input_mint': account_keys[account_indices[8]] if account_indices[8] < len(account_keys) else None,
-                    'output_mint': account_keys[account_indices[9]] if account_indices[9] < len(account_keys) else None,
+        corr_id = get_span_id()
+        with DebugSpan("_parse_raydium_accounts", input_data={"has_trade_info": bool(trade_info)}):
+            try:
+                tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                if not tx:
+                    logger.debug(f"[RAYDIUM_PARSE] No transaction data available | corr={corr_id}")
+                    return None
+                
+                # Look for Raydium CPMM program ID
+                RAYDIUM_CPMM_PROGRAM = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
+                
+                message = tx.get('transaction', {}).get('message', {})
+                account_keys = message.get('accountKeys', [])
+                instructions = message.get('instructions', [])
+                
+                # Sanity check: limit instructions to scan
+                instructions_to_scan = instructions[:MAX_INSTRUCTIONS_TO_SCAN] if len(instructions) > MAX_INSTRUCTIONS_TO_SCAN else instructions
+                if len(instructions) > MAX_INSTRUCTIONS_TO_SCAN:
+                    logger.warning(
+                        f"⚠️ [RAYDIUM_PARSE] Limiting instruction scan from {len(instructions)} to {MAX_INSTRUCTIONS_TO_SCAN} | corr={corr_id}"
+                    )
+                
+                # Find Raydium instruction
+                raydium_ix = None
+                for ix in instructions_to_scan:
+                    prog_idx = ix.get('programIdIndex')
+                    if prog_idx is not None and prog_idx < len(account_keys):
+                        if account_keys[prog_idx] == RAYDIUM_CPMM_PROGRAM:
+                            raydium_ix = ix
+                            break
+                
+                if not raydium_ix:
+                    logger.debug(f"[RAYDIUM_PARSE] No Raydium CPMM instruction found | corr={corr_id}")
+                    return None
+                
+                # Extract account indices from the instruction
+                account_indices = raydium_ix.get('accounts', [])
+                
+                # Standard Raydium CPMM swap instruction account layout:
+                # 0: payer (signer)
+                # 1: authority (amm authority)
+                # 2: amm config
+                # 3: pool state
+                # 4: input token account
+                # 5: output token account
+                # 6: input vault
+                # 7: output vault
+                # 8: input token mint
+                # 9: output token mint
+                # 10: observation state
+                
+                raydium_info = {
+                    'program_id': RAYDIUM_CPMM_PROGRAM,
+                    'accounts': {}
                 }
                 
-                # Add system accounts
-                TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-                SYSTEM_PROGRAM = "11111111111111111111111111111111"
-                raydium_info['accounts']['token_program'] = TOKEN_PROGRAM
-                raydium_info['accounts']['system_program'] = SYSTEM_PROGRAM
-                
-                # Extract instruction data for discriminator
-                raydium_info['instruction_data'] = raydium_ix.get('data', '')
-                
-                logger.info(f"✅ [RAYDIUM_PARSE] Successfully parsed Raydium accounts")
-                logger.debug(f"[RAYDIUM_PARSE] Pool state: {raydium_info['accounts'].get('pool_state', 'N/A')[:12]}...")
-                
-                return raydium_info
-            else:
-                logger.warning(f"[RAYDIUM_PARSE] Insufficient accounts in Raydium instruction: {len(account_indices)}")
+                # Map known account positions (may vary by instruction type)
+                if len(account_indices) >= 10:
+                    raydium_info['accounts'] = {
+                        'amm_authority': account_keys[account_indices[1]] if account_indices[1] < len(account_keys) else None,
+                        'pool_config': account_keys[account_indices[2]] if account_indices[2] < len(account_keys) else None,
+                        'pool_state': account_keys[account_indices[3]] if account_indices[3] < len(account_keys) else None,
+                        'input_vault': account_keys[account_indices[6]] if account_indices[6] < len(account_keys) else None,
+                        'output_vault': account_keys[account_indices[7]] if account_indices[7] < len(account_keys) else None,
+                        'input_mint': account_keys[account_indices[8]] if account_indices[8] < len(account_keys) else None,
+                        'output_mint': account_keys[account_indices[9]] if account_indices[9] < len(account_keys) else None,
+                    }
+                    
+                    # Add system accounts
+                    TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                    SYSTEM_PROGRAM = "11111111111111111111111111111111"
+                    raydium_info['accounts']['token_program'] = TOKEN_PROGRAM
+                    raydium_info['accounts']['system_program'] = SYSTEM_PROGRAM
+                    
+                    # Extract instruction data for discriminator
+                    raydium_info['instruction_data'] = raydium_ix.get('data', '')
+                    
+                    logger.info(f"✅ [RAYDIUM_PARSE] Successfully parsed Raydium accounts | corr={corr_id}")
+                    logger.debug(f"[RAYDIUM_PARSE] Pool state: {raydium_info['accounts'].get('pool_state', 'N/A')[:12]}... | corr={corr_id}")
+                    
+                    return raydium_info
+                else:
+                    logger.warning(f"[RAYDIUM_PARSE] Insufficient accounts in Raydium instruction: {len(account_indices)} | corr={corr_id}")
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"❌ [RAYDIUM_PARSE] Exception: {e} | corr={corr_id}", exc_info=True)
                 return None
-                
-        except Exception as e:
-            logger.warning(f"⚠️ [RAYDIUM_PARSE] Failed to parse Raydium accounts: {e}")
-            return None
 
     def _infer_signature_from_transaction(self, trade_info: Dict[str, Any]) -> Optional[str]:
         """
@@ -3819,31 +3930,40 @@ class TradeProcessor:
         Returns:
             Transaction signature if found, None otherwise
         """
-        # Check various possible locations for signature
-        if trade_info.get('signature'):
-            return trade_info['signature']
-        
-        # Check in transaction data
-        tx = trade_info.get('transaction') or trade_info.get('transaction_full')
-        if tx:
-            # Check transaction.signatures
-            if isinstance(tx, dict):
-                signatures = tx.get('signatures', [])
-                if signatures and len(signatures) > 0:
-                    sig = signatures[0]
-                    logger.info(f"🎯 [SIG_INFERENCE] Found signature from transaction.signatures: {sig[:12]}...")
+        corr_id = get_span_id()
+        with DebugSpan("_infer_signature_from_transaction", input_data={"has_trade_info": bool(trade_info)}):
+            try:
+                # Check various possible locations for signature
+                if trade_info.get('signature'):
+                    sig = trade_info['signature']
+                    logger.debug(f"[SIG_INFERENCE] Signature already present: {sig[:12] if len(sig) >= 12 else sig}... | corr={corr_id}")
                     return sig
                 
-                # Check transaction.transaction.signatures
-                inner_tx = tx.get('transaction', {})
-                if inner_tx:
-                    signatures = inner_tx.get('signatures', [])
-                    if signatures and len(signatures) > 0:
-                        sig = signatures[0]
-                        logger.info(f"🎯 [SIG_INFERENCE] Found signature from transaction.transaction.signatures: {sig[:12]}...")
-                        return sig
-        
-        return None
+                # Check in transaction data
+                tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                if tx:
+                    # Check transaction.signatures
+                    if isinstance(tx, dict):
+                        signatures = tx.get('signatures', [])
+                        if signatures and len(signatures) > 0:
+                            sig = signatures[0]
+                            logger.info(f"🎯 [SIG_INFERENCE] Found signature from transaction.signatures: {sig[:12]}... | corr={corr_id}")
+                            return sig
+                        
+                        # Check transaction.transaction.signatures
+                        inner_tx = tx.get('transaction', {})
+                        if inner_tx:
+                            signatures = inner_tx.get('signatures', [])
+                            if signatures and len(signatures) > 0:
+                                sig = signatures[0]
+                                logger.info(f"🎯 [SIG_INFERENCE] Found signature from transaction.transaction.signatures: {sig[:12]}... | corr={corr_id}")
+                                return sig
+                
+                logger.debug(f"[SIG_INFERENCE] No signature found | corr={corr_id}")
+                return None
+            except Exception as e:
+                logger.error(f"❌ [SIG_INFERENCE] Exception: {e} | corr={corr_id}", exc_info=True)
+                return None
 
     def _infer_wallet_from_transaction(self, trade_info: Dict[str, Any]) -> Optional[str]:
         """
@@ -3852,44 +3972,59 @@ class TradeProcessor:
         Returns:
             Wallet address if found, None otherwise
         """
-        # Check fee payer first (most reliable)
-        tx = trade_info.get('transaction') or trade_info.get('transaction_full')
-        if tx:
-            if isinstance(tx, dict):
-                # Check transaction.message.accountKeys[0] (fee payer)
-                msg = tx.get('message', {})
-                if msg:
-                    account_keys = msg.get('accountKeys', [])
-                    if account_keys and len(account_keys) > 0:
-                        wallet = account_keys[0]
-                        # Validate against monitored wallets
-                        if self._validate_monitored_wallet(wallet, self.target_wallets):
-                            logger.info(f"🎯 [WALLET_INFERENCE] Found monitored wallet from fee payer: {wallet[:8]}...")
-                            return wallet
+        corr_id = get_span_id()
+        with DebugSpan("_infer_wallet_from_transaction", input_data={"has_trade_info": bool(trade_info)}):
+            try:
+                # Check fee payer first (most reliable)
+                tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                if tx:
+                    if isinstance(tx, dict):
+                        # Check transaction.message.accountKeys[0] (fee payer)
+                        msg = tx.get('message', {})
+                        if msg:
+                            account_keys = msg.get('accountKeys', [])
+                            if account_keys and len(account_keys) > 0:
+                                wallet = account_keys[0]
+                                # Validate against monitored wallets
+                                if self._validate_monitored_wallet(wallet, self.target_wallets):
+                                    logger.info(f"🎯 [WALLET_INFERENCE] Found monitored wallet from fee payer: {wallet[:8]}... | corr={corr_id}")
+                                    return wallet
+                        
+                        # Check transaction.transaction.message.accountKeys[0]
+                        inner_tx = tx.get('transaction', {})
+                        if inner_tx:
+                            msg = inner_tx.get('message', {})
+                            if msg:
+                                account_keys = msg.get('accountKeys', [])
+                                if account_keys and len(account_keys) > 0:
+                                    wallet = account_keys[0]
+                                    if self._validate_monitored_wallet(wallet, self.target_wallets):
+                                        logger.info(f"🎯 [WALLET_INFERENCE] Found monitored wallet from fee payer (inner): {wallet[:8]}... | corr={corr_id}")
+                                        return wallet
                 
-                # Check transaction.transaction.message.accountKeys[0]
-                inner_tx = tx.get('transaction', {})
-                if inner_tx:
-                    msg = inner_tx.get('message', {})
-                    if msg:
-                        account_keys = msg.get('accountKeys', [])
-                        if account_keys and len(account_keys) > 0:
-                            wallet = account_keys[0]
-                            if self._validate_monitored_wallet(wallet, self.target_wallets):
-                                logger.info(f"🎯 [WALLET_INFERENCE] Found monitored wallet from fee payer (inner): {wallet[:8]}...")
-                                return wallet
-        
-        # Check post token balances for monitored wallets
-        meta = trade_info.get('meta') or (trade_info.get('transaction_full', {}) or {}).get('meta', {})
-        if meta:
-            post_balances = meta.get('postTokenBalances', [])
-            for balance in post_balances:
-                owner = balance.get('owner')
-                if owner and self._validate_monitored_wallet(owner, self.target_wallets):
-                    logger.info(f"🎯 [WALLET_INFERENCE] Found monitored wallet from token balances: {owner[:8]}...")
-                    return owner
-        
-        return None
+                # Check post token balances for monitored wallets
+                meta = trade_info.get('meta') or (trade_info.get('transaction_full', {}) or {}).get('meta', {})
+                if meta:
+                    post_balances = meta.get('postTokenBalances', [])
+                    
+                    # Sanity check: limit token balances to scan
+                    post_balances_to_scan = post_balances[:MAX_TOKEN_BALANCES_TO_SCAN] if len(post_balances) > MAX_TOKEN_BALANCES_TO_SCAN else post_balances
+                    if len(post_balances) > MAX_TOKEN_BALANCES_TO_SCAN:
+                        logger.warning(
+                            f"⚠️ [WALLET_INFERENCE] Limiting postTokenBalances scan from {len(post_balances)} to {MAX_TOKEN_BALANCES_TO_SCAN} | corr={corr_id}"
+                        )
+                    
+                    for balance in post_balances_to_scan:
+                        owner = balance.get('owner')
+                        if owner and self._validate_monitored_wallet(owner, self.target_wallets):
+                            logger.info(f"🎯 [WALLET_INFERENCE] Found monitored wallet from token balances: {owner[:8]}... | corr={corr_id}")
+                            return owner
+                
+                logger.debug(f"[WALLET_INFERENCE] No wallet found | corr={corr_id}")
+                return None
+            except Exception as e:
+                logger.error(f"❌ [WALLET_INFERENCE] Exception: {e} | corr={corr_id}", exc_info=True)
+                return None
 
     def ensure_meta_in_trade_info(self, trade_info: dict) -> None:
         """
