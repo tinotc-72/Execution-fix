@@ -164,7 +164,7 @@ try:
 except ImportError as e:
     logger.info(f"[METEORA] ℹ️  JitoClient not available: {e}. Will use RPC fallback.")
     JITO_AVAILABLE = False
-    # (removed) placeholder legacy JitoClient bundle stub — use jito_service.JitoClient instead
+    JitoClient = None  # Set to None for type safety
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

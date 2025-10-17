@@ -26,6 +26,9 @@ from utils import (
     TOKEN_PROGRAM_ID
 )
 
+# Set up logger early for import-time logging
+logger = logging.getLogger(__name__)
+
 # Import JitoClient for MEV protection - optional dependency
 try:
     from jito_service import JitoClient
@@ -87,7 +90,6 @@ SOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
 # Jupiter Program and Accounts
 JUPITER_PROGRAM = Pubkey.from_string("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4")
 
-logger = logging.getLogger(__name__)
 RPC_URL = EnvKeys().HELIUS_RPC_URL
 
 
