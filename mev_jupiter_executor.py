@@ -210,9 +210,9 @@ def get_swap_transaction(route: dict, user_pubkey: Pubkey) -> Optional[str]:
     logger.info(f"[JUPITER_SWAP] 🔄 Requesting swap transaction...")
     logger.debug(f"[JUPITER_SWAP] User pubkey: {user_pubkey}")
     
-    # Guard: Check if route is None before accessing .keys()
-    if route is None:
-        logger.error(f"[JUPITER_SWAP] ❌ Route is None, cannot get swap transaction")
+    # Guard: Check if route is None or falsy before accessing .keys()
+    if not route:
+        logger.warning(f"⚠️ [JUPITER] no route returned for swap request")
         return None
     
     logger.debug(f"[JUPITER_SWAP] Route keys: {list(route.keys())}")
@@ -340,20 +340,22 @@ def get_swap_transaction_duplicate(route: dict, wallet_pubkey: Pubkey) -> Option
         return exec_err("jupiter", f"swap transaction error: {str(e)}")
 
 
-def build_buy_tx(token_mint: str, amount_sol: float, wallet: Keypair, slippage: float = 3.0) -> VersionedTransaction:
+def build_buy_tx(token_mint: str, amount_sol: float, wallet: Keypair, slippage: float = 3.0) -> Optional[VersionedTransaction]:
     lamports = int(amount_sol * 1_000_000_000)
     # Coerce token_mint to string in case it's a Pubkey
     token_mint_str = _as_mint_str(token_mint)
     route = get_best_route(_as_mint_str(SOL_MINT), token_mint_str, lamports, slippage_bps=int(slippage * 100))
-    if route is None:
-        raise ValueError("Failed to get route from Jupiter")
+    if not route:
+        logger.warning(f"⚠️ [JUPITER] no route returned for {token_mint_str[:8]}...")
+        return None
     swap_tx_b64 = get_swap_transaction(route, wallet.pubkey())
-    if swap_tx_b64 is None:
-        raise ValueError("Failed to get swap transaction from Jupiter")
+    if not swap_tx_b64:
+        logger.warning(f"⚠️ [JUPITER] no swap transaction returned for {token_mint_str[:8]}...")
+        return None
     return VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
 
 
-def build_sell_tx(token_mint: str, wallet: Keypair, slippage: float = 3.0) -> VersionedTransaction:
+def build_sell_tx(token_mint: str, wallet: Keypair, slippage: float = 3.0) -> Optional[VersionedTransaction]:
     # Coerce token_mint to string in case it's a Pubkey
     token_mint_str = _as_mint_str(token_mint)
     ata = get_associated_token_address(wallet.pubkey(), Pubkey.from_string(token_mint_str))
@@ -368,19 +370,22 @@ def build_sell_tx(token_mint: str, wallet: Keypair, slippage: float = 3.0) -> Ve
     balance_data = res.json()
     try:
         amount = int(balance_data["result"]["value"]["amount"])
-    except Exception:
-        raise Exception("Failed to fetch token balance for sell transaction")
+    except Exception as e:
+        logger.warning(f"⚠️ [JUPITER] Failed to fetch token balance for sell: {e}")
+        return None
     
     route = get_best_route(token_mint_str, _as_mint_str(SOL_MINT), amount, slippage_bps=int(slippage * 100))
-    if route is None:
-        raise ValueError("Failed to get route from Jupiter")
+    if not route:
+        logger.warning(f"⚠️ [JUPITER] no route returned for sell {token_mint_str[:8]}...")
+        return None
     swap_tx_b64 = get_swap_transaction(route, wallet.pubkey())
-    if swap_tx_b64 is None:
-        raise ValueError("Failed to get swap transaction from Jupiter")
+    if not swap_tx_b64:
+        logger.warning(f"⚠️ [JUPITER] no swap transaction returned for sell {token_mint_str[:8]}...")
+        return None
     return VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
 
 
-def build_and_sign(trade_info: dict, rpc: str, keypair: Keypair) -> VersionedTransaction:
+def build_and_sign(trade_info: dict, rpc: str, keypair: Keypair) -> Optional[VersionedTransaction]:
     """
     Build and sign a Jupiter swap transaction.
     
@@ -390,15 +395,23 @@ def build_and_sign(trade_info: dict, rpc: str, keypair: Keypair) -> VersionedTra
         keypair: Wallet keypair for signing
     
     Returns:
-        VersionedTransaction ready to submit
+        VersionedTransaction ready to submit, or None if build fails
     """
     token_mint = trade_info.get("token_mint")
     amount_sol = trade_info.get("amount_sol", 0.001)
     
     if not token_mint:
-        raise ValueError("token_mint is required in trade_info")
+        logger.warning("⚠️ [JUPITER] build_and_sign: token_mint is required in trade_info")
+        return None
     
-    return build_buy_tx(token_mint, amount_sol, keypair)
+    try:
+        return build_buy_tx(token_mint, amount_sol, keypair)
+    except ValueError as e:
+        logger.warning(f"⚠️ [JUPITER] build_and_sign failed: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"❌ [JUPITER] build_and_sign error: {e}")
+        return None
 
 
 class MEVJupiterExecutor:
