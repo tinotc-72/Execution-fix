@@ -68,10 +68,8 @@ def test_meteora_path_logic():
         (r'from mev_meteora_executor import SimpleRPC, RPCConfig', "Imports SimpleRPC and RPCConfig"),
         (r'rpc = SimpleRPC\(RPCConfig\(rpc_url\)\)', "Creates SimpleRPC instance"),
         (r'vtx = meteora_build_and_sign\(trade_info, rpc, keypair\)', "Calls meteora build_and_sign with correct args"),
-        (r'from mev_jupiter_executor import build_buy_tx as jupiter_build_buy_tx', "Imports jupiter build_buy_tx"),
-        (r'vtx = jupiter_build_buy_tx\(token_mint_str, amount_sol, keypair\)', "Calls jupiter build_buy_tx"),
-        (r'if vtx and not vtx\.signatures:', "Checks if transaction needs signing"),
-        (r'vtx\.sign\(\[keypair\]\)', "Signs Jupiter transaction"),
+        (r'from mev_jupiter_executor import build_and_sign as jupiter_build_and_sign', "Imports jupiter build_and_sign"),
+        (r'vtx = jupiter_build_and_sign\(trade_info, rpc_url, keypair\)', "Calls jupiter build_and_sign"),
     ]
     
     passed = 0
@@ -104,11 +102,11 @@ def test_direct_copy_fallback():
     func_content = func_match.group(0)
     
     checks = [
-        (r'async def execute_direct_copy_fallback\(\):', "Has execute_direct_copy_fallback helper"),
+        (r'async def execute_direct_copy\(', "Has execute_direct_copy helper"),
         (r'from transaction_cloner import clone_tx_from_signature', "Imports clone_tx_from_signature"),
         (r'signature = trade_info\.get\("signature"\)', "Gets signature from trade_info"),
-        (r'await clone_tx_from_signature\(rpc=rpc_url, signature=signature, new_payer=keypair\)', "Calls clone_tx_from_signature"),
-        (r'return await execute_direct_copy_fallback\(\)', "Returns direct_copy fallback result"),
+        (r'await clone_tx_from_signature\(rpc=rpc', "Calls clone_tx_from_signature"),
+        (r'await try_submit\(vtx\)', "Submits cloned transaction"),
     ]
     
     passed = 0
