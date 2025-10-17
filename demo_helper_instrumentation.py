@@ -8,6 +8,7 @@ and loop protection.
 """
 
 import logging
+import time
 from debug_utils import DebugSpan, set_span_id, get_span_id
 
 # Configure logging to see the detailed output
@@ -17,6 +18,12 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# Constants from actual implementation (for demonstration)
+MAX_LOG_LINES_TO_SCAN = 500
+MAX_ADDRESSES_TO_CHECK = 200
+MAX_INSTRUCTIONS_TO_SCAN = 100
+MAX_TOKEN_BALANCES_TO_SCAN = 50
 
 
 def simulate_helper_with_debug_span():
@@ -36,14 +43,12 @@ def simulate_helper_with_debug_span():
     corr_id = get_span_id()
     with DebugSpan("_extract_mint_from_logs_enhanced", input_data={"log_count": 150}):
         # Simulate processing
-        import time
         
         # Simulate log scanning
         logger.info(f"[MINT_FROM_LOGS] Processing logs... | corr={corr_id}")
         time.sleep(0.05)
         
         # Simulate limit check
-        MAX_LOG_LINES_TO_SCAN = 100
         if 150 > MAX_LOG_LINES_TO_SCAN:
             logger.warning(
                 f"⚠️ [MINT_FROM_LOGS] Limiting log scan from 150 to {MAX_LOG_LINES_TO_SCAN} lines | corr={corr_id}"
@@ -107,7 +112,6 @@ def simulate_nested_helper_calls():
     # Simulate outer method
     corr_id = get_span_id()
     with DebugSpan("infer_missing_fields", input_data={"signature": correlation_id[:8]}):
-        import time
         
         # Simulate inner method 1
         with DebugSpan("_infer_signature_from_transaction", input_data={"has_trade_info": True}):
@@ -145,12 +149,8 @@ def simulate_loop_protection():
     
     corr_id = get_span_id()
     with DebugSpan("_extract_mint_from_instruction_accounts", input_data={"has_trade_info": True}):
-        import time
         
         # Simulate scanning many instructions
-        MAX_INSTRUCTIONS_TO_SCAN = 100
-        MAX_ADDRESSES_TO_CHECK = 200
-        
         total_instructions = 250
         logger.info(f"[MINT_FROM_ACCOUNTS] Total instructions: {total_instructions} | corr={corr_id}")
         
