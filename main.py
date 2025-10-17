@@ -87,7 +87,7 @@ from config import WALLET
 
 # Import utilities
 from utils import get_transaction_with_logs, load_keypair, RPCClient
-from utils.debug_span import set_span_id
+from debug_utils import set_span_id
 
 # Import specialized modules
 from copy_trade_logger import get_copy_trade_logger

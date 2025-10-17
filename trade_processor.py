@@ -84,7 +84,7 @@ import csv
 import os
 import re
 from utils import get_transaction_with_logs
-from utils.debug_span import DebugSpan, get_span_id
+from debug_utils import DebugSpan, get_span_id
 """
 🚀 TRADE PROCESSOR - Pure trade analysis and routing logic
 

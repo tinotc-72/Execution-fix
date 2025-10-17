@@ -30,8 +30,8 @@ def test_correlation_id_generation():
         return False
     
     # Check for set_span_id import
-    if 'from utils.debug_span import set_span_id' in content:
-        print("  ✅ set_span_id imported from utils.debug_span")
+    if 'from debug_utils import set_span_id' in content:
+        print("  ✅ set_span_id imported from debug_utils")
     else:
         print("  ❌ set_span_id not imported")
         return False
@@ -97,7 +97,7 @@ def test_debug_span_integration():
         content = f.read()
     
     # Check for DebugSpan import
-    if 'from utils.debug_span import DebugSpan, get_span_id' in content:
+    if 'from debug_utils import DebugSpan, get_span_id' in content:
         print("  ✅ DebugSpan and get_span_id imported")
     else:
         print("  ❌ DebugSpan import not found")

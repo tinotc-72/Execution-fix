@@ -13,7 +13,7 @@ This script validates that the DebugSpan context manager:
 
 import sys
 import logging
-from utils.debug_span import DebugSpan, set_span_id, get_span_id
+from debug_utils import DebugSpan, set_span_id, get_span_id
 
 # Configure logging to see debug output
 logging.basicConfig(
