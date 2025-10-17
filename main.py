@@ -1007,8 +1007,8 @@ class SimpleCopyTradingBot:
             # Do NOT return early on requires_full_analysis
             if trade_info.get("requires_full_analysis"):
                 try:
-                    schedule_deep_analysis(trade_info)  # non-blocking
-                    logger.info("ℹ️ scheduled deep analysis (non-blocking); continuing to fast-path")
+                    schedule_deep_analysis(trade_info)
+                    logger.info("ℹ️ scheduled deep analysis; continuing fast-path")
                 except Exception as e:
                     logger.warning(f"⚠️ deep analysis scheduling failed: {e}")
             
