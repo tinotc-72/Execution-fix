@@ -45,8 +45,8 @@ if not parsed.get("dex"):
 #### Meteora Program IDs (Lines 40-44)
 ```python
 METEORA_PROGRAM_IDS = {
-    "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",  # Meteora AMM (alt PID)
-    "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",  # Primary PID
+    "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",  # Meteora AMM
+    "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",  # Meteora Aggregator
 }
 ```
 
@@ -142,6 +142,9 @@ if 'transaction' in trade_info:
 13. ✅ Integration - Meteora end-to-end
 
 ### Test Results
+
+**Note:** Test counts reflect the current implementation. Run the test files directly for the most up-to-date results.
+
 ```
 ================================================================================
 RESULTS: 13 passed, 0 failed
@@ -237,7 +240,9 @@ overwriting valid values. Routing sees correct DEX and real signer.
 
 ## Files Modified
 
-No files were modified - the implementation was already complete!
+**No production code files were modified** - the implementation was already complete!
+
+The existing codebase already satisfied all requirements.
 
 ## Files Added
 
