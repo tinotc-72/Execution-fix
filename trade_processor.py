@@ -1309,15 +1309,17 @@ class TradeProcessor:
                         mint_out = WSOL
                         logger.info(f"🔴 [DELTA_DETECTION] SELL detected: {owner[:8]}.../{mint[:8]}... -{abs(delta):,.6f} (WSOL: +{wsol_delta:,.6f})")
                     elif delta > 0:
-                        # Token increases without WSOL context → assume BUY
+                        # Token increases without WSOL context → assume BUY (WSOL→token)
                         action_type = 'buy'
+                        mint_in = WSOL  # Default: assume WSOL input
                         mint_out = mint
-                        logger.info(f"🟢 [DELTA_DETECTION] BUY detected: {owner[:8]}.../{mint[:8]}... +{delta:,.6f}")
+                        logger.info(f"🟢 [DELTA_DETECTION] BUY detected: {owner[:8]}.../{mint[:8]}... +{delta:,.6f} (defaulting to WSOL→token)")
                     elif delta < 0:
-                        # Token decreases without WSOL context → assume SELL
+                        # Token decreases without WSOL context → assume SELL (token→WSOL)
                         action_type = 'sell'
                         mint_in = mint
-                        logger.info(f"🔴 [DELTA_DETECTION] SELL detected: {owner[:8]}.../{mint[:8]}... -{abs(delta):,.6f}")
+                        mint_out = WSOL  # Default: assume WSOL output
+                        logger.info(f"🔴 [DELTA_DETECTION] SELL detected: {owner[:8]}.../{mint[:8]}... -{abs(delta):,.6f} (defaulting to token→WSOL)")
                     
                     if action_type:
                         amount = abs(delta)
@@ -3480,11 +3482,12 @@ class TradeProcessor:
             logger.info(f"✅ [ACTION_EXTRACTION] From fallback: {fallback_action}")
             return fallback_action
         
-        # PRIORITY 5: Default to 'swap' for permissive execution
-        # Industry-standard Solana copy trading bots prioritize execution over strict validation
+        # PRIORITY 5: Default to 'buy' for permissive execution
+        # If action is still unknown, let builders default to buy (WSOL→token_mint)
+        # This improves route selection and slippage settings for most swaps
         logger.warning(f"⚠️ [ACTION_EXTRACTION] Could not determine specific action for {signature[:12]}...")
-        logger.warning(f"   Defaulting to 'swap' for permissive execution (industry standard)")
-        return 'swap'
+        logger.warning(f"   Defaulting to 'buy' (WSOL→token_mint) for improved route selection")
+        return 'buy'
 
     def _analyze_logs_for_action(self, logs: List[str]) -> str:
         """
