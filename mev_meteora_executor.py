@@ -45,6 +45,9 @@ from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 
+# Set up logger early for import-time logging
+logger = logging.getLogger(__name__)
+
 # Solders-only imports
 from solders.transaction import Transaction, VersionedTransaction
 from solders.message import MessageV0
@@ -152,8 +155,6 @@ class SimpleRPC:
 # Protocol-compliant fee program and writable fee recipient
 FEE_PROGRAM = PublicKey.from_string("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")
 FEE_RECIPIENT_WRITABLE = PublicKey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV1T6NVswCLPVXdHy")
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_PRIORITY_FEE = 2_000_000  # 2M micro-lamports (protocol-compliant)
 # JitoClient is available from jito_service module when needed by FastExecutor

@@ -62,8 +62,6 @@ def jito_is_configured(jito_service) -> bool:
     """
     return JITO_AVAILABLE and jito_service is not None and hasattr(jito_service, 'send_transaction')
 
-JitoClient = None  # Type hint - will be set by conditional import above
-
 # Load Jupiter credentials from environment
 env_keys = EnvKeys()
 JUPITER_QUOTE_URL = env_keys.JUPITER_QUOTE_URL
