@@ -50,6 +50,11 @@ if delta > 0 and wsol_delta < 0:
     action_type = 'buy'
     mint_in = WSOL      # User spent WSOL
     mint_out = mint     # User received token
+elif delta > 0:
+    # Token increases without WSOL context → assume BUY (WSOL→token)
+    action_type = 'buy'
+    mint_in = WSOL      # Default: assume WSOL input
+    mint_out = mint
 ```
 
 **Sell Detection**:
@@ -59,6 +64,21 @@ elif delta < 0 and wsol_delta > 0:
     action_type = 'sell'
     mint_in = mint      # User spent token
     mint_out = WSOL     # User received WSOL
+elif delta < 0:
+    # Token decreases without WSOL context → assume SELL (token→WSOL)
+    action_type = 'sell'
+    mint_in = mint
+    mint_out = WSOL     # Default: assume WSOL output
+```
+
+**Unknown Action Fallback**:
+When action cannot be determined from balance deltas, the system defaults to 'buy' (WSOL→token_mint):
+```python
+# In _extract_action_with_fallback
+# PRIORITY 5: Default to 'buy' for permissive execution
+# If action is still unknown, let builders default to buy (WSOL→token_mint)
+logger.warning(f"   Defaulting to 'buy' (WSOL→token_mint) for improved route selection")
+return 'buy'
 ```
 
 #### 3. mint_in and mint_out Fields
@@ -220,5 +240,8 @@ The buy/sell side inference implementation successfully:
 2. ✅ Infers buy/sell based on WSOL balance changes
 3. ✅ Saves mint_in and mint_out for executor routing
 4. ✅ Logs detected actions with required format
+5. ✅ **NEW**: Defaults to 'buy' (WSOL→token_mint) when action is unknown
+6. ✅ **NEW**: Sets mint_in=WSOL default for buy cases without WSOL context
+7. ✅ **NEW**: Sets mint_out=WSOL default for sell cases without WSOL context
 
-This enhancement ensures trades are correctly labeled as BUY or SELL, allowing executors to use the correct execution path and improving trade execution reliability.
+This enhancement ensures trades are correctly labeled as BUY or SELL, allowing executors to use the correct execution path and improving trade execution reliability. The fallback to 'buy' ensures that even when action cannot be determined, the system makes a sensible default assumption that improves route selection and slippage settings.

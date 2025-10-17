@@ -95,7 +95,7 @@ from transaction_cloner import TransactionCloner
 
 # Import trade processor for clean logic separation
 from trade_processor import TradeProcessor
-from wallet_tx_parser import WalletTransactionParser
+from wallet_tx_parser import WalletTransactionParser, merge_parsed_fields
 
 # Runtime diagnostics to detect stale module imports
 def _origin(mod):
@@ -250,7 +250,7 @@ def _have_all_fields(trade_info: dict) -> bool:
     """
     Check if trade_info has all required fields for execution.
     
-    Returns True only if dex, action, wallet_address are all present and valid,
+    Returns True only if dex, wallet_address are all present and valid,
     AND token_mint (or mint) is present.
     
     Treats mint and token_mint as synonyms and normalizes to token_mint.
@@ -261,54 +261,13 @@ def _have_all_fields(trade_info: dict) -> bool:
     Returns:
         bool: True if all required fields are present and valid
     """
-    # Treat mint and token_mint as synonyms
     token_mint = trade_info.get("token_mint") or trade_info.get("mint")
-    
-    # Check all required fields - validate that values are not None, empty, or sentinel values
-    ok = all(v not in (None, "", "unknown", "PENDING_ANALYSIS") for v in [
-        trade_info.get("dex"),
-        trade_info.get("action"),
-        trade_info.get("wallet_address")
-    ]) and bool(token_mint)
-    
-    # Normalize to token_mint if we have a valid mint value
+    ok = all(v not in (None, "", "unknown", "PENDING_ANALYSIS") for v in (trade_info.get("dex"), trade_info.get("wallet_address"), token_mint))
     if ok and trade_info.get("token_mint") is None and token_mint:
         trade_info["token_mint"] = token_mint
-    
     return ok
 
 
-def merge_parsed_fields(trade_info: dict, parsed: dict) -> None:
-    """
-    Merge parser-detected fields into trade_info if the destination fields are empty/unknown.
-    
-    This prevents downstream code from clobbering fields that the parser already identified.
-    Only updates fields if they are currently None, empty string, "unknown", or "PENDING_ANALYSIS".
-    
-    Args:
-        trade_info: The trade dictionary to update
-        parsed: The parser result dictionary (may contain parsed_tx wrapper)
-    """
-    if not parsed:
-        return
-    
-    # Some code paths store parser result under "parsed_tx"
-    if isinstance(parsed.get("parsed_tx"), dict):
-        parsed = parsed["parsed_tx"]
-    
-    # normalize names from parser → trade_info
-    mapping = {
-        "dex": "dex",
-        "action": "action",
-        "token_mint": "token_mint",
-        "mint": "token_mint",
-        "wallet_address": "wallet_address",
-        "signature": "signature",
-    }
-    for src, dst in mapping.items():
-        val = parsed.get(src)
-        if val and trade_info.get(dst) in (None, "", "unknown", "PENDING_ANALYSIS"):
-            trade_info[dst] = val
 
 
 def schedule_deep_analysis(trade_info: dict):
@@ -401,8 +360,7 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     
     ⚠️ CRITICAL: This function MUST be called with 'await' in async handlers!
     
-    Always calls coordinator to ensure logging sanity checks, even with incomplete fields.
-    Wraps coordinator call in try/except to log any errors.
+    Skips execution if fields are incomplete. Wraps coordinator call in try/except to log any errors.
     
     Why await is critical:
     - Without await, coordinator logs never appear (🧭 [COORDINATOR] Route=...)
@@ -421,11 +379,10 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     Example (WRONG - will fail silently):
         route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
     """
-    # Always log handoff status, but indicate if fields are incomplete
     if not _have_all_fields(trade_info):
-        logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, but attempting coordinator handoff for logging")
-    else:
-        logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
+        logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")
+        return
+    logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
     
     # Extract rpc_url from rpc_client if needed
     rpc_url = rpc.rpc_url if hasattr(rpc, 'rpc_url') else rpc
@@ -999,33 +956,36 @@ class SimpleCopyTradingBot:
                 except Exception as e:
                     logger.error(f"[BACKFILL] ❌ Error parsing backfilled transaction: {e}")
             
-            # STEP 1: Infer missing fields before validation
+            # STEP 1: Infer missing fields before validation - with error resilience
             logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
-            trade_info = self.trade_processor.infer_missing_fields(trade_info)
-            logger.debug(f"[DEBUG] After infer_missing_fields: {json.dumps(trade_info, default=str)}")
-            
-            # Do NOT return early on requires_full_analysis
-            if trade_info.get("requires_full_analysis"):
-                try:
-                    schedule_deep_analysis(trade_info)
-                    logger.info("ℹ️ scheduled deep analysis; continuing fast-path")
-                except Exception as e:
-                    logger.warning(f"⚠️ deep analysis scheduling failed: {e}")
-            
-            # Check if we have all required fields and call coordinator
-            have_all = _have_all_fields(trade_info)
-            trade_info["use_universal_cloner"] = not have_all
-            
-            # Log mode selection
-            if have_all:
-                logger.info("🧭 [MODE] Builders enabled (all fields complete), Cloner as fallback")
-            else:
-                logger.info("🧭 [MODE] Cloner fallback (fields incomplete)")
-            
-            # Log handoff to coordinator
-            logger.info("📤 [HANDOFF] Calling coordinator now…")
-            await route_and_execute(trade_info, self.rpc_client, self.wallet, jito=self.jito_service)
-            logger.info("📥 [HANDOFF] Coordinator call returned")
+            try:
+                trade_info = self.trade_processor.infer_missing_fields(trade_info)
+                logger.debug(f"[DEBUG] After infer_missing_fields: {json.dumps(trade_info, default=str)}")
+            except Exception as e:
+                logger.error("❌ infer_missing_fields crashed", exc_info=True)
+            finally:
+                # Do NOT return early on requires_full_analysis
+                if trade_info.get("requires_full_analysis"):
+                    try:
+                        schedule_deep_analysis(trade_info)  # fire-and-forget
+                        logger.info("ℹ️ Deep analysis scheduled; continuing fast-path")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Deep analysis scheduling failed: {e}")
+                
+                # Check if we have all required fields and call coordinator
+                have_all = _have_all_fields(trade_info)
+                trade_info["use_universal_cloner"] = not have_all
+                
+                # Log mode selection
+                if have_all:
+                    logger.info("🧭 [MODE] Builders enabled (all fields complete), Cloner as fallback")
+                else:
+                    logger.info("🧭 [MODE] Cloner fallback (fields incomplete)")
+                
+                # Log handoff to coordinator
+                logger.info("📤 [HANDOFF] Calling coordinator now…")
+                await route_and_execute(trade_info, self.rpc_client, self.wallet, jito=self.jito_service)
+                logger.info("📥 [HANDOFF] Coordinator call returned")
             
             # STEP 2: Validate and process
             logger.debug(f"[DEBUG] Before validate_trade_info: {json.dumps(trade_info, default=str)}")
