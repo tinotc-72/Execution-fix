@@ -1201,8 +1201,13 @@ class TradeProcessor:
         Analyzes preTokenBalances and postTokenBalances to calculate deltas
         Returns list of actions with precise buy/sell determination based on balance changes
         ONLY FOR MONITORED WALLETS
+        
+        Enhanced with WSOL-based buy/sell inference:
+        - WSOL decreases + token increases → action="buy", mint_in=WSOL, mint_out=token
+        - Token decreases + WSOL increases → action="sell", mint_in=token, mint_out=WSOL
         """
         actions = []
+        WSOL = "So11111111111111111111111111111111111111112"
         
         try:
             # Validate monitored wallets input
@@ -1249,6 +1254,9 @@ class TradeProcessor:
             # Calculate deltas for all (owner, mint) pairs
             all_pairs = set(pre_map.keys()) | set(post_map.keys())
             
+            # Group by owner to track WSOL and token changes together
+            owner_changes = {}  # owner -> {mint: delta}
+            
             for (owner, mint) in all_pairs:
                 # STRICT FILTERING: Only process monitored wallets
                 if not self._validate_monitored_wallet(owner, monitored_wallets):
@@ -1262,46 +1270,92 @@ class TradeProcessor:
                 if delta == 0:
                     continue
                 
-                # Skip SOL (we focus on token trades, not SOL changes)
-                if mint == "So11111111111111111111111111111111111111112":
-                    logger.debug(f"⏭️ [DELTA_DETECTION] Skipping SOL balance change for {owner[:8]}...")
-                    continue
-                
-                # Determine action based on delta
-                if delta > 0:
-                    action_type = 'buy'
-                    amount = delta
-                    logger.info(f"🟢 [DELTA_DETECTION] BUY detected: {owner[:8]}.../{mint[:8]}... +{delta:,.6f}")
-                elif delta < 0:
-                    action_type = 'sell'
-                    amount = abs(delta)
-                    logger.info(f"🔴 [DELTA_DETECTION] SELL detected: {owner[:8]}.../{mint[:8]}... -{abs(delta):,.6f}")
-                
-                # FEATURE 6: Enhanced Action Logging for Debugging
-                action_data = {
-                    'action': action_type,
-                    'owner': owner,
-                    'mint': mint,
-                    'amount': amount,
+                # Track all changes including WSOL
+                if owner not in owner_changes:
+                    owner_changes[owner] = {}
+                owner_changes[owner][mint] = {
                     'delta': delta,
                     'pre_amount': pre_amount,
-                    'post_amount': post_amount,
-                    'method': 'token_balance_delta'
+                    'post_amount': post_amount
                 }
+            
+            # Analyze changes per owner to infer buy/sell with WSOL context
+            for owner, changes in owner_changes.items():
+                wsol_delta = changes.get(WSOL, {}).get('delta', 0)
                 
-                # Add to actions list
-                actions.append(action_data)
+                # Find token changes (non-WSOL)
+                token_changes = [(mint, data) for mint, data in changes.items() if mint != WSOL]
                 
-                # FEATURE 6: Detailed Action Logging
-                logger.info(f"📝 [ACTION_LOG] Detected Action #{len(actions)}")
-                logger.info(f"   Action: {action_type.upper()}")
-                logger.info(f"   Token: {mint}")
-                logger.info(f"   Wallet: {owner}")
-                logger.info(f"   Amount: {amount:,.6f}")
-                logger.info(f"   Delta: {delta:+,.6f}")
-                logger.info(f"   Pre-Balance: {pre_amount:,.6f}")
-                logger.info(f"   Post-Balance: {post_amount:,.6f}")
-                logger.info(f"   Detection Method: token_balance_delta")
+                for mint, data in token_changes:
+                    delta = data['delta']
+                    pre_amount = data['pre_amount']
+                    post_amount = data['post_amount']
+                    
+                    # Infer action based on WSOL and token balance changes
+                    action_type = None
+                    mint_in = None
+                    mint_out = None
+                    
+                    if delta > 0 and wsol_delta < 0:
+                        # Token increases, WSOL decreases → BUY
+                        action_type = 'buy'
+                        mint_in = WSOL
+                        mint_out = mint
+                        logger.info(f"🟢 [DELTA_DETECTION] BUY detected: {owner[:8]}.../{mint[:8]}... +{delta:,.6f} (WSOL: {wsol_delta:,.6f})")
+                    elif delta < 0 and wsol_delta > 0:
+                        # Token decreases, WSOL increases → SELL
+                        action_type = 'sell'
+                        mint_in = mint
+                        mint_out = WSOL
+                        logger.info(f"🔴 [DELTA_DETECTION] SELL detected: {owner[:8]}.../{mint[:8]}... -{abs(delta):,.6f} (WSOL: +{wsol_delta:,.6f})")
+                    elif delta > 0:
+                        # Token increases without WSOL context → assume BUY
+                        action_type = 'buy'
+                        mint_out = mint
+                        logger.info(f"🟢 [DELTA_DETECTION] BUY detected: {owner[:8]}.../{mint[:8]}... +{delta:,.6f}")
+                    elif delta < 0:
+                        # Token decreases without WSOL context → assume SELL
+                        action_type = 'sell'
+                        mint_in = mint
+                        logger.info(f"🔴 [DELTA_DETECTION] SELL detected: {owner[:8]}.../{mint[:8]}... -{abs(delta):,.6f}")
+                    
+                    if action_type:
+                        amount = abs(delta)
+                        
+                        # FEATURE 6: Enhanced Action Logging for Debugging
+                        action_data = {
+                            'action': action_type,
+                            'owner': owner,
+                            'mint': mint,
+                            'amount': amount,
+                            'delta': delta,
+                            'pre_amount': pre_amount,
+                            'post_amount': post_amount,
+                            'method': 'token_balance_delta',
+                            'mint_in': mint_in,
+                            'mint_out': mint_out
+                        }
+                        
+                        # Add to actions list
+                        actions.append(action_data)
+                        
+                        # Log detected action as per problem statement
+                        logger.info(f"🎯 Detected action={action_type}")
+                        
+                        # FEATURE 6: Detailed Action Logging
+                        logger.info(f"📝 [ACTION_LOG] Detected Action #{len(actions)}")
+                        logger.info(f"   Action: {action_type.upper()}")
+                        logger.info(f"   Token: {mint}")
+                        logger.info(f"   Wallet: {owner}")
+                        logger.info(f"   Amount: {amount:,.6f}")
+                        logger.info(f"   Delta: {delta:+,.6f}")
+                        logger.info(f"   Pre-Balance: {pre_amount:,.6f}")
+                        logger.info(f"   Post-Balance: {post_amount:,.6f}")
+                        if mint_in:
+                            logger.info(f"   Mint In: {mint_in}")
+                        if mint_out:
+                            logger.info(f"   Mint Out: {mint_out}")
+                        logger.info(f"   Detection Method: token_balance_delta")
             
             logger.info(f"✅ [DELTA_DETECTION] Found {len(actions)} balance change actions")
             
@@ -1319,7 +1373,8 @@ class TradeProcessor:
                 
                 # Detailed action list for debugging
                 for i, action in enumerate(actions, 1):
-                    logger.info(f"   Action {i}: {action['action'].upper()} {action['owner'][:8]}.../{action['mint'][:8]}... Δ{action['delta']:+,.6f}")
+                    mint_info = f" (in:{action.get('mint_in', 'N/A')[:8]}..., out:{action.get('mint_out', 'N/A')[:8]}...)" if action.get('mint_in') or action.get('mint_out') else ""
+                    logger.info(f"   Action {i}: {action['action'].upper()} {action['owner'][:8]}.../{action['mint'][:8]}... Δ{action['delta']:+,.6f}{mint_info}")
             else:
                 logger.warning(f"⚠️ [ACTION_SUMMARY] No balance changes detected for monitored wallets")
             
