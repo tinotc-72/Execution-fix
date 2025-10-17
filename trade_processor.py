@@ -84,6 +84,7 @@ import csv
 import os
 import re
 from utils import get_transaction_with_logs
+from utils.debug_span import DebugSpan, get_span_id
 """
 🚀 TRADE PROCESSOR - Pure trade analysis and routing logic
 
@@ -3947,13 +3948,16 @@ class TradeProcessor:
         Returns:
             Updated trade_info with inferred fields
         """
-        logger.info("🔍 [FIELD_INFERENCE] Starting comprehensive field inference...")
+        corr_id = get_span_id()
+        logger.info("🔍 [FIELD_INFERENCE] Starting comprehensive field inference... | corr=%s", corr_id)
         
         # 0) Make sure meta is attached (from backfill; pipeline already populates it in many cases)
-        self.ensure_meta_in_trade_info(trade_info)
+        with DebugSpan("ensure_meta", input_data={"has_meta": bool(trade_info.get("meta"))}):
+            self.ensure_meta_in_trade_info(trade_info)
         
         # 0b) Mark error context (prevents clone of a failed tx)
-        self.annotate_source_failure(trade_info)
+        with DebugSpan("annotate_source_failure", input_data={"has_err": bool(trade_info.get("meta", {}).get("err"))}):
+            self.annotate_source_failure(trade_info)
         
         inferred_fields = []
         
@@ -3964,111 +3968,159 @@ class TradeProcessor:
         if not logs and not tx_obj and trade_info.get("signature"):
             sig = trade_info["signature"]
             if sig and sig != 'unknown' and self.rpc_client:
-                try:
-                    logger.info(f"🔎 [TRADE_PROCESSOR] Last-chance fetch for signature {sig[:12]}...")
-                    # Use asyncio to call the async RPC method synchronously
-                    import asyncio
-                    from utils import fetch_json_rpc_with_url
-                    
-                    loop = asyncio.get_event_loop()
-                    result = loop.run_until_complete(
-                        fetch_json_rpc_with_url(
-                            self.rpc_client.rpc_url,
-                            "getTransaction",
-                            [
-                                sig,
-                                {
-                                    "encoding": "jsonParsed",
-                                    "maxSupportedTransactionVersion": 0
-                                }
-                            ]
+                with DebugSpan("last_chance_fetch", input_data={"signature": sig[:12]}):
+                    try:
+                        logger.info(f"🔎 [TRADE_PROCESSOR] Last-chance fetch for signature {sig[:12]}...")
+                        # Use asyncio to call the async RPC method synchronously
+                        import asyncio
+                        from utils import fetch_json_rpc_with_url
+                        
+                        loop = asyncio.get_event_loop()
+                        result = loop.run_until_complete(
+                            fetch_json_rpc_with_url(
+                                self.rpc_client.rpc_url,
+                                "getTransaction",
+                                [
+                                    sig,
+                                    {
+                                        "encoding": "jsonParsed",
+                                        "maxSupportedTransactionVersion": 0
+                                    }
+                                ]
+                            )
                         )
-                    )
-                    
-                    if result and "result" in result and result["result"]:
-                        tx = result["result"]
-                        meta = tx.get("meta") or {}
-                        trade_info["logs"] = meta.get("logMessages") or []
-                        trade_info["transaction"] = tx.get("transaction")
-                        trade_info["meta"] = meta
-                        logger.info("🔎 [TRADE_PROCESSOR] Attached missing logs/tx/meta via signature fetch")
-                        inferred_fields.append('logs/transaction (last-chance fetch)')
-                    else:
-                        logger.warning(f"⚠️ [TRADE_PROCESSOR] No transaction data returned for {sig[:12]}...")
-                except Exception as e:
-                    logger.warning(f"⚠️ [TRADE_PROCESSOR] Signature fetch failed: {e}")
+                        
+                        if result and "result" in result and result["result"]:
+                            tx = result["result"]
+                            meta = tx.get("meta") or {}
+                            trade_info["logs"] = meta.get("logMessages") or []
+                            trade_info["transaction"] = tx.get("transaction")
+                            trade_info["meta"] = meta
+                            logger.info("🔎 [TRADE_PROCESSOR] Attached missing logs/tx/meta via signature fetch")
+                            inferred_fields.append('logs/transaction (last-chance fetch)')
+                        else:
+                            logger.warning(f"⚠️ [TRADE_PROCESSOR] No transaction data returned for {sig[:12]}...")
+                    except Exception as e:
+                        logger.warning(f"⚠️ [TRADE_PROCESSOR] Signature fetch failed: {e}")
         
         # 1. Infer signature if missing
         if not trade_info.get('signature') or trade_info.get('signature') == 'unknown':
-            sig = self._infer_signature_from_transaction(trade_info)
-            if sig:
-                trade_info['signature'] = sig
-                inferred_fields.append('signature')
+            with DebugSpan("infer_signature", input_data={"has_transaction": bool(trade_info.get("transaction"))}):
+                sig = self._infer_signature_from_transaction(trade_info)
+                if sig:
+                    trade_info['signature'] = sig
+                    inferred_fields.append('signature')
         
         # 2. Fetch transaction data if we have signature but no transaction
         sig = trade_info.get('signature')
         if sig and sig != 'unknown' and not trade_info.get('transaction'):
-            try:
-                logger.info(f"🔄 [FIELD_INFERENCE] Fetching transaction data for signature {sig[:12]}...")
-                from utils import get_transaction_with_logs
-                tx_data = get_transaction_with_logs(sig)
-                if tx_data:
-                    trade_info['transaction'] = tx_data
-                    trade_info['transaction_full'] = tx_data
-                    # Ensure meta is attached from fetched transaction
-                    if tx_data.get('meta'):
-                        trade_info['meta'] = tx_data['meta']
-                    inferred_fields.append('transaction (fetched)')
-                    logger.info(f"✅ [FIELD_INFERENCE] Successfully fetched transaction data")
-            except Exception as e:
-                logger.warning(f"⚠️ [FIELD_INFERENCE] Failed to fetch transaction: {e}")
+            with DebugSpan("fetch_transaction", input_data={"signature": sig[:12] if sig else "none"}):
+                try:
+                    logger.info(f"🔄 [FIELD_INFERENCE] Fetching transaction data for signature {sig[:12]}...")
+                    from utils import get_transaction_with_logs
+                    tx_data = get_transaction_with_logs(sig)
+                    if tx_data:
+                        trade_info['transaction'] = tx_data
+                        trade_info['transaction_full'] = tx_data
+                        # Ensure meta is attached from fetched transaction
+                        if tx_data.get('meta'):
+                            trade_info['meta'] = tx_data['meta']
+                        inferred_fields.append('transaction (fetched)')
+                        logger.info(f"✅ [FIELD_INFERENCE] Successfully fetched transaction data")
+                except Exception as e:
+                    logger.warning(f"⚠️ [FIELD_INFERENCE] Failed to fetch transaction: {e}")
         
         # 3. Infer wallet_address if missing
         if not trade_info.get('wallet_address') or trade_info.get('wallet_address') == 'unknown':
-            wallet = self._infer_wallet_from_transaction(trade_info)
-            if wallet:
-                trade_info['wallet_address'] = wallet
-                inferred_fields.append('wallet_address')
-            elif self.target_wallets:
-                # Default to first monitored wallet as fallback
-                trade_info['wallet_address'] = self.target_wallets[0]
-                inferred_fields.append('wallet_address (default)')
+            with DebugSpan("infer_wallet", input_data={"has_transaction": bool(trade_info.get("transaction"))}):
+                wallet = self._infer_wallet_from_transaction(trade_info)
+                if wallet:
+                    trade_info['wallet_address'] = wallet
+                    inferred_fields.append('wallet_address')
+                elif self.target_wallets:
+                    # Default to first monitored wallet as fallback
+                    trade_info['wallet_address'] = self.target_wallets[0]
+                    inferred_fields.append('wallet_address (default)')
         
         # 4. Infer action using enhanced extraction
         if not trade_info.get('action') or trade_info.get('action') == 'unknown':
-            logger.info("🔍 [ACTION_INFERENCE] Action missing or unknown, attempting inference...")
-            
-            # Try to extract from logs
-            logs = trade_info.get('logs', [])
-            if not logs:
-                # Get logs from transaction
-                tx = trade_info.get('transaction') or trade_info.get('transaction_full')
-                if tx:
-                    meta = tx.get('meta', {})
-                    logs = meta.get('logMessages', [])
-            
-            if logs:
-                logger.debug(f"[ACTION_INFERENCE] Analyzing {len(logs)} log messages...")
-                action = self._analyze_logs_for_action(logs)
-                if action and action != 'unknown':
-                    trade_info['action'] = action
-                    inferred_fields.append('action')
-                    logger.info(f"✅ [ACTION_INFERENCE] Successfully inferred action from logs: {action}")
+            with DebugSpan("infer_action", input_data={"has_logs": bool(trade_info.get("logs"))}):
+                logger.info("🔍 [ACTION_INFERENCE] Action missing or unknown, attempting inference...")
+                
+                # Try to extract from logs
+                logs = trade_info.get('logs', [])
+                if not logs:
+                    # Get logs from transaction
+                    tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                    if tx:
+                        meta = tx.get('meta', {})
+                        logs = meta.get('logMessages', [])
+                
+                if logs:
+                    logger.debug(f"[ACTION_INFERENCE] Analyzing {len(logs)} log messages...")
+                    action = self._analyze_logs_for_action(logs)
+                    if action and action != 'unknown':
+                        trade_info['action'] = action
+                        inferred_fields.append('action')
+                        logger.info(f"✅ [ACTION_INFERENCE] Successfully inferred action from logs: {action}")
+                    else:
+                        # Default to 'swap' for permissive execution
+                        logger.warning(f"⚠️ [ACTION_INFERENCE] Could not determine action from logs, defaulting to 'swap'")
+                        trade_info['action'] = 'swap'
+                        inferred_fields.append('action (default: swap)')
                 else:
-                    # Default to 'swap' for permissive execution
-                    logger.warning(f"⚠️ [ACTION_INFERENCE] Could not determine action from logs, defaulting to 'swap'")
+                    # No logs available, default to swap
+                    logger.warning(f"⚠️ [ACTION_INFERENCE] No logs available, defaulting to 'swap'")
                     trade_info['action'] = 'swap'
-                    inferred_fields.append('action (default: swap)')
-            else:
-                # No logs available, default to swap
-                logger.warning(f"⚠️ [ACTION_INFERENCE] No logs available, defaulting to 'swap'")
-                trade_info['action'] = 'swap'
-                inferred_fields.append('action (default: swap, no logs)')
+                    inferred_fields.append('action (default: swap, no logs)')
         
         # 5. Infer DEX if missing
         if not trade_info.get('dex') or trade_info.get('dex') == 'unknown':
             if not trade_info.get('dex_type') or trade_info.get('dex_type') == 'unknown':
-                # Try to detect from logs
+                with DebugSpan("infer_dex", input_data={"has_logs": bool(trade_info.get("logs"))}):
+                    # Try to detect from logs
+                    logs = trade_info.get('logs', [])
+                    if not logs:
+                        tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                        if tx:
+                            meta = tx.get('meta', {})
+                            logs = meta.get('logMessages', [])
+                    
+                    if logs:
+                        log_text = ' '.join(logs).lower()
+                        for program_id, dex_type in DEX_PROGRAMS.items():
+                            if program_id.lower() in log_text:
+                                trade_info['dex'] = dex_type
+                                trade_info['dex_type'] = dex_type
+                                inferred_fields.append('dex')
+                                break
+                        
+                        # If still not found, try to detect from program invocations in transaction
+                        if not trade_info.get('dex') or trade_info.get('dex') == 'unknown':
+                            tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                            if tx and isinstance(tx, dict):
+                                instructions = tx.get('transaction', {}).get('message', {}).get('instructions', [])
+                                account_keys = tx.get('transaction', {}).get('message', {}).get('accountKeys', [])
+                                
+                                for ix in instructions:
+                                    prog_idx = ix.get('programIdIndex')
+                                    if prog_idx is not None and prog_idx < len(account_keys):
+                                        prog_id = account_keys[prog_idx]
+                                        if prog_id in DEX_PROGRAMS:
+                                            trade_info['dex'] = DEX_PROGRAMS[prog_id]
+                                            trade_info['dex_type'] = DEX_PROGRAMS[prog_id]
+                                            inferred_fields.append('dex (from instructions)')
+                                            break
+        
+        # 6. Infer token mint if missing - with multiple fallbacks
+        if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
+            with DebugSpan("infer_token_mint", input_data={"has_logs": bool(trade_info.get("logs")), "has_meta": bool(trade_info.get("meta"))}):
+                logger.info("🔍 [MINT_INFERENCE] Token mint missing or pending, attempting inference...")
+                
+                # Ensure meta is present in trade_info for inference helpers
+                self.ensure_meta_in_trade_info(trade_info)
+                
+                # Try enhanced log extraction (primary method)
                 logs = trade_info.get('logs', [])
                 if not logs:
                     tx = trade_info.get('transaction') or trade_info.get('transaction_full')
@@ -4077,76 +4129,35 @@ class TradeProcessor:
                         logs = meta.get('logMessages', [])
                 
                 if logs:
-                    log_text = ' '.join(logs).lower()
-                    for program_id, dex_type in DEX_PROGRAMS.items():
-                        if program_id.lower() in log_text:
-                            trade_info['dex'] = dex_type
-                            trade_info['dex_type'] = dex_type
-                            inferred_fields.append('dex')
-                            break
-                    
-                    # If still not found, try to detect from program invocations in transaction
-                    if not trade_info.get('dex') or trade_info.get('dex') == 'unknown':
-                        tx = trade_info.get('transaction') or trade_info.get('transaction_full')
-                        if tx and isinstance(tx, dict):
-                            instructions = tx.get('transaction', {}).get('message', {}).get('instructions', [])
-                            account_keys = tx.get('transaction', {}).get('message', {}).get('accountKeys', [])
-                            
-                            for ix in instructions:
-                                prog_idx = ix.get('programIdIndex')
-                                if prog_idx is not None and prog_idx < len(account_keys):
-                                    prog_id = account_keys[prog_idx]
-                                    if prog_id in DEX_PROGRAMS:
-                                        trade_info['dex'] = DEX_PROGRAMS[prog_id]
-                                        trade_info['dex_type'] = DEX_PROGRAMS[prog_id]
-                                        inferred_fields.append('dex (from instructions)')
-                                        break
-        
-        # 6. Infer token mint if missing - with multiple fallbacks
-        if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
-            logger.info("🔍 [MINT_INFERENCE] Token mint missing or pending, attempting inference...")
-            
-            # Ensure meta is present in trade_info for inference helpers
-            self.ensure_meta_in_trade_info(trade_info)
-            
-            # Try enhanced log extraction (primary method)
-            logs = trade_info.get('logs', [])
-            if not logs:
-                tx = trade_info.get('transaction') or trade_info.get('transaction_full')
-                if tx:
-                    meta = tx.get('meta', {})
-                    logs = meta.get('logMessages', [])
-            
-            if logs:
-                logger.debug(f"[MINT_INFERENCE] Attempting extraction from {len(logs)} log messages...")
-                mint = self._extract_mint_from_logs_enhanced(logs)
-                if mint:
-                    trade_info['token_mint'] = mint
-                    inferred_fields.append('token_mint')
-                    logger.info(f"✅ [MINT_INFERENCE] Successfully extracted mint from logs: {mint[:12]}...")
+                    logger.debug(f"[MINT_INFERENCE] Attempting extraction from {len(logs)} log messages...")
+                    mint = self._extract_mint_from_logs_enhanced(logs)
+                    if mint:
+                        trade_info['token_mint'] = mint
+                        inferred_fields.append('token_mint')
+                        logger.info(f"✅ [MINT_INFERENCE] Successfully extracted mint from logs: {mint[:12]}...")
+                    else:
+                        logger.warning(f"⚠️ [MINT_INFERENCE] Could not extract mint from logs")
                 else:
-                    logger.warning(f"⚠️ [MINT_INFERENCE] Could not extract mint from logs")
-            else:
-                logger.warning(f"⚠️ [MINT_INFERENCE] No logs available for mint extraction")
-            
-            # Also try extracting from token balances as fallback
-            if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
-                logger.debug(f"[MINT_INFERENCE] Attempting extraction from token balances...")
-                # Extract meta from trade_info (ensure it's passed from backfill)
-                meta = trade_info.get("meta") or {}
-                # If meta not in trade_info, try to get it from transaction
-                if not meta:
-                    tx = trade_info.get('transaction') or trade_info.get('transaction_full')
-                    if tx:
-                        meta = tx.get('meta', {})
+                    logger.warning(f"⚠️ [MINT_INFERENCE] No logs available for mint extraction")
                 
-                mint = self._extract_mint_from_token_balances(meta)
-                if mint:
-                    trade_info['token_mint'] = mint
-                    inferred_fields.append('token_mint (from balances)')
-                    logger.info(f"✅ [MINT_INFERENCE] Resolved token mint from postTokenBalances: {mint}")
-                else:
-                    logger.warning(f"⚠️ [MINT_INFERENCE] Could not extract mint from balances")
+                # Also try extracting from token balances as fallback
+                if not trade_info.get('token_mint') or trade_info.get('token_mint') in ['UNKNOWN', 'PENDING_ANALYSIS']:
+                    logger.debug(f"[MINT_INFERENCE] Attempting extraction from token balances...")
+                    # Extract meta from trade_info (ensure it's passed from backfill)
+                    meta = trade_info.get("meta") or {}
+                    # If meta not in trade_info, try to get it from transaction
+                    if not meta:
+                        tx = trade_info.get('transaction') or trade_info.get('transaction_full')
+                        if tx:
+                            meta = tx.get('meta', {})
+                    
+                    mint = self._extract_mint_from_token_balances(meta)
+                    if mint:
+                        trade_info['token_mint'] = mint
+                        inferred_fields.append('token_mint (from balances)')
+                        logger.info(f"✅ [MINT_INFERENCE] Resolved token mint from postTokenBalances: {mint}")
+                    else:
+                        logger.warning(f"⚠️ [MINT_INFERENCE] Could not extract mint from balances")
             
             # Last-chance: scan instruction accounts for SPL mints
             if not trade_info.get("token_mint"):
