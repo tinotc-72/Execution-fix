@@ -6,6 +6,7 @@ Combines the simplicity of listener.py with the advanced features needed for mai
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -407,8 +408,14 @@ class WebSocketHandler:
             logger.info(f"🧩 [CALLBACK] SCHEDULED pipeline for enhanced_tx {signature[:8]}...")
             try:
                 logger.info(f"🧩 [CALLBACK] START pipeline (async) for {signature[:8]}...")
-                await self.trade_callback(trade_info)
-                logger.info(f"🧩 [CALLBACK] END pipeline finished successfully for {signature[:8]}")
+                # Check if callback is async or sync
+                if inspect.iscoroutinefunction(self.trade_callback):
+                    await self.trade_callback(trade_info)
+                else:
+                    # Sync callback - use run_in_executor
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, self.trade_callback, trade_info)
+                logger.info(f"🧩 [CALLBACK] FINISHED pipeline.")
             except Exception as e:
                 logger.error(f"❌ [CALLBACK] ERROR pipeline crashed for {signature[:8]}: {e}", exc_info=True)
         except Exception as e:
@@ -497,8 +504,14 @@ class WebSocketHandler:
                 logger.info(f"🧩 [CALLBACK] SCHEDULED pipeline for logs_trade {signature[:8]}...")
                 try:
                     logger.info(f"🧩 [CALLBACK] START pipeline (async) for {signature[:8]}...")
-                    await self.trade_callback(trade_info)
-                    logger.info(f"🧩 [CALLBACK] END pipeline finished successfully for {signature[:8]}")
+                    # Check if callback is async or sync
+                    if inspect.iscoroutinefunction(self.trade_callback):
+                        await self.trade_callback(trade_info)
+                    else:
+                        # Sync callback - use run_in_executor
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, self.trade_callback, trade_info)
+                    logger.info(f"🧩 [CALLBACK] FINISHED pipeline.")
                 except Exception as e:
                     logger.error(f"❌ [CALLBACK] ERROR pipeline crashed for {signature[:8]}: {e}", exc_info=True)
             else:
@@ -544,8 +557,14 @@ class WebSocketHandler:
             logger.info(f"🧩 [CALLBACK] SCHEDULED pipeline for account_change...")
             try:
                 logger.info(f"🧩 [CALLBACK] START pipeline (async) for account_change...")
-                await self.trade_callback(trade_info)
-                logger.info(f"🧩 [CALLBACK] END pipeline finished successfully for account_change")
+                # Check if callback is async or sync
+                if inspect.iscoroutinefunction(self.trade_callback):
+                    await self.trade_callback(trade_info)
+                else:
+                    # Sync callback - use run_in_executor
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, self.trade_callback, trade_info)
+                logger.info(f"🧩 [CALLBACK] FINISHED pipeline.")
             except Exception as e:
                 logger.error(f"❌ [CALLBACK] ERROR pipeline crashed for account_change: {e}", exc_info=True)
             
@@ -598,8 +617,14 @@ class WebSocketHandler:
                 logger.info(f"🧩 [CALLBACK] SCHEDULED pipeline for signature {signature[:8]}...")
                 try:
                     logger.info(f"🧩 [CALLBACK] START pipeline (async) for {signature[:8]}...")
-                    await self.trade_callback(trade_info)
-                    logger.info(f"🧩 [CALLBACK] END pipeline finished successfully for {signature[:8]}")
+                    # Check if callback is async or sync
+                    if inspect.iscoroutinefunction(self.trade_callback):
+                        await self.trade_callback(trade_info)
+                    else:
+                        # Sync callback - use run_in_executor
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, self.trade_callback, trade_info)
+                    logger.info(f"🧩 [CALLBACK] FINISHED pipeline.")
                 except Exception as e:
                     logger.error(f"❌ [CALLBACK] ERROR pipeline crashed for {signature[:8]}: {e}", exc_info=True)
         except Exception as e:

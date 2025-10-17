@@ -155,8 +155,8 @@ def test_no_early_return_in_requires_full_analysis():
             "✅ Calls schedule_deep_analysis"
         ),
         (
-            r'non-blocking.*continuing to fast-path',
-            "✅ Logs non-blocking continuation to fast-path"
+            r'continuing fast-path',
+            "✅ Logs continuation to fast-path"
         ),
         (
             not re.search(r'\breturn\b', block),
