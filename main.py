@@ -246,35 +246,25 @@ bot_instance = None
 from execution_coordinator import normalize_dex, ROUTE_MAP, maybe_execute
 
 
-def _have_all_fields(trade_info: dict) -> bool:
+def _have_all_fields(ti: dict) -> bool:
     """
     Check if trade_info has all required fields for execution.
     
-    Returns True only if dex, action, wallet_address are all present and valid,
+    Returns True only if dex, wallet_address are all present and valid,
     AND token_mint (or mint) is present.
     
     Treats mint and token_mint as synonyms and normalizes to token_mint.
     
     Args:
-        trade_info: Trade information dictionary
+        ti: Trade information dictionary
         
     Returns:
         bool: True if all required fields are present and valid
     """
-    # Treat mint and token_mint as synonyms
-    token_mint = trade_info.get("token_mint") or trade_info.get("mint")
-    
-    # Check all required fields - validate that values are not None, empty, or sentinel values
-    ok = all(v not in (None, "", "unknown", "PENDING_ANALYSIS") for v in [
-        trade_info.get("dex"),
-        trade_info.get("action"),
-        trade_info.get("wallet_address")
-    ]) and bool(token_mint)
-    
-    # Normalize to token_mint if we have a valid mint value
-    if ok and trade_info.get("token_mint") is None and token_mint:
-        trade_info["token_mint"] = token_mint
-    
+    tok = ti.get("token_mint") or ti.get("mint")
+    ok = all(ti.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS") for k in ("dex","wallet_address")) and bool(tok)
+    if tok and not ti.get("token_mint"):
+        ti["token_mint"] = tok
     return ok
 
 
@@ -401,8 +391,7 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     
     ⚠️ CRITICAL: This function MUST be called with 'await' in async handlers!
     
-    Always calls coordinator to ensure logging sanity checks, even with incomplete fields.
-    Wraps coordinator call in try/except to log any errors.
+    Skips execution if fields are incomplete. Wraps coordinator call in try/except to log any errors.
     
     Why await is critical:
     - Without await, coordinator logs never appear (🧭 [COORDINATOR] Route=...)
@@ -421,11 +410,10 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     Example (WRONG - will fail silently):
         route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
     """
-    # Always log handoff status, but indicate if fields are incomplete
     if not _have_all_fields(trade_info):
-        logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, but attempting coordinator handoff for logging")
-    else:
-        logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
+        logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")
+        return
+    logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
     
     # Extract rpc_url from rpc_client if needed
     rpc_url = rpc.rpc_url if hasattr(rpc, 'rpc_url') else rpc
