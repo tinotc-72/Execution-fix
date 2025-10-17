@@ -37,7 +37,7 @@ def test_correlation_id_generation():
         return False
     
     # Check for correlation ID generation logic
-    if re.search(r'correlation_id = f"{sig\[:12\]}"', content):
+    if re.search(r'correlation_id = sig\[:12\]', content):
         print("  ✅ Correlation ID generated from signature")
     else:
         print("  ❌ Correlation ID generation from signature not found")

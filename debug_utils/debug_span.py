@@ -107,7 +107,10 @@ class DebugSpan:
             if kwargs:
                 input_data.update({f'kwarg_{k}': type(v).__name__ for k, v in kwargs.items()})
             
-            with DebugSpan(self.step_name or func.__name__, input_data=input_data):
+            # Use provided step_name or fallback to function name
+            step_name = self.step_name if self.step_name else func.__name__
+            
+            with DebugSpan(step_name, input_data=input_data):
                 result = func(*args, **kwargs)
             
             # Log output info
@@ -118,7 +121,7 @@ class DebugSpan:
                 elif isinstance(result, (list, tuple)):
                     output_info = f"{type(result).__name__}[{len(result)} items]"
                 logger.info(
-                    f"🔍 [OUTPUT] {self.step_name or func.__name__} | "
+                    f"🔍 [OUTPUT] {step_name} | "
                     f"corr={get_span_id()} | output={output_info}"
                 )
             

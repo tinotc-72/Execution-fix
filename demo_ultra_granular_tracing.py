@@ -32,7 +32,7 @@ def simulate_inference_pipeline(trade_info: dict):
     # Generate correlation ID (like in _process_detected_trade)
     sig = trade_info.get("signature", "")
     if sig and sig != "unknown":
-        correlation_id = f"{sig[:12]}"
+        correlation_id = sig[:12] if len(sig) >= 12 else sig
     else:
         import uuid
         correlation_id = f"uuid_{str(uuid.uuid4())[:8]}"
@@ -66,7 +66,9 @@ def simulate_inference_pipeline(trade_info: dict):
     
     # Step 3: Last chance fetch (if needed)
     if not trade_info.get("logs") and trade_info.get("signature"):
-        with DebugSpan("last_chance_fetch", input_data={"signature": trade_info.get("signature", "")[:12]}):
+        sig_val = trade_info.get("signature", "")
+        sig_short = sig_val[:12] if len(sig_val) >= 12 else sig_val
+        with DebugSpan("last_chance_fetch", input_data={"signature": sig_short}):
             time.sleep(0.05)  # Simulate RPC call
             trade_info["logs"] = ["Program log: Simulated log", "Program log: Instruction: Swap"]
     

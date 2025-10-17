@@ -3968,9 +3968,10 @@ class TradeProcessor:
         if not logs and not tx_obj and trade_info.get("signature"):
             sig = trade_info["signature"]
             if sig and sig != 'unknown' and self.rpc_client:
-                with DebugSpan("last_chance_fetch", input_data={"signature": sig[:12]}):
+                sig_short = sig[:12] if len(sig) >= 12 else sig
+                with DebugSpan("last_chance_fetch", input_data={"signature": sig_short}):
                     try:
-                        logger.info(f"🔎 [TRADE_PROCESSOR] Last-chance fetch for signature {sig[:12]}...")
+                        logger.info(f"🔎 [TRADE_PROCESSOR] Last-chance fetch for signature {sig_short}...")
                         # Use asyncio to call the async RPC method synchronously
                         import asyncio
                         from utils import fetch_json_rpc_with_url
@@ -4014,9 +4015,10 @@ class TradeProcessor:
         # 2. Fetch transaction data if we have signature but no transaction
         sig = trade_info.get('signature')
         if sig and sig != 'unknown' and not trade_info.get('transaction'):
-            with DebugSpan("fetch_transaction", input_data={"signature": sig[:12] if sig else "none"}):
+            sig_short = sig[:12] if len(sig) >= 12 else sig
+            with DebugSpan("fetch_transaction", input_data={"signature": sig_short}):
                 try:
-                    logger.info(f"🔄 [FIELD_INFERENCE] Fetching transaction data for signature {sig[:12]}...")
+                    logger.info(f"🔄 [FIELD_INFERENCE] Fetching transaction data for signature {sig_short}...")
                     from utils import get_transaction_with_logs
                     tx_data = get_transaction_with_logs(sig)
                     if tx_data:

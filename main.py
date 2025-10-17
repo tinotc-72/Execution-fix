@@ -432,11 +432,11 @@ class SimpleCopyTradingBot:
         event_id = trade_info.get("event_id", "")
         
         if sig and sig != "unknown":
-            # Use signature as base for correlation ID
-            correlation_id = f"{sig[:12]}"
+            # Use signature as base for correlation ID (safely handle short sigs)
+            correlation_id = sig[:12] if len(sig) >= 12 else sig
         elif event_id:
             # Use event_id if available
-            correlation_id = f"evt_{event_id[:8]}"
+            correlation_id = f"evt_{event_id[:8]}" if len(event_id) >= 8 else f"evt_{event_id}"
         else:
             # Generate UUID-based correlation ID
             correlation_id = f"uuid_{str(uuid.uuid4())[:8]}"
