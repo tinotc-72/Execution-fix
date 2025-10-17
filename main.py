@@ -95,7 +95,7 @@ from transaction_cloner import TransactionCloner
 
 # Import trade processor for clean logic separation
 from trade_processor import TradeProcessor
-from wallet_tx_parser import WalletTransactionParser
+from wallet_tx_parser import WalletTransactionParser, merge_parsed_fields
 
 # Runtime diagnostics to detect stale module imports
 def _origin(mod):
@@ -268,37 +268,6 @@ def _have_all_fields(trade_info: dict) -> bool:
     return ok
 
 
-def merge_parsed_fields(trade_info: dict, parsed: dict) -> None:
-    """
-    Merge parser-detected fields into trade_info if the destination fields are empty/unknown.
-    
-    This prevents downstream code from clobbering fields that the parser already identified.
-    Only updates fields if they are currently None, empty string, "unknown", or "PENDING_ANALYSIS".
-    
-    Args:
-        trade_info: The trade dictionary to update
-        parsed: The parser result dictionary (may contain parsed_tx wrapper)
-    """
-    if not parsed:
-        return
-    
-    # Some code paths store parser result under "parsed_tx"
-    if isinstance(parsed.get("parsed_tx"), dict):
-        parsed = parsed["parsed_tx"]
-    
-    # normalize names from parser → trade_info
-    mapping = {
-        "dex": "dex",
-        "action": "action",
-        "token_mint": "token_mint",
-        "mint": "token_mint",
-        "wallet_address": "wallet_address",
-        "signature": "signature",
-    }
-    for src, dst in mapping.items():
-        val = parsed.get(src)
-        if val and trade_info.get(dst) in (None, "", "unknown", "PENDING_ANALYSIS"):
-            trade_info[dst] = val
 
 
 def schedule_deep_analysis(trade_info: dict):
