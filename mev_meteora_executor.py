@@ -45,14 +45,13 @@ from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 
-# Solders-only imports
-from solders.transaction import Transaction, VersionedTransaction
-from solders.message import MessageV0
-from solders.instruction import Instruction, AccountMeta
-from solders.keypair import Keypair
+# Set up logger early for import-time logging
+logger = logging.getLogger(__name__)
+
+# Solders-only imports (deduplicated)
+from solders.transaction import Transaction
 from solders.pubkey import Pubkey as PublicKey
 from solders.system_program import transfer, TransferParams
-from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 
 # Standardized result helpers
 def exec_ok(executor_name: str, signature: str, data: dict = None) -> dict:
@@ -67,8 +66,15 @@ def exec_err(executor_name: str, error_message: str) -> dict:
     return {"success": False, "executor": executor_name, "error": error_message}
 
 def jito_is_configured(jito_service) -> bool:
-    """Check if Jito is properly configured and available"""
-    return JITO_AVAILABLE and jito_service is not None
+    """
+    Check if Jito is properly configured and available.
+    
+    Returns True only if:
+    1. JITO_AVAILABLE (jito_service module can be imported)
+    2. jito_service instance is not None
+    3. jito_service has send_transaction method
+    """
+    return JITO_AVAILABLE and jito_service is not None and hasattr(jito_service, 'send_transaction')
 
 from solders.signature import Signature
 
@@ -146,24 +152,16 @@ class SimpleRPC:
 FEE_PROGRAM = PublicKey.from_string("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")
 FEE_RECIPIENT_WRITABLE = PublicKey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV1T6NVswCLPVXdHy")
 
-logger = logging.getLogger(__name__)
-
 DEFAULT_PRIORITY_FEE = 2_000_000  # 2M micro-lamports (protocol-compliant)
-# (removed) legacy Bundle imports — submissions are unified via FastExecutor
 # JitoClient is available from jito_service module when needed by FastExecutor
 try:
     from jito_service import JitoClient
     JITO_AVAILABLE = True
-    logger.info("✅ Jito service available - MEV protection ready for Meteora")
-except ImportError:
-    try:
-        from .jito_service import JitoClient
-        JITO_AVAILABLE = True
-        logger.info("✅ Jito service available - MEV protection ready for Meteora")
-    except ImportError:
-        logger.warning("⚠️ JitoClient not available - MEV protection disabled")
-        JITO_AVAILABLE = False
-        # (removed) placeholder legacy JitoClient bundle stub — use jito_service.JitoClient instead
+    logger.info("[METEORA] ✅ JitoClient available for MEV protection")
+except ImportError as e:
+    logger.info(f"[METEORA] ℹ️  JitoClient not available: {e}. Will use RPC fallback.")
+    JITO_AVAILABLE = False
+    JitoClient = None  # Set to None for type safety
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

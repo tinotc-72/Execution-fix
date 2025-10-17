@@ -10,6 +10,7 @@ import base64
 import json
 import traceback
 import uuid
+import logging
 from typing import Optional, List
 from solders.keypair import Keypair
 from solders.transaction import Transaction, VersionedTransaction
@@ -17,13 +18,18 @@ from solders.message import MessageV0
 from solders.instruction import CompiledInstruction, Instruction
 from solders.hash import Hash
 
+# Set up logger early for import-time logging
+logger = logging.getLogger(__name__)
+
 # Make Jito imports optional - never fail at import time
 try:
     from jito_service import JitoClient
     JITO_AVAILABLE = True
-except ImportError:
+    logger.info("[FAST_EXECUTOR] ✅ JitoClient available for MEV protection")
+except ImportError as e:
     JITO_AVAILABLE = False
     JitoClient = None
+    logger.info(f"[FAST_EXECUTOR] ℹ️  JitoClient not available: {e}. Will use RPC fallback.")
 
 from env_keys import EnvKeys
 

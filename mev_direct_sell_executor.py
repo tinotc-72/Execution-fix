@@ -116,8 +116,20 @@ def is_success(result: dict) -> bool:
     """Check if executor result represents success"""
     return isinstance(result, dict) and result.get("success") == True
 
+# Note: This module doesn't directly import JitoClient
+# It relies on jito_service being passed as a parameter
+# The jito_is_configured check ensures safe usage
 def jito_is_configured(jito_service) -> bool:
-    """Check if Jito is properly configured and available"""
+    """
+    Check if Jito is properly configured and available.
+    
+    Returns True only if:
+    1. jito_service instance is not None
+    2. jito_service has send_transaction method
+    
+    Note: This module doesn't import JitoClient directly,
+    so we only check the passed jito_service instance.
+    """
     return jito_service is not None and hasattr(jito_service, 'send_transaction')
 
 @dataclass

@@ -26,12 +26,18 @@ from utils import (
     TOKEN_PROGRAM_ID
 )
 
-# Import JitoClient for MEV protection
+# Set up logger early for import-time logging
+logger = logging.getLogger(__name__)
+
+# Import JitoClient for MEV protection - optional dependency
 try:
     from jito_service import JitoClient
     JITO_AVAILABLE = True
-except ImportError:
+    logger.info("[JUPITER] ✅ JitoClient available for MEV protection")
+except ImportError as e:
     JITO_AVAILABLE = False
+    JitoClient = None
+    logger.info(f"[JUPITER] ℹ️  JitoClient not available: {e}. Will use RPC fallback.")
 
 # Standardized result helpers
 def exec_ok(executor_name: str, signature: str, data: dict = None) -> dict:
@@ -46,10 +52,15 @@ def exec_err(executor_name: str, error_message: str) -> dict:
     return {"success": False, "executor": executor_name, "error": error_message}
 
 def jito_is_configured(jito_service) -> bool:
-    """Check if Jito is properly configured and available"""
-    return JITO_AVAILABLE and jito_service is not None
-
-JitoClient = None
+    """
+    Check if Jito is properly configured and available.
+    
+    Returns True only if:
+    1. JITO_AVAILABLE (jito_service module can be imported)
+    2. jito_service instance is not None
+    3. jito_service has send_transaction method
+    """
+    return JITO_AVAILABLE and jito_service is not None and hasattr(jito_service, 'send_transaction')
 
 # Load Jupiter credentials from environment
 env_keys = EnvKeys()
@@ -77,7 +88,6 @@ SOL_MINT = Pubkey.from_string("So11111111111111111111111111111111111111112")
 # Jupiter Program and Accounts
 JUPITER_PROGRAM = Pubkey.from_string("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4")
 
-logger = logging.getLogger(__name__)
 RPC_URL = EnvKeys().HELIUS_RPC_URL
 
 
