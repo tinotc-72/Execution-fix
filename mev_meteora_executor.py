@@ -45,6 +45,9 @@ from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 
+# Import BuildResult for consistent return values
+from models.build_result import BuildResult
+
 # Set up logger early for import-time logging
 logger = logging.getLogger(__name__)
 
@@ -1240,7 +1243,7 @@ def _build_meteora_sell_solders(rpc: SimpleRPC, owner: Keypair, token_mint: Pubk
     msg = MessageV0.try_compile(owner.pubkey(), ixs, [], bh)
     return VersionedTransaction(msg, [owner])
 
-def build_and_sign(
+def _build_and_sign_internal(
     trade_info: dict,
     rpc: SimpleRPC,
     keypair: Keypair,
@@ -1248,7 +1251,7 @@ def build_and_sign(
     slippage_bps: int = 300
 ) -> VersionedTransaction:
     """
-    Build and sign a valid Meteora transaction with proper instruction structure.
+    Internal function to build and sign a valid Meteora transaction with proper instruction structure.
     
     Instruction order mirrors successful transactions:
     1. ATA creation for WSOL (idempotent with existence check)
@@ -1495,6 +1498,43 @@ def build_and_sign(
     
     logger.info(f"✅ Built and signed transaction with {len(ixs)} instructions")
     return vtx
+
+def build_and_sign(
+    trade_info: dict,
+    rpc: SimpleRPC,
+    keypair: Keypair,
+    force_requote: bool = False,
+    slippage_bps: int = 300
+) -> BuildResult:
+    """
+    Build and sign a valid Meteora transaction with proper instruction structure.
+    
+    Wrapper function that returns BuildResult instead of VersionedTransaction or None.
+    
+    Args:
+        trade_info: Trade information containing token_mint, transaction data, etc.
+        rpc: SimpleRPC client
+        keypair: Wallet keypair
+        force_requote: If True, use wider slippage (slippage_bps) or recompute minOut
+        slippage_bps: Slippage in basis points (default 300 = 3%)
+    
+    Returns:
+        BuildResult with transaction or error reason
+    """
+    # Validate required fields
+    if not trade_info.get("token_mint"):
+        logger.warning("⚠️ [METEORA] build_and_sign: token_mint is required in trade_info")
+        return BuildResult(ok=False, tx=None, reason="token_mint is required in trade_info", dex="meteora", action="buy")
+    
+    try:
+        tx = _build_and_sign_internal(trade_info, rpc, keypair, force_requote, slippage_bps)
+        return BuildResult(ok=True, tx=tx, dex="meteora", action="buy")
+    except KeyError as e:
+        logger.error(f"❌ [METEORA] Missing required field: {e}")
+        return BuildResult(ok=False, tx=None, reason=f"Missing required field: {str(e)}", dex="meteora", action="buy")
+    except Exception as e:
+        logger.error(f"❌ [METEORA] build_and_sign error: {e}")
+        return BuildResult(ok=False, tx=None, reason=f"Unexpected error: {str(e)}", dex="meteora", action="buy")
 
 # Example usage
 async def main():
