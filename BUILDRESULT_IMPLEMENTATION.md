@@ -123,16 +123,18 @@ Created comprehensive test suite covering:
 
 ### Verification Results
 ✅ All 6 updated public build functions now return `BuildResult`:
-  - `mev_jupiter_executor.py`: `build_buy_tx()`, `build_sell_tx()`, `build_and_sign()`
-  - `mev_meteora_executor.py`: `build_and_sign()`
-  - `mev_raydium_executor.py`: `try_raydium_buy()`, `try_raydium_sell_all()`
+  - `mev_jupiter_executor.py`: `build_buy_tx()`, `build_sell_tx()`, `build_and_sign()` (fully implemented)
+  - `mev_meteora_executor.py`: `build_and_sign()` (fully implemented)
+  - `mev_raydium_executor.py`: `try_raydium_buy()`, `try_raydium_sell_all()` (placeholder implementations that return `BuildResult(ok=False, reason="not implemented yet")`)
 ✅ No `return None` statements in the 6 updated builder functions
 ✅ All Python syntax validated
 ✅ BuildResult model works correctly
 ✅ Execution coordinator properly handles BuildResult objects
 ✅ All tests pass
 
-**Note:** Other functions in these files (internal helpers, utility functions) may still return `None` as appropriate for their use cases. This refactoring specifically targets the public build functions that are called by the execution coordinator.
+**Note:** 
+- Other functions in these files (internal helpers, utility functions) may still return `None` as appropriate for their use cases. This refactoring specifically targets the public build functions that are called by the execution coordinator.
+- Raydium functions are placeholder implementations that follow the BuildResult contract. When Raydium functionality is implemented, they will return `BuildResult(ok=True, tx=...)` on success.
 
 ## Migration Notes
 
