@@ -13,7 +13,7 @@ import uuid
 import logging
 from typing import Optional, List
 from solders.keypair import Keypair
-from solders.transaction import Transaction, VersionedTransaction
+from solders.transaction import VersionedTransaction
 from solders.message import MessageV0
 from solders.instruction import CompiledInstruction, Instruction
 from solders.hash import Hash

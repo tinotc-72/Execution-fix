@@ -14,11 +14,9 @@ from dataclasses import dataclass
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
-from solders.message import to_bytes_versioned
 import base58
 
 # Additional imports for the fixed implementation
-from solders.transaction import VersionedTransaction
 from solders.message import MessageV0
 from solders.hash import Hash
 from utils import RPCClient
