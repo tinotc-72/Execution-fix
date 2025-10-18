@@ -95,12 +95,14 @@ def test_executor_integration_example():
     print("EXAMPLE: DEX EXECUTOR INTEGRATION PATTERN")
     print("=" * 80)
     
-    print("""
+    # Print example integration pattern
+    example_code = """
 The DEX executors (Jupiter, Raydium, Meteora) would integrate ATA utilities like this:
 
-```python
+Example code pattern:
+--------------------
 async def execute_swap(self, input_mint, output_mint, amount):
-    '''Execute a swap with ATA checking'''
+    \"\"\"Execute a swap with ATA checking\"\"\"
     
     # Step 1: Check if output token ATA exists
     output_ata = associated_token_address(self.wallet_pubkey, output_mint)
@@ -138,7 +140,6 @@ async def execute_swap(self, input_mint, output_mint, amount):
     
     # Step 8: Submit transaction
     return await self.submit_transaction(tx)
-```
 
 Current Status by Executor:
 ----------------------------
@@ -150,7 +151,9 @@ Current Status by Executor:
 
 3. **Raydium**: Scaffold only (not functional)
    - TODO: Implement swap building with ensure_ata_for() integration
-    """)
+"""
+    
+    print(example_code)
     
     print("\n✅ Integration pattern documented")
     return True
