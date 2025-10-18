@@ -28,6 +28,13 @@ except ImportError:
     Keypair = None
     Pubkey = None
 
+# Import BuildResult for consistent return values
+try:
+    from models.build_result import BuildResult
+except ImportError:
+    # Allow import to succeed even if models.build_result is not available
+    BuildResult = None
+
 # Import ATA utilities for ensuring token accounts exist before swaps
 try:
     from utils.ata import ensure_ata_for
@@ -64,11 +71,11 @@ class MEVRaydiumExecutor:
         logger.info("[RAYDIUM] TODO: Implement swap instruction creation")
 
 
-async def try_raydium_buy(trade_info: dict, keypair: Keypair, **kwargs) -> Optional[dict]:
+async def try_raydium_buy(trade_info: dict, keypair: Keypair, **kwargs) -> BuildResult:
     """
     Attempt to execute a Raydium buy order.
     
-    Currently returns None (not implemented).
+    Currently not implemented - returns BuildResult with ok=False.
     
     Args:
         trade_info: Trade information dictionary
@@ -76,14 +83,14 @@ async def try_raydium_buy(trade_info: dict, keypair: Keypair, **kwargs) -> Optio
         **kwargs: Additional execution parameters
         
     Returns:
-        None (not implemented yet)
+        BuildResult with ok=False and reason (not implemented yet)
         
     TODOs:
         - Extract pool information from trade_info
         - Ensure output token ATA exists using ensure_ata_for() before building swap
         - Build swap instruction for buy (SOL -> Token)
         - Submit transaction with proper fees
-        - Return standardized result dict on success
+        - Return BuildResult(ok=True, tx=...) on success
         
     Example ATA check (when implemented):
         output_mint = Pubkey.from_string(trade_info['token_mint'])
@@ -97,17 +104,17 @@ async def try_raydium_buy(trade_info: dict, keypair: Keypair, **kwargs) -> Optio
         )
         # Add ata_instructions to transaction before swap instruction
     """
-    logger.info("[RAYDIUM_BUY] Called but not implemented - returning None")
+    logger.info("[RAYDIUM_BUY] Called but not implemented")
     logger.debug("[RAYDIUM_BUY] TODO: Implement pool resolution and swap building")
     logger.debug("[RAYDIUM_BUY] TODO: Add ensure_ata_for() call before building swap")
-    return None
+    return BuildResult(ok=False, tx=None, reason="Raydium buy not implemented yet", dex="raydium", action="buy")
 
 
-async def try_raydium_sell_all(trade_info: dict, keypair: Keypair, **kwargs) -> Optional[dict]:
+async def try_raydium_sell_all(trade_info: dict, keypair: Keypair, **kwargs) -> BuildResult:
     """
     Attempt to execute a Raydium sell order for all tokens.
     
-    Currently returns None (not implemented).
+    Currently not implemented - returns BuildResult with ok=False.
     
     Args:
         trade_info: Trade information dictionary
@@ -115,7 +122,7 @@ async def try_raydium_sell_all(trade_info: dict, keypair: Keypair, **kwargs) -> 
         **kwargs: Additional execution parameters
         
     Returns:
-        None (not implemented yet)
+        BuildResult with ok=False and reason (not implemented yet)
         
     TODOs:
         - Extract pool information from trade_info
@@ -123,11 +130,11 @@ async def try_raydium_sell_all(trade_info: dict, keypair: Keypair, **kwargs) -> 
         - Ensure input token ATA exists (should already exist for sell)
         - Build swap instruction for sell (Token -> SOL)
         - Submit transaction with proper fees
-        - Return standardized result dict on success
+        - Return BuildResult(ok=True, tx=...) on success
         
     Note: For sell operations, the input token ATA should already exist since
     we're selling tokens we own. However, ensure_ata_for() can be used to verify.
     """
-    logger.info("[RAYDIUM_SELL] Called but not implemented - returning None")
+    logger.info("[RAYDIUM_SELL] Called but not implemented")
     logger.debug("[RAYDIUM_SELL] TODO: Implement pool resolution and swap building")
-    return None
+    return BuildResult(ok=False, tx=None, reason="Raydium sell not implemented yet", dex="raydium", action="sell")
