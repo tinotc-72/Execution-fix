@@ -119,6 +119,7 @@ class TransactionCloner:
         Given a transaction signature, fetch and reconstruct the transaction for replay.
         Explicitly reconstructs AccountMeta for each account in every instruction.
         Optionally override certain accounts (e.g., payer, user wallet).
+        Supports v0 transactions with Address Lookup Tables (ALTs).
         """
         from solders.instruction import AccountMeta
         tx_data = await self.fetch_transaction(signature)
@@ -128,6 +129,7 @@ class TransactionCloner:
         try:
             transaction = tx_data.get("transaction", {})
             message = transaction.get("message", {})
+            meta = tx_data.get("meta", {})
             account_keys_raw = message.get("accountKeys", [])
             
             # Convert string account keys to Pubkey objects
@@ -211,14 +213,46 @@ class TransactionCloner:
                 logger.error(f"Failed to parse blockhash '{blockhash_str}': {hash_error}")
                 return None
 
-            # Rebuild message using the correct Message constructor
+            # Check for Address Lookup Tables (v0 transaction support)
+            address_table_lookups = message.get("addressTableLookups", [])
+            address_lookup_tables = []
+            
+            if address_table_lookups:
+                logger.info(f"Detected v0 transaction with {len(address_table_lookups)} Address Lookup Tables")
+                
+                # Import ALT utility
+                from utils.alts import alts_from_lookups
+                
+                # Fetch and reconstruct ALTs
+                try:
+                    address_lookup_tables = await alts_from_lookups(self.rpc_url, address_table_lookups)
+                    if address_lookup_tables:
+                        logger.info(f"✅ Reconstructed {len(address_lookup_tables)} ALTs for v0 transaction")
+                    else:
+                        logger.warning("⚠️ No ALTs reconstructed, may cause account resolution errors")
+                except Exception as alt_error:
+                    logger.error(f"Failed to reconstruct ALTs: {alt_error}")
+                    # Continue anyway, let the transaction build attempt fail naturally
+
+            # Rebuild message using the appropriate constructor
             try:
-                # Message.new_with_blockhash expects: instructions, payer, recent_blockhash
-                new_message = Message.new_with_blockhash(
-                    new_instructions,
-                    self.payer.pubkey(),
-                    recent_blockhash
-                )
+                if address_lookup_tables:
+                    # Use MessageV0 for transactions with ALTs
+                    from solders.message import MessageV0
+                    logger.info("Building MessageV0 with Address Lookup Tables")
+                    new_message = MessageV0.try_compile(
+                        self.payer.pubkey(),
+                        new_instructions,
+                        address_lookup_tables,
+                        recent_blockhash
+                    )
+                else:
+                    # Use legacy Message for transactions without ALTs
+                    new_message = Message.new_with_blockhash(
+                        new_instructions,
+                        self.payer.pubkey(),
+                        recent_blockhash
+                    )
             except Exception as msg_error:
                 logger.error(f"Failed to create message: {msg_error}")
                 return None
@@ -227,10 +261,9 @@ class TransactionCloner:
             try:
                 # Use the correct VersionedTransaction API
                 # Create VersionedTransaction directly with message and keypairs
-                # Extract raw keypair from WalletWithSign wrapper
                 signed_tx = VersionedTransaction(
                     message=new_message,
-                    keypairs=[self.payer.keypair]
+                    keypairs=[self.payer]
                 )
                 return signed_tx
             except Exception as tx_error:
@@ -273,7 +306,7 @@ class TransactionCloner:
                     )
                     new_tx = VersionedTransaction(
                         message=new_message,
-                        keypairs=[self.payer.keypair]
+                        keypairs=[self.payer]
                     )
                     tx_bytes = bytes(new_tx)
                     tx_b64 = base64.b64encode(tx_bytes).decode()
