@@ -21,6 +21,9 @@ from solders.hash import Hash
 # Import shared RPC submitter for guaranteed chain submission
 from executors.submit import send_and_confirm_v0_tx
 
+# Copilot TODO: Import retry utilities for wrapping RPC calls with bounded attempts
+from utils.health import async_with_retries
+
 # Set up logger early for import-time logging
 logger = logging.getLogger(__name__)
 
@@ -167,10 +170,15 @@ class FastExecutor:
                 "method": "sendTransaction",
                 "params": [base64.b64encode(raw).decode(), {"encoding": "base64"}]
             }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                r = await client.post(self._rpc_url, json=payload)
-                r.raise_for_status()
-                data = r.json()
+            
+            # Copilot TODO: Wrap RPC submission with retries to handle transient failures
+            async def _send_rpc():
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    r = await client.post(self._rpc_url, json=payload)
+                    r.raise_for_status()
+                    return r.json()
+            
+            data = await async_with_retries(_send_rpc, attempts=3, base_sleep=0.5)
             sig = (data or {}).get("result")
             if sig:
                 self.logger.info(f"[SUBMIT_RPC] sig={sig}")
@@ -186,10 +194,19 @@ class FastExecutor:
             self.logger.warning("[CONFIRM] no RPC url configured")
             return None
         payload = {"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[[sig], {"searchTransactionHistory": True}]}
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.post(self._rpc_url, json=payload)
-            r.raise_for_status()
-            return r.json()
+        
+        # Copilot TODO: Wrap RPC confirmation query with retries to handle transient failures
+        async def _get_status():
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.post(self._rpc_url, json=payload)
+                r.raise_for_status()
+                return r.json()
+        
+        try:
+            return await async_with_retries(_get_status, attempts=3, base_sleep=0.5)
+        except Exception as e:
+            self.logger.error(f"[CONFIRM] error getting signature status: {e}")
+            return None
 
     async def _confirm_with_retries(self, sig: str, attempts: int = 5, delay_s: float = 0.8) -> dict | None:
         for i in range(attempts):
