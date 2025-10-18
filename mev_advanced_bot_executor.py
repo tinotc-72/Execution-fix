@@ -38,6 +38,7 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey as PublicKey
 from solders.system_program import transfer, TransferParams
 from utils import RPCClient
+from utils.fees import with_compute_budget
 
 # Standard Solana Program IDs
 TOKEN_PROGRAM_ID = PublicKey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
@@ -185,22 +186,7 @@ class MEVAdvancedBotExecutor:
         """Build transaction following reverse-engineered MEV bot pattern (minimal valid transaction for now)"""
         try:
             instructions = []
-            # Step 1: Compute Budget Instructions
-            compute_limit_data = struct.pack('<BI', 0, params.compute_units)
-            compute_limit_instruction = TransactionInstruction(
-                program_id=COMPUTE_BUDGET_PROGRAM_ID,
-                accounts=[],
-                data=compute_limit_data
-            )
-            instructions.append(compute_limit_instruction)
-            # Step 2: Priority Fee
-            priority_fee_data = struct.pack('<BQ', 3, params.priority_fee)
-            priority_fee_instruction = TransactionInstruction(
-                program_id=COMPUTE_BUDGET_PROGRAM_ID, 
-                accounts=[],
-                data=priority_fee_data
-            )
-            instructions.append(priority_fee_instruction)
+            
             # Step 3: Add a minimal dummy instruction (so transaction is valid)
             dummy_data = b"dummy"
             dummy_ix = TransactionInstruction(
@@ -209,6 +195,14 @@ class MEVAdvancedBotExecutor:
                 data=dummy_data
             )
             instructions.append(dummy_ix)
+            
+            # Add compute budget instructions
+            instructions = with_compute_budget(
+                instructions,
+                compute_unit_limit=params.compute_units,
+                compute_unit_price=params.priority_fee
+            )
+            
             # Build transaction with proper constructor
             if instructions:
                 # Get recent blockhash

@@ -84,6 +84,7 @@ ASSOCIATED_TOKEN_PROGRAM_ID = PublicKey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5
 # Local imports
 from env_keys import load_wallet_from_private_key, kz
 from utils import create_associated_token_account
+from utils.fees import with_compute_budget
 
 @dataclasses.dataclass
 class RPCConfig:
@@ -238,6 +239,9 @@ class MEVMeteoraExecutor:
             instructions = await self._build_meteora_sell_transaction(
                 pool_info, params, token_account, int(expected_sol * (1 - params.slippage_percent / 100))
             )
+
+            # Add compute budget instructions
+            instructions = with_compute_budget(instructions)
 
             # Step 5: Create VersionedTransaction and sign
             # Get fresh blockhash
@@ -486,6 +490,9 @@ class MEVMeteoraExecutor:
             instructions = await self._build_meteora_buy_transaction(
                 pool_info, params, token_account, expected_tokens
             )
+            
+            # Add compute budget instructions
+            instructions = with_compute_budget(instructions)
             
             # Step 5: Create VersionedTransaction and sign
             # Get fresh blockhash
@@ -1186,12 +1193,12 @@ def _build_meteora_buy_solders(rpc: SimpleRPC, owner: Keypair, token_mint: Pubke
     _, maybe_create_ata_ix = ata_mgr.ensure_ata_ix_if_missing(owner.pubkey(), token_mint)
     ix_data = _pack_swap_data_from_source(source_data, lamports_in, min_tokens, swap_mode=0)
     swap_ix = Instruction(program_id=program_id, accounts=metas, data=ix_data)
-    cu_ix = set_compute_unit_limit(400_000)
-    cup_ix = set_compute_unit_price(1_000_000)
-    ixs = [cu_ix, cup_ix]
+    ixs = []
     if maybe_create_ata_ix:
         ixs.append(maybe_create_ata_ix)
     ixs.append(swap_ix)
+    # Add compute budget instructions
+    ixs = with_compute_budget(ixs)
     bh, _ = rpc.get_latest_blockhash()
     msg = MessageV0.try_compile(owner.pubkey(), ixs, [], bh)
     return VersionedTransaction(msg, [owner])
@@ -1209,12 +1216,12 @@ def _build_meteora_sell_solders(rpc: SimpleRPC, owner: Keypair, token_mint: Pubk
     # swap_mode=1 for sell
     ix_data = _pack_swap_data_from_source(source_data, token_amount, min_sol, swap_mode=1)
     swap_ix = Instruction(program_id=program_id, accounts=metas, data=ix_data)
-    cu_ix = set_compute_unit_limit(400_000)
-    cup_ix = set_compute_unit_price(1_000_000)
-    ixs = [cu_ix, cup_ix]
+    ixs = []
     if maybe_create_ata_ix:
         ixs.append(maybe_create_ata_ix)
     ixs.append(swap_ix)
+    # Add compute budget instructions
+    ixs = with_compute_budget(ixs)
     bh, _ = rpc.get_latest_blockhash()
     msg = MessageV0.try_compile(owner.pubkey(), ixs, [], bh)
     return VersionedTransaction(msg, [owner])
@@ -1461,6 +1468,9 @@ def build_and_sign(
     # 7. Fetch fresh blockhash right before signing
     bh, last_valid_height = rpc.get_latest_blockhash()
     logger.info(f"📡 Fetched fresh blockhash: {bh}")
+    
+    # Add compute budget instructions
+    ixs = with_compute_budget(ixs)
     
     # 8. Build and sign v0 transaction
     # Assert keypair is a valid Keypair before creating VersionedTransaction

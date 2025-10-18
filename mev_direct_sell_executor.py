@@ -20,6 +20,7 @@ import base58
 from solders.message import MessageV0
 from solders.hash import Hash
 from utils import RPCClient
+from utils.fees import with_compute_budget
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +62,11 @@ async def try_mev_direct_copy_sell(trade_info: dict, wallet: Keypair, rpc):
 
     # Minimal skeleton to ensure we produce a real VersionedTransaction:
     recent = await rpc.get_latest_blockhash()
+    # Add compute budget to instructions (empty list for now, but structure is correct)
+    instructions = with_compute_budget([])  # <--- build actual route instructions here
     msg = MessageV0.try_compile(
         payer=wallet.pubkey(),
-        instructions=[],  # <--- build actual route instructions here
+        instructions=instructions,
         address_lookup_table_accounts=[],
         recent_blockhash=Hash.from_string(recent.value.blockhash),
     )
