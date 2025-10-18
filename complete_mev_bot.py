@@ -12,13 +12,13 @@ from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction  
 from solders.message import MessageV0
 from solders.instruction import Instruction, AccountMeta
-from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from solders.hash import Hash
 import httpx
 from base58 import b58encode
 import struct
 
 from env_keys import EnvKeys
+from utils.fees import with_compute_budget
 
 logger = logging.getLogger(__name__)
 
@@ -141,12 +141,12 @@ class CompleteMEVBot:
             # Get blockhash
             recent_blockhash = await self.get_recent_blockhash()
             
-            # Create transaction with MEV priority
-            instructions = [
-                set_compute_unit_price(self.config.priority_fee),
-                set_compute_unit_limit(self.config.compute_limit),
-                buy_instruction
-            ]
+            # Create transaction with compute budget
+            instructions = with_compute_budget(
+                [buy_instruction],
+                compute_unit_limit=self.config.compute_limit,
+                compute_unit_price=self.config.priority_fee
+            )
             
             message = MessageV0.try_compile(
                 payer=self.wallet_address,

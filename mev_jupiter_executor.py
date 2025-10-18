@@ -28,6 +28,7 @@ from utils import (
     create_associated_token_account,
     TOKEN_PROGRAM_ID
 )
+from utils.fees import with_compute_budget
 
 # Set up logger early for import-time logging
 logger = logging.getLogger(__name__)
@@ -707,10 +708,11 @@ class MEVJupiterExecutor:
             # Get recent blockhash
             recent_blockhash = (await self.client.get_latest_blockhash()).value.blockhash
             
-            # Create and send transaction
+            # Add compute budget and create transaction
+            instructions = with_compute_budget([create_ata_ix])
             message = MessageV0.try_compile(
                 payer=self.wallet_pubkey,
-                instructions=[create_ata_ix],
+                instructions=instructions,
                 address_lookup_table_accounts=[],
                 recent_blockhash=recent_blockhash
             )
