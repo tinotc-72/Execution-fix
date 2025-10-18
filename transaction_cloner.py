@@ -261,10 +261,9 @@ class TransactionCloner:
             try:
                 # Use the correct VersionedTransaction API
                 # Create VersionedTransaction directly with message and keypairs
-                # Extract raw keypair from WalletWithSign wrapper
                 signed_tx = VersionedTransaction(
                     message=new_message,
-                    keypairs=[self.payer.keypair]
+                    keypairs=[self.payer]
                 )
                 return signed_tx
             except Exception as tx_error:
@@ -307,7 +306,7 @@ class TransactionCloner:
                     )
                     new_tx = VersionedTransaction(
                         message=new_message,
-                        keypairs=[self.payer.keypair]
+                        keypairs=[self.payer]
                     )
                     tx_bytes = bytes(new_tx)
                     tx_b64 = base64.b64encode(tx_bytes).decode()
