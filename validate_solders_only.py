@@ -21,9 +21,13 @@ def check_legacy_imports():
     """Check for any legacy imports from solana-py or spl.token"""
     print("\n🔍 Checking for legacy imports...")
     
-    # Check for solana-py imports (exclude test files that check for absence of imports)
+    # Patterns to exclude (validation and test files that check for absence of imports)
+    exclude_patterns = ["validate", "test_problem_statement", "test_solders_only", ".pyc"]
+    exclude_filter = " | ".join([f'grep -v "{pattern}"' for pattern in exclude_patterns])
+    
+    # Check for solana-py imports
     ret_solana, out_solana, _ = run_command(
-        'grep -r "from solana\\." --include="*.py" . | grep -v "validate" | grep -v "test_problem_statement" | grep -v "test_solders_only" | grep -v "^#" | grep -v ".pyc"',
+        f'grep -r "from solana\\." --include="*.py" . | {exclude_filter} | grep -v "^#"',
         "Searching for solana-py imports"
     )
     
