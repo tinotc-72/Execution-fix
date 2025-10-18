@@ -20,6 +20,9 @@ from models.build_result import BuildResult
 # Import shared RPC submitter for guaranteed chain submission
 from executors.submit import send_and_confirm_v0_tx
 
+# Copilot TODO: Import retry utilities for wrapping RPC calls with bounded attempts
+from utils.health import with_retries
+
 def _as_mint_str(m) -> str:
     """Coerce any Pubkey or object to string for safe use in API calls."""
     return str(m) if not isinstance(m, Pubkey) else str(m)
@@ -153,12 +156,15 @@ def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps:
         for endpoint_idx, endpoint_url in enumerate(JUPITER_QUOTE_ENDPOINTS, 1):
             try:
                 logger.info(f"[JUPITER_QUOTE] Attempting endpoint {endpoint_idx}/{len(JUPITER_QUOTE_ENDPOINTS)}: {endpoint_url}...")
-                response = requests.get(endpoint_url, params=params, headers=headers, timeout=15)
-                logger.debug(f"[JUPITER_QUOTE] Response status: {response.status_code}")
                 
-                response.raise_for_status()  # Official: Raise for HTTP errors
+                # Copilot TODO: Wrap quote request with retries to handle transient failures
+                def _quote_request():
+                    response = requests.get(endpoint_url, params=params, headers=headers, timeout=15)
+                    logger.debug(f"[JUPITER_QUOTE] Response status: {response.status_code}")
+                    response.raise_for_status()  # Official: Raise for HTTP errors
+                    return response.json()
                 
-                data = response.json()
+                data = with_retries(_quote_request, attempts=3, base_sleep=0.5)
                 
                 # Check if route is None or not a dict before accessing .keys()
                 if not isinstance(data, dict):
@@ -263,12 +269,15 @@ def get_swap_transaction(route: dict, user_pubkey: Pubkey) -> Optional[str]:
         for endpoint_idx, endpoint_url in enumerate(JUPITER_SWAP_ENDPOINTS, 1):
             try:
                 logger.info(f"[JUPITER_SWAP] Attempting endpoint {endpoint_idx}/{len(JUPITER_SWAP_ENDPOINTS)}: {endpoint_url}...")
-                response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
-                logger.debug(f"[JUPITER_SWAP] Response status: {response.status_code}")
                 
-                response.raise_for_status()  # Official: Raise for HTTP errors
+                # Copilot TODO: Wrap swap request with retries to handle transient failures
+                def _swap_request():
+                    response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
+                    logger.debug(f"[JUPITER_SWAP] Response status: {response.status_code}")
+                    response.raise_for_status()  # Official: Raise for HTTP errors
+                    return response.json()
                 
-                data = response.json()
+                data = with_retries(_swap_request, attempts=3, base_sleep=0.5)
                 logger.debug(f"[JUPITER_SWAP] Response data keys: {list(data.keys())}")
                 
                 if 'error' in data:
