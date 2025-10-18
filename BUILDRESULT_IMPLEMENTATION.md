@@ -122,17 +122,22 @@ Created comprehensive test suite covering:
 4. Success and failure scenarios
 
 ### Verification Results
-✅ All 6 public build functions now return `BuildResult`
-✅ No `return None` statements in any public build function
+✅ All 6 updated public build functions now return `BuildResult`:
+  - `mev_jupiter_executor.py`: `build_buy_tx()`, `build_sell_tx()`, `build_and_sign()`
+  - `mev_meteora_executor.py`: `build_and_sign()`
+  - `mev_raydium_executor.py`: `try_raydium_buy()`, `try_raydium_sell_all()`
+✅ No `return None` statements in the 6 updated builder functions
 ✅ All Python syntax validated
 ✅ BuildResult model works correctly
 ✅ Execution coordinator properly handles BuildResult objects
 ✅ All tests pass
 
+**Note:** Other functions in these files (internal helpers, utility functions) may still return `None` as appropriate for their use cases. This refactoring specifically targets the public build functions that are called by the execution coordinator.
+
 ## Migration Notes
 
 ### For New Code
-Use `BuildResult` for all new builder functions:
+Use `BuildResult` for all new builder functions that are called by the execution coordinator:
 ```python
 def build_new_tx(...) -> BuildResult:
     if error:
@@ -140,12 +145,15 @@ def build_new_tx(...) -> BuildResult:
     return BuildResult(ok=True, tx=transaction, dex="...", action="...")
 ```
 
+Internal helper functions may continue to use `Optional` return types as appropriate for their specific use cases.
+
 ### For Existing Code
 No changes needed - backward compatibility maintained in `execution_coordinator.try_submit()`
 
 ## Acceptance Criteria
-✅ No `None` returns from any builder function
-✅ Executors always know why a tx wasn't produced
-✅ All failures include descriptive reasons
-✅ Type-safe BuildResult dataclass implemented
-✅ Comprehensive test coverage added
+✅ No `None` returns from updated builder functions (6 public build functions)
+✅ Executors always know why a tx wasn't produced (via BuildResult.reason)
+✅ All build failures include descriptive reasons
+✅ Type-safe BuildResult dataclass implemented and tested
+✅ Comprehensive test coverage added for BuildResult
+✅ Execution coordinator properly handles BuildResult objects
