@@ -87,14 +87,16 @@ async def submit_cloned_tx(final_vtx, fast_executor):
             return None
         
         logger.info("[SUBMIT_CLONED_TX] 🚀 Submitting via FastExecutor.send_and_confirm...")
-        signature = await fast_executor.send_and_confirm(final_vtx)
+        result = await fast_executor.send_and_confirm(final_vtx)
         
-        if signature:
+        if result and result.get("success"):
+            signature = result["signature"]
             logger.info(f"[SUBMIT_CLONED_TX] ✅ Submission successful: {signature}")
+            return signature
         else:
-            logger.error("[SUBMIT_CLONED_TX] ❌ Submission failed - no signature returned")
-        
-        return signature
+            error = result.get("error") if result else "no result returned"
+            logger.error(f"[SUBMIT_CLONED_TX] ❌ Submission failed: {error}")
+            return None
         
     except Exception as e:
         logger.error(f"[SUBMIT_CLONED_TX] ❌ Exception during submission: {e}")

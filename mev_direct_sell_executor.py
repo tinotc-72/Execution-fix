@@ -34,7 +34,10 @@ async def try_mev_direct_copy_sell(trade_info: dict, wallet: Keypair, rpc):
     2) Extract route/DEX (Jupiter/Meteora) and key accounts.
     3) Rebuild instructions with our wallet's accounts.
     4) Create and sign a VersionedTransaction.
-    5) send_raw_transaction + confirm via get_signature_statuses.
+    5) Use executors.submit.send_and_confirm_v0_tx for submission with confirmation.
+    
+    TODO: Replace manual submission/confirmation with send_and_confirm_v0_tx when
+          instruction building is implemented.
     """
     sig = trade_info.get("signature")
     if not sig:
@@ -68,6 +71,11 @@ async def try_mev_direct_copy_sell(trade_info: dict, wallet: Keypair, rpc):
     # This is an actual tx, not a dict. It has .signatures and can be serialized.
 
     # 4) Send + 5) confirm correctly
+    # TODO: Replace this manual submission with:
+    # from executors.submit import send_and_confirm_v0_tx
+    # result = await send_and_confirm_v0_tx(vtx, rpc_url)
+    # return {"ok": result["success"], "executor": "direct_sell_executor", "signature": result.get("signature"), ...}
+    
     wire = bytes(vtx)  # already signed
     send = await rpc.send_raw_transaction(wire, max_retries=3, skip_preflight=False)
     tx_sig = str(send.value)

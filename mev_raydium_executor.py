@@ -10,6 +10,7 @@ TODOs:
   • Build swap instructions for Raydium CPMM
   • Add proper error handling and validation
   • Integrate with actual Raydium CPMM program
+  • Use executors.submit.send_and_confirm_v0_tx for transaction submission
 
 Compatible with: Python 3.11+, solders 0.26.x
 """

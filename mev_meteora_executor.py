@@ -825,11 +825,14 @@ class MEVMeteoraExecutor:
             
             logger.info("🚀 Executing via FastExecutor (Jito→RPC fallback)...")
             
-            # Use FastExecutor's unified submission path
-            sig = await self.fast_executor.send_and_confirm(vtx)
+            # Use FastExecutor's unified submission path (returns structured result)
+            result = await self.fast_executor.send_and_confirm(vtx)
             
-            if not sig:
-                return MeteoraTradeResult(success=False, error="submit failed (Jito+RPC)")
+            if not result or not result.get("success"):
+                error = result.get("error") if result else "submit failed (Jito+RPC)"
+                return MeteoraTradeResult(success=False, error=error)
+            
+            sig = result["signature"]
             
             # Get transaction details for token calculation
             tokens_received = await self._get_tokens_received(sig)
@@ -1077,16 +1080,18 @@ async def mev_meteora_copy_trade(
             # TODO: implement _build_meteora_sell_solders similarly (swap_mode=1)
             return None
         
-        # Use FastExecutor for unified Jito→RPC fallback
+        # Use FastExecutor for unified Jito→RPC fallback (returns structured result)
         if not fast_executor:
             logger.error("❌ [METEORA] No FastExecutor available")
             return None
         
-        sig = await fast_executor.send_and_confirm(vtx)
-        if not sig:
-            logger.error("❌ [METEORA] submit failed (Jito+RPC)")
+        result = await fast_executor.send_and_confirm(vtx)
+        if not result or not result.get("success"):
+            error = result.get("error") if result else "submit failed (Jito+RPC)"
+            logger.error(f"❌ [METEORA] submit failed: {error}")
             return None
         
+        sig = result["signature"]
         logger.info(f"✅ [METEORA] Executed via FastExecutor — signature: {sig}")
         return sig
         
