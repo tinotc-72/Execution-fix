@@ -11,12 +11,15 @@ import json
 import traceback
 import uuid
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from solders.message import MessageV0
 from solders.instruction import CompiledInstruction, Instruction
 from solders.hash import Hash
+
+# Import shared RPC submitter for guaranteed chain submission
+from executors.submit import send_and_confirm_v0_tx
 
 # Set up logger early for import-time logging
 logger = logging.getLogger(__name__)
@@ -211,18 +214,40 @@ class FastExecutor:
             self.session = None
             print("👋 FastExecutor session closed")
 
-    async def send_and_confirm(self, vtx: VersionedTransaction) -> Optional[str]:
+    async def send_and_confirm(self, vtx: VersionedTransaction) -> Optional[Dict[str, Any]]:
         """
-        Unified submit logic: tries Jito first, then RPC fallback.
+        Unified submit logic: tries Jito first, then RPC fallback with guaranteed confirmation.
         This is the main method for submitting transactions.
+        
+        Returns:
+            Structured result dict with signature and status, or None on complete failure
         """
-        sig = await self._submit_via_jito(vtx)
-        if not sig:
-            self.logger.warning("[EXECUTOR] Falling back to RPC submission")
-            sig = await self._submit_via_rpc(vtx)
-        if not sig:
-            self.logger.error("[EXECUTOR] submission failed (Jito and RPC)")
+        # Try Jito first if enabled
+        if self.use_jito:
+            sig = await self._submit_via_jito(vtx)
+            if sig:
+                # Jito succeeded, confirm the signature
+                status = await self._confirm_with_retries(sig)
+                self.logger.info(f"[CONFIRM][FINAL] sig={sig} status={status} path=jito")
+                return {
+                    "success": True,
+                    "signature": sig,
+                    "status": status,
+                    "path": "jito"
+                }
+            # Jito failed, log and fall back to RPC
+            self.logger.warning("[EXECUTOR] Jito submission failed, falling back to RPC")
+        
+        # Use shared RPC submitter for guaranteed chain submission
+        if not self._rpc_url:
+            self.logger.error("[EXECUTOR] No RPC URL configured for fallback")
             return None
-        status = await self._confirm_with_retries(sig)
-        self.logger.info(f"[CONFIRM][FINAL] sig={sig} status={status}")
-        return sig
+        
+        result = await send_and_confirm_v0_tx(vtx, self._rpc_url)
+        
+        if result.get("success"):
+            self.logger.info(f"[EXECUTOR] RPC submission succeeded: {result['signature']}")
+            return result
+        else:
+            self.logger.error(f"[EXECUTOR] RPC submission failed: {result.get('error')}")
+            return None
