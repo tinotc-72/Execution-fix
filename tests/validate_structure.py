@@ -79,9 +79,9 @@ def validate_test_script(script_path):
     else:
         print(f"  ⚠️  Logging may not be configured")
     
-    # Check for TEST_AMOUNT constants
+    # Check for TEST_AMOUNT_SOL and TEST_AMOUNT_LAMPORTS constants
     if 'TEST_AMOUNT_SOL' in content and 'TEST_AMOUNT_LAMPORTS' in content:
-        print(f"  ✅ Test amount constants defined")
+        print(f"  ✅ Test amount constants defined (TEST_AMOUNT_SOL, TEST_AMOUNT_LAMPORTS)")
     else:
         print(f"  ⚠️  Test amount constants may be missing")
     

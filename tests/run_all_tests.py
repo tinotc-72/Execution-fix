@@ -10,16 +10,30 @@ Usage:
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 
-# Configure colors for output
+# Configure colors for output - only use colors if terminal supports it
+def supports_color():
+    """Check if the terminal supports ANSI color codes."""
+    # Check if stdout is a terminal
+    if not hasattr(sys.stdout, 'isatty') or not sys.stdout.isatty():
+        return False
+    # Check for common env vars that indicate no color support
+    if os.getenv('NO_COLOR') or os.getenv('TERM') == 'dumb':
+        return False
+    return True
+
 class Colors:
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    RED = '\033[91m'
-    BLUE = '\033[94m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
+    """ANSI color codes - automatically disabled on unsupported terminals."""
+    _enabled = supports_color()
+    
+    GREEN = '\033[92m' if _enabled else ''
+    YELLOW = '\033[93m' if _enabled else ''
+    RED = '\033[91m' if _enabled else ''
+    BLUE = '\033[94m' if _enabled else ''
+    ENDC = '\033[0m' if _enabled else ''
+    BOLD = '\033[1m' if _enabled else ''
 
 def run_test(test_name, script_path):
     """Run a single test script in simulate mode."""
@@ -29,11 +43,12 @@ def run_test(test_name, script_path):
     
     try:
         # Run the test in simulate mode
+        # Timeout of 60 seconds to allow for network calls (Jupiter API, etc.)
         result = subprocess.run(
             [sys.executable, str(script_path), "--simulate"],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=60
         )
         
         # Print output
