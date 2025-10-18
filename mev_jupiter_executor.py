@@ -14,6 +14,9 @@ from solders.instruction import Instruction, AccountMeta
 from solders.system_program import ID as SYS_PROGRAM_ID
 from solders.compute_budget import ID as COMPUTE_BUDGET_ID
 
+# Import shared RPC submitter for guaranteed chain submission
+from executors.submit import send_and_confirm_v0_tx
+
 def _as_mint_str(m) -> str:
     """Coerce any Pubkey or object to string for safe use in API calls."""
     return str(m) if not isinstance(m, Pubkey) else str(m)
@@ -659,41 +662,11 @@ class MEVJupiterExecutor:
                         transaction = VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
                         transaction.sign([self.wallet_keypair])
                         
-                        # Dual-path execution: Jito first, RPC fallback
-                        signature = None
-                        path_used = "rpc"
-                        
-                        if jito_is_configured(self.jito_service):
-                            try:
-                                logger.info("🚀 Using Jito for Jupiter sell MEV protection...")
-                                signed_tx_bytes = bytes(transaction)
-                                result = await self.jito_service.send_transaction(signed_tx_bytes)
-                                signature = result.get("signature")
-                                if signature:
-                                    path_used = "jito"
-                                    logger.info(f"✅ EXECUTED via jupiter (jito) — signature: {signature}")
-                                    return exec_ok("jupiter", signature, {
-                                        'dex': 'Jupiter',
-                                        'slippage_used': slippage_bps / 10000,
-                                        'path': 'jito'
-                                    })
-                                else:
-                                    logger.warning(f"⏭️ Skipped jupiter (jito): {result}")
-                            except Exception as jito_error:
-                                logger.warning(f"⏭️ Skipped jupiter (jito): {jito_error}")
-                        
-                        # RPC fallback (must exist)
-                        if not signature:
-                            opts = {
-                                "skip_preflight": True,
-                                "preflight_commitment": "processed",
-                                "max_retries": 1
-                            }
-                            sig_result = await self.client.send_transaction(transaction, opts=opts)
-                            signature = str(sig_result.value) if sig_result.value else None
+                        # Use shared send_transaction_with_retry for Jito + RPC fallback
+                        signature = await self.send_transaction_with_retry(transaction)
                         
                         if signature:
-                            logger.info(f"✅ EXECUTED via jupiter (rpc) — signature: {signature}")
+                            logger.info(f"✅ EXECUTED via jupiter — signature: {signature}")
                             return exec_ok("jupiter", signature, {
                                 'dex': 'Jupiter',
                                 'slippage_used': slippage_bps / 10000,
@@ -758,9 +731,11 @@ class MEVJupiterExecutor:
             return exec_err("jupiter", f"ATA creation failed: {str(e)}")
 
     async def send_transaction_with_retry(self, transaction: VersionedTransaction, max_retries: int = 3) -> Optional[str]:
-        """Send transaction with retry logic for robustness"""
-        import traceback
+        """
+        Send transaction with Jito-first, then RPC fallback using shared submitter.
         
+        Returns signature string on success, None on failure.
+        """
         logger.info(f"[JUPITER_RETRY] 🔄 Sending transaction with up to {max_retries} retries...")
         
         for attempt in range(1, max_retries + 1):
@@ -773,29 +748,25 @@ class MEVJupiterExecutor:
                         logger.info(f"[JUPITER_RETRY] Attempting Jito submission (attempt {attempt})...")
                         signed_tx_bytes = bytes(transaction)
                         result = await self.jito_service.send_transaction(signed_tx_bytes)
-                        signature = result.get("signature")
-                        if signature:
-                            logger.info(f"[JUPITER_RETRY] ✅ Success via Jito on attempt {attempt}: {signature}")
-                            return signature
+                        sig = result.get("result")
+                        if sig:
+                            logger.info(f"[JUPITER_RETRY] ✅ Success via Jito on attempt {attempt}: {sig}")
+                            return sig
                         else:
-                            logger.warning(f"[JUPITER_RETRY] Jito returned no signature on attempt {attempt}")
+                            logger.warning(f"[JUPITER_RETRY] Jito returned no signature on attempt {attempt}: {result}")
                     except Exception as jito_error:
                         logger.warning(f"[JUPITER_RETRY] Jito failed on attempt {attempt}: {jito_error}")
                 
-                # RPC fallback
-                logger.info(f"[JUPITER_RETRY] Attempting RPC submission (attempt {attempt})...")
-                opts = {
-                    "skip_preflight": True,
-                    "preflight_commitment": "processed",
-                    "max_retries": 1
-                }
-                sig_result = await self.client.send_transaction(transaction, opts=opts)
-                if sig_result.value:
-                    signature = str(sig_result.value)
+                # RPC fallback using shared submitter
+                logger.info(f"[JUPITER_RETRY] Attempting RPC submission via shared submitter (attempt {attempt})...")
+                result = await send_and_confirm_v0_tx(transaction, RPC_URL, max_retries=5, retry_delay=0.8)
+                
+                if result.get("success"):
+                    signature = result["signature"]
                     logger.info(f"[JUPITER_RETRY] ✅ Success via RPC on attempt {attempt}: {signature}")
                     return signature
                 else:
-                    logger.warning(f"[JUPITER_RETRY] RPC returned no signature on attempt {attempt}")
+                    logger.warning(f"[JUPITER_RETRY] RPC failed on attempt {attempt}: {result.get('error')}")
                     
             except Exception as e:
                 logger.warning(f"[JUPITER_RETRY] Attempt {attempt} failed: {e}")
@@ -804,7 +775,6 @@ class MEVJupiterExecutor:
                     await asyncio.sleep(0.5 * attempt)  # Exponential backoff
                 else:
                     logger.error(f"[JUPITER_RETRY] ❌ All {max_retries} attempts failed")
-                    logger.error(traceback.format_exc())
         
         return None
 
