@@ -94,22 +94,22 @@ def test_explicit_start_logs():
         return True
 
 def test_explicit_end_logs():
-    """Verify END logs are present"""
-    print("\n=== Test 5: END logs present ===")
+    """Verify FINISHED logs are present"""
+    print("\n=== Test 5: FINISHED logs present ===")
     
     with open('websocket_handler.py', 'r') as f:
         content = f.read()
     
-    # Look for END log pattern
-    end_pattern = r'logger\.(?:info|debug)\([^)]*END[^)]*pipeline'
-    matches = re.findall(end_pattern, content, re.IGNORECASE)
+    # Look for FINISHED log pattern
+    finished_pattern = r'logger\.(?:info|debug)\([^)]*FINISHED[^)]*pipeline'
+    matches = re.findall(finished_pattern, content, re.IGNORECASE)
     
     if not matches:
-        print("  ❌ FAIL: No END logs found")
+        print("  ❌ FAIL: No FINISHED logs found")
         print("         Pipeline completion must be logged for visibility")
         return False
     else:
-        print(f"  ✅ PASS: Found {len(matches)} END log statements")
+        print(f"  ✅ PASS: Found {len(matches)} FINISHED log statements")
         for match in matches[:3]:  # Show first 3
             print(f"         - {match[:80]}...")
         return True
@@ -155,14 +155,14 @@ def test_try_except_around_callback():
         return True
 
 def test_log_flow_pattern():
-    """Verify complete log flow pattern: SCHEDULED → START → END/ERROR"""
+    """Verify complete log flow pattern: SCHEDULED → START → FINISHED/ERROR"""
     print("\n=== Test 8: Complete log flow pattern ===")
     
     with open('websocket_handler.py', 'r') as f:
         content = f.read()
     
     # Look for the complete pattern in sequence
-    flow_pattern = r'SCHEDULED.*?START.*?(?:END|ERROR)'
+    flow_pattern = r'SCHEDULED.*?START.*?(?:FINISHED|ERROR)'
     
     # Find all handler methods
     handler_methods = ['_handle_logs_notification', '_handle_account_notification', 
@@ -178,7 +178,7 @@ def test_log_flow_pattern():
             method_content = method_match.group(1)
             if re.search(flow_pattern, method_content, re.DOTALL):
                 found_patterns += 1
-                print(f"  ✅ {method}: Has complete SCHEDULED → START → END/ERROR flow")
+                print(f"  ✅ {method}: Has complete SCHEDULED → START → FINISHED/ERROR flow")
     
     if found_patterns >= len(handler_methods):
         print(f"\n  ✅ PASS: All {found_patterns} handlers have complete log flow")
@@ -228,7 +228,7 @@ def main():
         print("  • Awaits trade_callback instead of using create_task")
         print("  • Logs SCHEDULED when pipeline is about to start")
         print("  • Logs START when pipeline execution begins")
-        print("  • Logs END when pipeline completes successfully")
+        print("  • Logs FINISHED when pipeline completes successfully")
         print("  • Logs ERROR when pipeline crashes with exc_info")
         print("\nThis ensures pipeline execution is visible in logs!")
         return 0

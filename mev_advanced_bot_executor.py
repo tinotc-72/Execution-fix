@@ -48,27 +48,28 @@ COMPUTE_BUDGET_PROGRAM_ID = PublicKey.from_string("ComputeBudget1111111111111111
 ADVANCED_MEV_BOT_PROGRAM = PublicKey.from_string("BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW")
 CUSTOM_ROUTING_PROGRAM = PublicKey.from_string("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")
 
-# Jito client placeholder
+# Jito client - optional dependency
 try:
-    from jito_client import JitoClient
+    from jito_service import JitoClient
     JITO_AVAILABLE = True
-except ImportError:
-    try:
-        from .jito_client import JitoClient
-        JITO_AVAILABLE = True
-    except ImportError:
-        JITO_AVAILABLE = False
-        logger = logging.getLogger(__name__)
-        logger.warning("⚠️ JitoClient not available - MEV protection disabled")
-        class JitoClient:
-            def __init__(self):
-                pass
+    logger.info("[ADVANCED_MEV] ✅ JitoClient available for MEV protection")
+except ImportError as e:
+    JITO_AVAILABLE = False
+    JitoClient = None
+    logger.info(f"[ADVANCED_MEV] ℹ️  JitoClient not available: {e}. Will use RPC fallback.")
 
 logger = logging.getLogger(__name__)
 
 def jito_is_configured(jito_service) -> bool:
-    """Check if Jito is properly configured and available"""
-    return JITO_AVAILABLE and jito_service is not None
+    """
+    Check if Jito is properly configured and available.
+    
+    Returns True only if:
+    1. JITO_AVAILABLE (jito_service module can be imported)
+    2. jito_service instance is not None
+    3. jito_service has send_transaction method
+    """
+    return JITO_AVAILABLE and jito_service is not None and hasattr(jito_service, 'send_transaction')
 
 @dataclass
 class AdvancedMEVTradeParams:

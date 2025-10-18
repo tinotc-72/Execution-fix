@@ -45,14 +45,13 @@ from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 
-# Solders-only imports
-from solders.transaction import Transaction, VersionedTransaction
-from solders.message import MessageV0
-from solders.instruction import Instruction, AccountMeta
-from solders.keypair import Keypair
+# Set up logger early for import-time logging
+logger = logging.getLogger(__name__)
+
+# Solders-only imports (deduplicated)
+from solders.transaction import Transaction
 from solders.pubkey import Pubkey as PublicKey
 from solders.system_program import transfer, TransferParams
-from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 
 # Standardized result helpers
 def exec_ok(executor_name: str, signature: str, data: dict = None) -> dict:
@@ -67,8 +66,15 @@ def exec_err(executor_name: str, error_message: str) -> dict:
     return {"success": False, "executor": executor_name, "error": error_message}
 
 def jito_is_configured(jito_service) -> bool:
-    """Check if Jito is properly configured and available"""
-    return JITO_AVAILABLE and jito_service is not None
+    """
+    Check if Jito is properly configured and available.
+    
+    Returns True only if:
+    1. JITO_AVAILABLE (jito_service module can be imported)
+    2. jito_service instance is not None
+    3. jito_service has send_transaction method
+    """
+    return JITO_AVAILABLE and jito_service is not None and hasattr(jito_service, 'send_transaction')
 
 from solders.signature import Signature
 
@@ -139,40 +145,23 @@ class SimpleRPC:
                 [sig, {"encoding": "json", "maxSupportedTransactionVersion": max_version}],
             )
         except Exception as e:
-            return exec_err("meteora", f"get transaction failed: {str(e)}")
+            logger.error(f"get transaction failed: {str(e)}")
+            return None
 
 # Protocol-compliant fee program and writable fee recipient
 FEE_PROGRAM = PublicKey.from_string("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")
 FEE_RECIPIENT_WRITABLE = PublicKey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV1T6NVswCLPVXdHy")
 
-logger = logging.getLogger(__name__)
-
 DEFAULT_PRIORITY_FEE = 2_000_000  # 2M micro-lamports (protocol-compliant)
-# Try to import JitoClient from the correct module, create placeholder if not available
+# JitoClient is available from jito_service module when needed by FastExecutor
 try:
     from jito_service import JitoClient
-    from models import Bundle, Transaction as BundleTransaction
     JITO_AVAILABLE = True
-    logger.info("✅ Jito service available - MEV protection ready for Meteora")
-except ImportError:
-    try:
-        from .jito_service import JitoClient
-        from .models import Bundle, Transaction as BundleTransaction
-        JITO_AVAILABLE = True
-        logger.info("✅ Jito service available - MEV protection ready for Meteora")
-    except ImportError:
-        logger.warning("⚠️ JitoClient not available - MEV protection disabled")
-        JITO_AVAILABLE = False
-        class JitoClient:
-            """Placeholder JitoClient for testing"""
-            async def send_bundle(self, bundle):
-                return None
-            
-            async def initialize(self):
-                pass
-            
-            async def close(self):
-                pass
+    logger.info("[METEORA] ✅ JitoClient available for MEV protection")
+except ImportError as e:
+    logger.info(f"[METEORA] ℹ️  JitoClient not available: {e}. Will use RPC fallback.")
+    JITO_AVAILABLE = False
+    JitoClient = None  # Set to None for type safety
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -250,11 +239,25 @@ class MEVMeteoraExecutor:
                 pool_info, params, token_account, int(expected_sol * (1 - params.slippage_percent / 100))
             )
 
-            # Step 5: Execute with MEV protection
-            if params.use_jito:
-                result = await self._execute_with_jito(transaction)
+            # Step 5: Convert to VersionedTransaction and sign
+            # Get fresh blockhash
+            bh_resp = self.client.get_latest_blockhash()
+            if isinstance(bh_resp, tuple):
+                bh, _ = bh_resp
             else:
-                result = await self._execute_standard(transaction)
+                bh = bh_resp
+            
+            # Convert Transaction to VersionedTransaction
+            msg = MessageV0.try_compile(
+                self.wallet.pubkey(),
+                transaction.instructions,
+                [],  # No address lookup tables
+                bh
+            )
+            vtx = VersionedTransaction(msg, [self.wallet])
+            
+            # Step 6: Execute via FastExecutor
+            result = await self._execute_via_fast_executor(vtx)
 
             execution_time = time.time() - start_time
             if result.success:
@@ -381,26 +384,26 @@ class MEVMeteoraExecutor:
     TOKEN_PROGRAM = TOKEN_PROGRAM_ID
     ASSOCIATED_TOKEN_PROGRAM = ASSOCIATED_TOKEN_PROGRAM_ID
     
-    def __init__(self, wallet_keypair: Keypair, rpc_client: SimpleRPC, jito_service=None):
+    def __init__(self, wallet_keypair: Keypair, rpc_client: SimpleRPC, fast_executor=None):
         """
         Initialize the MEV Meteora executor with comprehensive logging.
         
         Args:
             wallet_keypair: Wallet keypair for signing transactions
             rpc_client: Async RPC client for Solana
-            jito_service: Optional external JitoClient for MEV protection
+            fast_executor: FastExecutor instance for unified Jito→RPC submission
         """
         import traceback
         
         logger.info(f"[METEORA] 🚀 Initializing MEV Meteora Executor...")
         logger.debug(f"[METEORA] Wallet pubkey: {wallet_keypair.pubkey()}")
         logger.debug(f"[METEORA] RPC client type: {type(rpc_client)}")
-        logger.debug(f"[METEORA] Jito service available: {jito_service is not None}")
+        logger.debug(f"[METEORA] FastExecutor available: {fast_executor is not None}")
         
         try:
             self.wallet = wallet_keypair
             self.client = rpc_client
-            self.jito_service = jito_service  # Use provided jito_service or None
+            self.fast_executor = fast_executor  # Use provided fast_executor for submissions
             
             logger.info(f"[METEORA] ✅ Wallet configured: {self.wallet.pubkey()}")
             
@@ -414,10 +417,10 @@ class MEVMeteoraExecutor:
             
             logger.info(f"[METEORA] Target Program: {self.METEORA_DYNAMIC_BONDING_CURVE}")
             
-            if jito_service:
-                logger.info(f"[METEORA] ✅ Jito MEV protection configured")
+            if fast_executor:
+                logger.info(f"[METEORA] ✅ FastExecutor configured for Jito→RPC fallback")
             else:
-                logger.info(f"[METEORA] ℹ️  No Jito service - using RPC only")
+                logger.info(f"[METEORA] ℹ️  No FastExecutor - using direct RPC only")
             
             logger.info(f"[METEORA] 🎉 Executor initialization complete")
             
@@ -483,11 +486,25 @@ class MEVMeteoraExecutor:
                 pool_info, params, token_account, expected_tokens
             )
             
-            # Step 5: Execute with MEV protection
-            if params.use_jito:
-                result = await self._execute_with_jito(transaction)
+            # Step 5: Convert to VersionedTransaction and sign
+            # Get fresh blockhash
+            bh_resp = self.client.get_latest_blockhash()
+            if isinstance(bh_resp, tuple):
+                bh, _ = bh_resp
             else:
-                result = await self._execute_standard(transaction)
+                bh = bh_resp
+            
+            # Convert Transaction to VersionedTransaction
+            msg = MessageV0.try_compile(
+                self.wallet.pubkey(),
+                transaction.instructions,
+                [],  # No address lookup tables
+                bh
+            )
+            vtx = VersionedTransaction(msg, [self.wallet])
+            
+            # Step 6: Execute via FastExecutor
+            result = await self._execute_via_fast_executor(vtx)
             
             execution_time = time.time() - start_time
             
@@ -537,7 +554,7 @@ class MEVMeteoraExecutor:
             
             if not pool_account.value or not pool_account.value.data:
                 logger.warning(f"No pool found for token {token_mint}")
-                return exec_err("meteora_executor", f"No pool found for token {token_mint}")
+                return None
             
             # Parse pool data (simplified - would need actual Meteora DBC parsing)
             pool_data = pool_account.value.data
@@ -558,7 +575,7 @@ class MEVMeteoraExecutor:
             
         except Exception as e:
             logger.error(f"Error getting pool info: {str(e)}")
-            return exec_err("meteora_executor", f"Pool info retrieval failed: {str(e)}")
+            return None
     
     async def _derive_meteora_pool_address(self, token_mint: PublicKey) -> PublicKey:
         """
@@ -784,96 +801,54 @@ class MEVMeteoraExecutor:
             keys=[]
         )
     
-    async def _execute_with_jito(self, transaction: Transaction) -> MeteoraTradeResult:
+    async def _execute_via_fast_executor(self, vtx: VersionedTransaction) -> MeteoraTradeResult:
         """
-        Execute transaction with Jito MEV protection.
+        Execute transaction via FastExecutor (Jito→RPC fallback).
         
         Args:
-            transaction: Transaction to execute
+            vtx: VersionedTransaction to execute
             
         Returns:
             MeteoraTradeResult
         """
         try:
-            logger.info("🛡️ Executing with Jito MEV protection...")
-            
-            # Sign the transaction
-            transaction.sign(self.wallet)
-            
-            # Submit to Jito
-            if not jito_is_configured(self.jito_service):
-                return MeteoraTradeResult(success=False, error="Jito service not configured")
-            
-            result = await self.jito_service.send_bundle([transaction])
-            
-            if result.get("success"):
-                signature = result.get("signature")
-                
-                # Wait for confirmation
-                await self._wait_for_confirmation(signature)
+            if not self.fast_executor:
+                logger.warning("⚠️ No FastExecutor available, using direct RPC")
+                sig = _send_and_confirm(self.client, vtx)
+                if not sig:
+                    return MeteoraTradeResult(success=False, error="Direct RPC submission failed")
                 
                 # Get transaction details for token calculation
-                tokens_received = await self._get_tokens_received(signature)
+                tokens_received = await self._get_tokens_received(str(sig))
                 
                 return MeteoraTradeResult(
                     success=True,
-                    signature=signature,
+                    signature=str(sig),
                     tokens_received=tokens_received
                 )
-            else:
-                return MeteoraTradeResult(
-                    success=False,
-                    error=f"Jito execution failed: {result.get('error', 'Unknown error')}"
-                )
-                
-        except Exception as e:
-            logger.error(f"Jito execution error: {str(e)}")
-            return MeteoraTradeResult(
-                success=False,
-                error=f"Jito execution exception: {str(e)}"
-            )
-    
-    async def _execute_standard(self, transaction: Transaction) -> MeteoraTradeResult:
-        """
-        Execute transaction using standard RPC (fallback).
-        
-        Args:
-            transaction: Transaction to execute
             
-        Returns:
-            MeteoraTradeResult
-        """
-        try:
-            logger.info("📡 Executing with standard RPC...")
+            logger.info("🚀 Executing via FastExecutor (Jito→RPC fallback)...")
             
-            # Sign the transaction
-            transaction.sign(self.wallet)
+            # Use FastExecutor's unified submission path
+            sig = await self.fast_executor.send_and_confirm(vtx)
             
-            # Send transaction
-            result = await self.client.send_transaction(
-                transaction,
-                opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
-            )
-            
-            signature = result.value
-            
-            # Wait for confirmation
-            await self._wait_for_confirmation(signature)
+            if not sig:
+                return MeteoraTradeResult(success=False, error="submit failed (Jito+RPC)")
             
             # Get transaction details for token calculation
-            tokens_received = await self._get_tokens_received(signature)
+            tokens_received = await self._get_tokens_received(sig)
             
             return MeteoraTradeResult(
                 success=True,
-                signature=signature,
+                signature=sig,
                 tokens_received=tokens_received
             )
-            
+                
         except Exception as e:
-            logger.error(f"Standard execution error: {str(e)}")
+            logger.error(f"FastExecutor execution error: {str(e)}")
             return MeteoraTradeResult(
                 success=False,
-                error=f"Standard execution exception: {str(e)}"
+                error=f"FastExecutor execution exception: {str(e)}"
             )
     
     async def _wait_for_confirmation(self, signature: str, timeout: int = 30) -> bool:
@@ -931,7 +906,8 @@ class MEVMeteoraExecutor:
             tx_result = await self.client.get_transaction(signature)
             
             if not tx_result.value or not tx_result.value.meta:
-                return exec_err("meteora_executor", f"No transaction metadata for signature {signature}")
+                logger.warning(f"No transaction metadata for signature {signature}")
+                return None
             
             # Parse token balances (simplified)
             # Real implementation would parse the actual token balance changes
@@ -958,7 +934,7 @@ class MEVMeteoraExecutor:
             
         except Exception as e:
             logger.error(f"Error getting tokens received: {str(e)}")
-            return exec_err("meteora_executor", f"Tokens received calculation failed: {str(e)}")
+            return None
     
     def get_performance_stats(self) -> Dict[str, Any]:
         """
@@ -994,40 +970,39 @@ async def try_meteora_buy(
         logger.info(f"🌊 MEV METEORA BUY: {amount_sol} SOL → {token_mint[:8]}...")
         logger.info(f"🛡️ ULTRA-AGGRESSIVE MEV MODE: Professional Meteora execution!")
         logger.info(f"🔥 Reverse-engineered + MEV protection = Ultimate Meteora trading!")
-        if JITO_AVAILABLE:
-            jito_client = JitoClient()
-            await jito_client.initialize()
-        else:
-            jito_client = None
+        
         from utils import RPCClient
-        rpc_client = RPCClient("https://api.mainnet-beta.solana.com")
+        from config import HELIUS_RPC_URL
+        rpc_client = RPCClient(HELIUS_RPC_URL)
+        
         executor = MEVMeteoraExecutor(
             wallet_keypair=wallet_keypair,
-            rpc_client=rpc_client
+            rpc_client=rpc_client,
+            fast_executor=fast_executor
         )
-        try:
-            params = MeteoraTradeParams(
-                token_mint=PublicKey.from_string(token_mint),
-                amount_sol=amount_sol,
-                use_jito=JITO_AVAILABLE,
-                slippage_percent=5.0,
-                priority_fee=1_000_000
-            )
-            result = await executor.execute_buy(params)
-            if result.success:
-                logger.info(f"✅ MEV Meteora buy executed: {result.signature}")
-                return result.signature
-            else:
-                logger.error(f"❌ MEV Meteora buy failed: {result.error}")
-                return exec_err("meteora_executor", f"MEV buy execution failed: {result.error}")
-        finally:
-            if jito_client:
-                await jito_client.close()
+        
+        params = MeteoraTradeParams(
+            token_mint=PublicKey.from_string(token_mint),
+            amount_sol=amount_sol,
+            use_jito=True,  # FastExecutor handles the fallback
+            slippage_percent=5.0,
+            priority_fee=1_000_000
+        )
+        
+        result = await executor.execute_buy(params)
+        
+        if result.success:
+            logger.info(f"✅ MEV Meteora buy executed: {result.signature}")
+            return result.signature
+        else:
+            logger.error(f"❌ MEV Meteora buy failed: {result.error}")
+            return None
+            
     except Exception as e:
         logger.error(f"❌ MEV Meteora buy wrapper error: {str(e)}")
         import traceback
         traceback.print_exc()
-        return exec_err("meteora_executor", f"MEV buy wrapper error: {str(e)}")
+        return None
 
 async def try_meteora_sell_all(
     wallet_keypair: Keypair,
@@ -1040,40 +1015,39 @@ async def try_meteora_sell_all(
     try:
         logger.info(f"🌊 MEV METEORA SELL ALL: {token_mint[:8]}... → SOL")
         logger.info(f"🛡️ ULTRA-AGGRESSIVE MEV MODE: Professional Meteora sell execution!")
-        if JITO_AVAILABLE:
-            jito_client = JitoClient()
-            await jito_client.initialize()
-        else:
-            jito_client = None
+        
         from utils import RPCClient
-        rpc_client = RPCClient("https://api.mainnet-beta.solana.com")
+        from config import HELIUS_RPC_URL
+        rpc_client = RPCClient(HELIUS_RPC_URL)
+        
         executor = MEVMeteoraExecutor(
             wallet_keypair=wallet_keypair,
-            rpc_client=rpc_client
+            rpc_client=rpc_client,
+            fast_executor=fast_executor
         )
-        try:
-            params = MeteoraTradeParams(
-                token_mint=PublicKey.from_string(token_mint),
-                amount_sol=amount_sol,
-                use_jito=JITO_AVAILABLE,
-                slippage_percent=5.0,
-                priority_fee=1_000_000
-            )
-            result = await executor.execute_sell(params)
-            if result.success:
-                logger.info(f"✅ MEV Meteora sell executed: {result.signature}")
-                return result.signature
-            else:
-                logger.error(f"❌ MEV Meteora sell failed: {result.error}")
-                return exec_err("meteora_executor", f"MEV sell execution failed: {result.error}")
-        finally:
-            if jito_client:
-                await jito_client.close()
+        
+        params = MeteoraTradeParams(
+            token_mint=PublicKey.from_string(token_mint),
+            amount_sol=amount_sol,
+            use_jito=True,  # FastExecutor handles the fallback
+            slippage_percent=5.0,
+            priority_fee=1_000_000
+        )
+        
+        result = await executor.execute_sell(params)
+        
+        if result.success:
+            logger.info(f"✅ MEV Meteora sell executed: {result.signature}")
+            return result.signature
+        else:
+            logger.error(f"❌ MEV Meteora sell failed: {result.error}")
+            return None
+            
     except Exception as e:
         logger.error(f"❌ MEV Meteora sell wrapper error: {str(e)}")
         import traceback
         traceback.print_exc()
-        return exec_err("meteora_executor", f"MEV sell wrapper error: {str(e)}")
+        return None
 
 # Main wrapper function for execution_coordinator.py compatibility
 async def mev_meteora_copy_trade(
@@ -1102,33 +1076,27 @@ async def mev_meteora_copy_trade(
     
     try:
         if detected_action.lower() == "buy":
-            tx = _build_meteora_buy_solders(rpc, owner, mint_pk, lamports, min_tokens=min_tokens, trade_info=trade_info)
+            vtx = _build_meteora_buy_solders(rpc, owner, mint_pk, lamports, min_tokens=min_tokens, trade_info=trade_info)
         else:
             # TODO: implement _build_meteora_sell_solders similarly (swap_mode=1)
-            return exec_err("meteora_executor", f"Sell action not implemented for Meteora: {detected_action}")
+            return None
         
-        # Dual-path execution: Jito first, RPC fallback
-        if jito_is_configured(jito_service):
-            try:
-                logger.info("🚀 Using Jito for Meteora MEV protection...")
-                signed_tx_bytes = bytes(tx)
-                result = await jito_service.send_transaction(signed_tx_bytes)
-                signature = result.get("signature")
-                if signature:
-                    logger.info(f"✅ EXECUTED via meteora (jito) — signature: {signature}")
-                    return exec_ok("meteora", signature, {"path": "jito"})
-                else:
-                    logger.warning(f"⏭️ Skipped meteora (jito): {result}")
-            except Exception as jito_error:
-                logger.warning(f"⏭️ Skipped meteora (jito): {jito_error}")
+        # Use FastExecutor for unified Jito→RPC fallback
+        if not fast_executor:
+            logger.error("❌ [METEORA] No FastExecutor available")
+            return None
         
-        # RPC fallback (must exist)
-        sig = _send_and_confirm(rpc, tx)
-        logger.info(f"✅ EXECUTED via meteora (rpc) — signature: {str(sig)}")
-        return exec_ok("meteora", str(sig), {"path": "rpc"})
+        sig = await fast_executor.send_and_confirm(vtx)
+        if not sig:
+            logger.error("❌ [METEORA] submit failed (Jito+RPC)")
+            return None
+        
+        logger.info(f"✅ [METEORA] Executed via FastExecutor — signature: {sig}")
+        return sig
+        
     except Exception as e:
         logger.error(f"❌ Meteora copy trade error: {e}")
-        return exec_err("meteora_executor", f"Meteora copy trade error: {str(e)}")
+        return None
 
 from solders.pubkey import Pubkey
 from solders.instruction import AccountMeta

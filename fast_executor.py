@@ -10,6 +10,7 @@ import base64
 import json
 import traceback
 import uuid
+import logging
 from typing import Optional, List
 from solders.keypair import Keypair
 from solders.transaction import Transaction, VersionedTransaction
@@ -17,13 +18,28 @@ from solders.message import MessageV0
 from solders.instruction import CompiledInstruction, Instruction
 from solders.hash import Hash
 
+# Set up logger early for import-time logging
+logger = logging.getLogger(__name__)
+
+# Check if Jito is enabled via environment variable
+import os
+JITO_ENABLED = os.getenv("JITO_ENABLED", "true").lower() in ("true", "1", "yes")
+
 # Make Jito imports optional - never fail at import time
-try:
-    from jito_service import JitoClient
-    JITO_AVAILABLE = True
-except ImportError:
-    JITO_AVAILABLE = False
-    JitoClient = None
+JITO_AVAILABLE = False
+JitoClient = None
+
+if JITO_ENABLED:
+    try:
+        from jito_service import JitoClient
+        JITO_AVAILABLE = True
+        logger.info("[FAST_EXECUTOR] ✅ JitoClient available for MEV protection")
+    except ImportError as e:
+        JITO_AVAILABLE = False
+        JitoClient = None
+        logger.info(f"[FAST_EXECUTOR] ℹ️  JitoClient import failed: {e}. Will use RPC fallback.")
+else:
+    logger.info("[FAST_EXECUTOR] ℹ️  Jito disabled via JITO_ENABLED env var. Will use RPC fallback.")
 
 from env_keys import EnvKeys
 
@@ -47,12 +63,20 @@ class FastExecutor:
         self._rpc_url = getattr(env_keys, "HELIUS_RPC_URL", None)
         
         # Initialize Jito client with auth from env_keys
-        if JITO_AVAILABLE:
+        # Only use Jito if both ENABLED and AVAILABLE
+        if JITO_ENABLED and JITO_AVAILABLE:
             auth_token = env_keys.JITO_UUID or env_keys.JITO_AUTH_TOKEN
             region_url = env_keys.JITO_BUNDLE_ENDPOINT
-            self.jito = jito_client if jito_client else JitoClient(auth_token=auth_token, block_engine_base=region_url)
-            self.use_jito = True
-            self._jito_region_url = region_url
+            # Only initialize if we have valid configuration
+            if auth_token and region_url:
+                self.jito = jito_client if jito_client else JitoClient(auth_token=auth_token, block_engine_base=region_url)
+                self.use_jito = True
+                self._jito_region_url = region_url
+            else:
+                logger.info("[FAST_EXECUTOR] ℹ️  Jito credentials not configured. Will use RPC fallback.")
+                self.jito = None
+                self.use_jito = False
+                self._jito_region_url = None
         else:
             self.jito = None
             self.use_jito = False
@@ -105,7 +129,7 @@ class FastExecutor:
             return None
     
     async def submit_transaction(self, vtx: VersionedTransaction) -> Optional[str]:
-        """Submit transaction via Jito or RPC fallback"""
+        """Submit transaction via Jito or RPC fallback - never raises on normal flow"""
         try:
             if not self.session:
                 await self.initialize()
@@ -114,16 +138,19 @@ class FastExecutor:
                 self.logger.error(f"Invalid transaction type: {type(vtx)}")
                 return None
 
-            # Try Jito first
-            sig = await self._submit_via_jito(vtx)
-            if sig:
-                return sig
+            # Try Jito first if enabled
+            if self.use_jito:
+                sig = await self._submit_via_jito(vtx)
+                if sig:
+                    return sig
+                # Jito failed, fall back to RPC
+                self.logger.warning("[SUBMIT] Jito failed, falling back to RPC")
             
-            # Fallback to RPC
+            # Use RPC (either as fallback or primary path)
             return await self._submit_via_rpc(vtx)
 
         except Exception as e:
-            self.logger.error(f"Transaction submission error: {e}")
+            self.logger.error(f"[SUBMIT] Transaction submission error: {e}")
             traceback.print_exc()
             return None
     

@@ -74,6 +74,10 @@ import signal
 import sys
 import traceback
 import time
+import os
+import inspect
+import pathlib
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
@@ -105,21 +109,43 @@ _warn_origin("execution_coordinator", execution_coordinator, str(REPO_ROOT))
 
 # Import utilities
 from utils import get_transaction_with_logs, load_keypair, RPCClient
+from utils.async_timeout import run_with_watchdog
+from debug_utils import set_span_id, DebugSpan
 
 # Import specialized modules
 from copy_trade_logger import get_copy_trade_logger
 
-# Import execution coordinator for trading
-from execution_coordinator import ExecutionCoordinator
+# Import transaction cloner
 from transaction_cloner import TransactionCloner
 
 # Import trade processor for clean logic separation
-
 from trade_processor import TradeProcessor
-from wallet_tx_parser import WalletTransactionParser
+from wallet_tx_parser import WalletTransactionParser, merge_parsed_fields
 
-# Import core services
+# Runtime diagnostics to detect stale module imports
+def _origin(mod):
+    try:
+        return pathlib.Path(inspect.getfile(mod)).resolve()
+    except Exception:
+        return None
 
+def _warn_origin(name, mod, repo_root: pathlib.Path):
+    p = _origin(mod)
+    print(f"[RUNTIME] {name} path: {p}")
+    if p and repo_root not in p.parents and p != repo_root:
+        print(f"[RUNTIME][WARN] {name} is being imported from OUTSIDE repo: {p}")
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent
+
+# Import core services with diagnostics
+import fast_executor, jito_service, env_keys, execution_coordinator
+_warn_origin("fast_executor", fast_executor, REPO_ROOT)
+_warn_origin("jito_service", jito_service, REPO_ROOT)
+_warn_origin("env_keys", env_keys, REPO_ROOT)
+_warn_origin("execution_coordinator", execution_coordinator, REPO_ROOT)
+
+# Import execution coordinator for trading
+from execution_coordinator import ExecutionCoordinator
 
 try:
     from env_keys import EnvKeys
@@ -166,6 +192,22 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # Ensure DEBUG level
+
+def safe_dump(data: Any) -> str:
+    """
+    Safely serialize data to JSON string for logging, handling non-serializable objects.
+    
+    Args:
+        data: Data to serialize
+        
+    Returns:
+        JSON string representation of data
+    """
+    try:
+        import json
+        return json.dumps(data, default=str)
+    except Exception as e:
+        return f"<unable to serialize: {e}>"
 
 def validate_runtime_env(logger):
     """Validate required environment variables and fail fast with clear message if missing"""
@@ -245,54 +287,37 @@ bot_instance = None
 from execution_coordinator import normalize_dex, ROUTE_MAP, maybe_execute
 
 
-def _have_all_fields(ti):
+def _have_all_fields(trade_info: dict) -> bool:
     """
-    Check if trade_info has all required fields for execution.
+    Check if trade_info has all required fields for execution (LENIENT).
     
-    Returns True only if dex, action, wallet_address are all present and valid,
-    AND token_mint (or mint) is present.
+    Returns True only if dex, wallet_address, and token_mint (or mint) are all present and valid.
+    Does NOT require action field - action can be inferred during execution.
+    
+    Treats mint and token_mint as synonyms and normalizes to token_mint.
     
     Args:
-        ti: Trade information dictionary
+        trade_info: Trade information dictionary
         
     Returns:
         bool: True if all required fields are present and valid
     """
-    tok = ti.get("token_mint") or ti.get("mint")
-    return all(ti.get(k) not in (None, "", "unknown", "PENDING_ANALYSIS") for k in ("dex","action","wallet_address")) and bool(tok)
+    # Normalize mint to token_mint
+    token_mint = trade_info.get("token_mint") or trade_info.get("mint")
+    if token_mint and trade_info.get("token_mint") is None:
+        trade_info["token_mint"] = token_mint
+    
+    # Only check dex, wallet_address, and token_mint - do not require action
+    dex = trade_info.get("dex")
+    wallet_address = trade_info.get("wallet_address")
+    
+    # All three fields must be present and not placeholder values
+    ok = all(v not in (None, "", "unknown", "PENDING_ANALYSIS") 
+             for v in (dex, wallet_address, token_mint))
+    
+    return ok
 
 
-def merge_parsed_fields(trade_info: dict, parsed: dict) -> None:
-    """
-    Merge parser-detected fields into trade_info if the destination fields are empty/unknown.
-    
-    This prevents downstream code from clobbering fields that the parser already identified.
-    Only updates fields if they are currently None, empty string, "unknown", or "PENDING_ANALYSIS".
-    
-    Args:
-        trade_info: The trade dictionary to update
-        parsed: The parser result dictionary (may contain parsed_tx wrapper)
-    """
-    if not parsed:
-        return
-    
-    # Some code paths store parser result under "parsed_tx"
-    if isinstance(parsed.get("parsed_tx"), dict):
-        parsed = parsed["parsed_tx"]
-    
-    # normalize names from parser → trade_info
-    mapping = {
-        "dex": "dex",
-        "action": "action",
-        "token_mint": "token_mint",
-        "mint": "token_mint",
-        "wallet_address": "wallet_address",
-        "signature": "signature",
-    }
-    for src, dst in mapping.items():
-        val = parsed.get(src)
-        if val and trade_info.get(dst) in (None, "", "unknown", "PENDING_ANALYSIS"):
-            trade_info[dst] = val
 
 
 def schedule_deep_analysis(trade_info: dict):
@@ -385,8 +410,7 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     
     ⚠️ CRITICAL: This function MUST be called with 'await' in async handlers!
     
-    Always calls coordinator to ensure logging sanity checks, even with incomplete fields.
-    Wraps coordinator call in try/except to log any errors.
+    Skips execution if fields are incomplete. Wraps coordinator call in try/except to log any errors.
     
     Why await is critical:
     - Without await, coordinator logs never appear (🧭 [COORDINATOR] Route=...)
@@ -405,11 +429,10 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     Example (WRONG - will fail silently):
         route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
     """
-    # Always log handoff status, but indicate if fields are incomplete
     if not _have_all_fields(trade_info):
-        logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, but attempting coordinator handoff for logging")
-    else:
-        logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
+        logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")
+        return
+    logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
     
     # Extract rpc_url from rpc_client if needed
     rpc_url = rpc.rpc_url if hasattr(rpc, 'rpc_url') else rpc
@@ -452,8 +475,32 @@ class SimpleCopyTradingBot:
         - Logs execution decisions
         - Records skipped trades with signature and reason
         """
-        # Get signature for audit trail
+        # Generate correlation ID from signature/event_id/uuid
         sig = (trade_info.get("signature") or "").strip()
+        event_id = trade_info.get("event_id", "")
+        
+        if sig and sig != "unknown":
+            # Use signature as base for correlation ID (safely handle short sigs)
+            correlation_id = sig[:12] if len(sig) >= 12 else sig
+        elif event_id:
+            # Use event_id if available
+            correlation_id = f"evt_{event_id[:8]}" if len(event_id) >= 8 else f"evt_{event_id}"
+        else:
+            # Generate UUID-based correlation ID
+            correlation_id = f"uuid_{str(uuid.uuid4())[:8]}"
+        
+        # Set correlation ID for this thread
+        set_span_id(correlation_id)
+        
+        # Log correlation context
+        logger.info(
+            "🪪 [CTX] corr=%s, dex=%s, wallet=%s",
+            correlation_id,
+            trade_info.get("dex", "unknown"),
+            trade_info.get("wallet_address", "unknown")
+        )
+        
+        # Get signature for audit trail (fallback to NO_SIGNATURE if not available)
         if not sig or sig == "unknown":
             sig = "NO_SIGNATURE"
         
@@ -466,7 +513,27 @@ class SimpleCopyTradingBot:
         logger.info(f"   Signature: {sig[:12]}...")
         
         # Apply field inference from logs and transaction data
-        trade_info = self.trade_processor.infer_missing_fields(trade_info)
+        # Wrap with DebugSpan for step-level checkpoints and run_with_watchdog for timeout protection
+        original_trade_info = trade_info.copy()  # Preserve original in case of timeout/error
+        
+        with DebugSpan("infer_missing_fields", input_data={"signature": sig[:12]}):
+            # Run infer_missing_fields in a thread pool to avoid blocking the event loop
+            # (it uses asyncio.get_event_loop().run_until_complete() internally)
+            async def run_inference():
+                return await asyncio.to_thread(
+                    self.trade_processor.infer_missing_fields, 
+                    trade_info
+                )
+            
+            # Run with watchdog timeout protection (30 seconds)
+            trade_info = await run_with_watchdog(
+                run_inference(),
+                timeout_seconds=30.0,
+                operation_name="infer_missing_fields",
+                fallback_value=original_trade_info,
+                log_timeout=True,
+                log_error=True
+            )
         
         # Get source wallet
         source_wallet = (
@@ -983,79 +1050,55 @@ class SimpleCopyTradingBot:
                 except Exception as e:
                     logger.error(f"[BACKFILL] ❌ Error parsing backfilled transaction: {e}")
             
-            # STEP 1: Infer missing fields before validation
-            logger.debug(f"[DEBUG] Before infer_missing_fields: {json.dumps(trade_info, default=str)}")
-            trade_info = self.trade_processor.infer_missing_fields(trade_info)
-            logger.debug(f"[DEBUG] After infer_missing_fields: {json.dumps(trade_info, default=str)}")
-            
-            # Do NOT return early on requires_full_analysis
-            if trade_info.get("requires_full_analysis"):
-                try:
-                    schedule_deep_analysis(trade_info)  # non-blocking
-                    logger.info("ℹ️ scheduled deep analysis (non-blocking); continuing to fast-path")
-                except Exception as e:
-                    logger.warning(f"⚠️ deep analysis scheduling failed: {e}")
-            
-            # Check if we have all required fields and call coordinator
-            have_all = _have_all_fields(trade_info)
-            trade_info["token_mint"] = trade_info.get("token_mint") or trade_info.get("mint")
-            trade_info["use_universal_cloner"] = not have_all
-            if have_all:
-                logger.info("🧭 [PIPELINE_EXIT] Final fields ready → coordinator")
-                # Extract rpc_url from rpc_client if needed
-                rpc_url = self.rpc_client.rpc_url if hasattr(self.rpc_client, 'rpc_url') else self.rpc_client
-                await maybe_execute(trade_info, rpc_url, self.wallet, jito_service=self.jito_service)
-            else:
-                logger.warning("🛑 [PIPELINE_EXIT] Incomplete fields")
-            
-            # STEP 2: Validate and process
-            logger.debug(f"[DEBUG] Before validate_trade_info: {json.dumps(trade_info, default=str)}")
-            is_valid = self.trade_processor.validate_trade_info(trade_info)
-            logger.debug(f"[DEBUG] validate_trade_info result: {is_valid}")
-            if is_valid:
-                await self._process_detected_trade(trade_info)
-            else:
-                # Enhanced logging for skipped trades per problem statement requirements
-                logger.warning(f"⚠️ Trade validation failed - skipping")
+            # STEP 1: Infer missing fields before validation - with watchdog protection
+            logger.debug("[DEBUG] Before infer_missing_fields: %s", safe_dump(trade_info))
+            try:
+                # Run infer_missing_fields in a thread pool with watchdog timeout protection
+                async def run_inference():
+                    return await asyncio.to_thread(
+                        self.trade_processor.infer_missing_fields,
+                        trade_info
+                    )
                 
-                # Log full context for debugging (per problem statement: log raw tx and reason)
-                sig = trade_info.get('signature', 'unknown')
-                logger.error(f"❌ [SKIPPED_TRADE] Signature: {sig}")
-                logger.error(f"❌ [SKIPPED_TRADE] Reason: Validation failed - missing or invalid required fields")
-                
-                # Log what fields failed validation
-                mint = trade_info.get('token_mint') or trade_info.get('mint')
-                action = trade_info.get('action')
-                dex = trade_info.get('dex') or trade_info.get('dex_type')
-                
-                validation_issues = []
-                if not sig or sig == 'unknown':
-                    validation_issues.append("missing signature")
-                if not mint or mint in ['UNKNOWN', 'PENDING_ANALYSIS']:
-                    validation_issues.append(f"invalid/missing mint (got: {mint})")
-                if not action or action == 'unknown':
-                    validation_issues.append(f"invalid/missing action (got: {action})")
-                if not dex or dex == 'unknown':
-                    validation_issues.append(f"unknown DEX (got: {dex})")
-                
-                logger.error(f"❌ [SKIPPED_TRADE] Validation issues: {', '.join(validation_issues)}")
-                
-                # Log raw transaction data for offline analysis (per problem statement)
-                if 'transaction' in trade_info or 'transaction_full' in trade_info:
-                    tx = trade_info.get('transaction') or trade_info.get('transaction_full')
-                    logger.error(f"❌ [SKIPPED_TRADE] Raw transaction keys: {list(tx.keys()) if tx else 'None'}")
-                    if 'logs' in trade_info:
-                        logger.error(f"❌ [SKIPPED_TRADE] Log count: {len(trade_info['logs'])} messages")
-                else:
-                    logger.error(f"❌ [SKIPPED_TRADE] No transaction data available for analysis")
-                
-                # Log to failed_trade_analysis.log for offline debugging
-                log_failed_trade_analysis(
-                    trade_info,
-                    failure_reason=f"validation_failed: {', '.join(validation_issues)}",
-                    retry_count=0,
-                    routing_data=None
+                # Wrap with watchdog (5 second timeout as per problem statement)
+                trade_info = await run_with_watchdog(
+                    run_inference(),
+                    timeout_seconds=5.0,
+                    operation_name="infer_missing_fields",
+                    fallback_value=trade_info,
+                    log_timeout=True,
+                    log_error=True
                 )
+                logger.debug("[DEBUG] After infer_missing_fields: %s", safe_dump(trade_info))
+            except Exception as e:
+                logger.error("❌ infer_missing_fields crashed", exc_info=True)
+            finally:
+                # Do NOT return early on requires_full_analysis
+                if trade_info.get("requires_full_analysis"):
+                    try:
+                        schedule_deep_analysis(trade_info)  # fire-and-forget
+                        logger.info("ℹ️ Deep analysis scheduled; continuing fast-path")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Deep analysis scheduling failed: {e}")
+                
+                # Check if we have all required fields and set mode
+                have_all = _have_all_fields(trade_info)
+                trade_info["use_universal_cloner"] = not have_all
+                
+                # Log mode selection
+                if have_all:
+                    logger.info("🧭 [MODE] Builders enabled (all fields complete), Cloner as fallback")
+                else:
+                    logger.info("🧭 [MODE] Cloner fallback (fields incomplete)")
+                
+                # Always hand off to route_and_execute - guaranteed execution
+                logger.info("📤 [HANDOFF] Calling coordinator now…")
+                await route_and_execute(trade_info, self.rpc_client, self.wallet, jito=self.jito_service)
+                logger.info("📥 [HANDOFF] Coordinator call returned")
+                # Return after handoff - execution is complete
+                return
+            
+            # NOTE: Code should never reach here due to return in finally block
 
         except asyncio.TimeoutError:
             logger.warning("⏰ Trade handling timeout - processing anyway")
