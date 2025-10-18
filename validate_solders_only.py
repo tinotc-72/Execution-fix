@@ -23,7 +23,7 @@ def check_legacy_imports():
     
     # Check for solana-py imports (exclude test files that check for absence of imports)
     ret_solana, out_solana, _ = run_command(
-        'grep -r "from solana\\." --include="*.py" . | grep -v "validate" | grep -v "test_problem_statement" | grep -v "^#" | grep -v ".pyc"',
+        'grep -r "from solana\\." --include="*.py" . | grep -v "validate" | grep -v "test_problem_statement" | grep -v "test_solders_only" | grep -v "^#" | grep -v ".pyc"',
         "Searching for solana-py imports"
     )
     
