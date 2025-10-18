@@ -17,6 +17,11 @@ import traceback
 # === URLs and Endpoints ===
 HELIUS_WS_URL = kz.HELIUS_Standard_Websocket_URL or f"wss://ws.helius-rpc.com/?api-key={kz.HELIUS_API_KEY}"
 HELIUS_RPC_URL = kz.HELIUS_RPC_URL
+
+# === Secondary RPC for Failover ===
+# Copilot TODO: If primary RPC is unhealthy, automatically switch to secondary
+SECONDARY_RPC_URL = getattr(kz, 'SECONDARY_RPC_URL', 'https://api.mainnet-beta.solana.com')
+
 WALLET_DEBUG = {
     "ENABLE_TX_LOGGING": True,
     "LOG_SIGNATURES": True,
@@ -411,6 +416,7 @@ __all__ = [
     "PUMP_FUN_PROGRAM_ID",
     "PUMP_TRADE_PROGRAM",
     "RPC_URL",
+    "SECONDARY_RPC_URL",
     "JITO_AUTH_TOKEN",
     "JITO_BLOCK_ENGINE",
     "JITO_RELAYER",
