@@ -82,8 +82,30 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass, field
 
+import os, inspect, pathlib
+
 from solders.pubkey import Pubkey
 from config import WALLET
+
+def _origin(mod):
+    try:
+        return pathlib.Path(inspect.getfile(mod)).resolve()
+    except Exception:
+        return None
+
+def _warn_origin(name, mod, repo_root):
+    p = _origin(mod)
+    print(f"[RUNTIME] {name} path: {p}")
+    if p and repo_root not in str(p):
+        print(f"[RUNTIME][WARN] {name} is being imported from OUTSIDE repo: {p}")
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent
+
+import fast_executor, jito_service, env_keys, execution_coordinator
+_warn_origin("fast_executor", fast_executor, str(REPO_ROOT))
+_warn_origin("jito_service", jito_service, str(REPO_ROOT))
+_warn_origin("env_keys", env_keys, str(REPO_ROOT))
+_warn_origin("execution_coordinator", execution_coordinator, str(REPO_ROOT))
 
 # Import utilities
 from utils import get_transaction_with_logs, load_keypair, RPCClient
