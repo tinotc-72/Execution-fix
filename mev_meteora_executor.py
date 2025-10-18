@@ -49,7 +49,6 @@ from solders.compute_budget import set_compute_unit_limit, set_compute_unit_pric
 logger = logging.getLogger(__name__)
 
 # Solders-only imports (deduplicated)
-from solders.transaction import Transaction
 from solders.pubkey import Pubkey as PublicKey
 from solders.system_program import transfer, TransferParams
 
@@ -84,6 +83,7 @@ ASSOCIATED_TOKEN_PROGRAM_ID = PublicKey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5
 
 # Local imports
 from env_keys import load_wallet_from_private_key, kz
+from utils import create_associated_token_account
 
 @dataclasses.dataclass
 class RPCConfig:
@@ -234,12 +234,12 @@ class MEVMeteoraExecutor:
             # Step 3: Get or create associated token account (for the token being sold)
             token_account = await self._get_or_create_token_account(params.token_mint)
 
-            # Step 4: Build the transaction (use swap2 with swap_mode=1 for exact out, or swap with direction=1)
-            transaction = await self._build_meteora_sell_transaction(
+            # Step 4: Build the transaction instructions (use swap2 with swap_mode=1 for exact out, or swap with direction=1)
+            instructions = await self._build_meteora_sell_transaction(
                 pool_info, params, token_account, int(expected_sol * (1 - params.slippage_percent / 100))
             )
 
-            # Step 5: Convert to VersionedTransaction and sign
+            # Step 5: Create VersionedTransaction and sign
             # Get fresh blockhash
             bh_resp = self.client.get_latest_blockhash()
             if isinstance(bh_resp, tuple):
@@ -247,10 +247,10 @@ class MEVMeteoraExecutor:
             else:
                 bh = bh_resp
             
-            # Convert Transaction to VersionedTransaction
+            # Create VersionedTransaction from instructions
             msg = MessageV0.try_compile(
                 self.wallet.pubkey(),
-                transaction.instructions,
+                instructions,
                 [],  # No address lookup tables
                 bh
             )
@@ -286,38 +286,39 @@ class MEVMeteoraExecutor:
         params: MeteoraTradeParams,
         token_account: PublicKey,
         min_sol: int
-    ) -> Transaction:
+    ) -> List[Instruction]:
         """
-        Build the Meteora DBC sell transaction using real Anchor IDL discriminators and argument layouts for swap and swap2.
+        Build the Meteora DBC sell transaction instructions using real Anchor IDL discriminators and argument layouts for swap and swap2.
         """
         try:
-            transaction = Transaction()
-            recent_blockhash = await self.client.get_latest_blockhash()
-            transaction.recent_blockhash = recent_blockhash.value.blockhash
-            transaction.fee_payer = self.wallet.pubkey()
+            instructions = []
 
             # Check if token account exists, create if needed
             account_info = await self.client.get_account_info(token_account)
             if not account_info.value:
                 # Use Raydium's solders-only ATA helper here (assume available as create_ata_ix)
-                # create_ata_ix = create_ata_ix(self.wallet.pubkey(), self.wallet.pubkey(), params.token_mint)
-                # transaction.add(create_ata_ix)
-                logger.info("📝 Would add create ATA instruction for sell (solders-only)")
+                create_ata_ix = create_associated_token_account(
+                    payer=self.wallet.pubkey(),
+                    owner=self.wallet.pubkey(),
+                    mint=params.token_mint
+                )
+                instructions.append(create_ata_ix)
+                logger.info("📝 Added create ATA instruction for sell (solders-only)")
 
             # Build Meteora DBC sell instruction
             meteora_sell_ix = await self._build_meteora_sell_instruction(
                 pool_info, params, token_account, min_sol
             )
-            transaction.add(meteora_sell_ix)
+            instructions.append(meteora_sell_ix)
 
             # Add priority fee for faster execution
             if params.priority_fee > 0:
                 compute_budget_ix = self._create_compute_budget_instruction(params.priority_fee)
-                transaction.instructions.insert(0, compute_budget_ix)
+                instructions.insert(0, compute_budget_ix)
                 logger.info(f"⚡ Added priority fee: {params.priority_fee} microlamports (sell)")
 
-            logger.info(f"🔧 Sell transaction built with {len(transaction.instructions)} instructions")
-            return transaction
+            logger.info(f"🔧 Sell transaction built with {len(instructions)} instructions")
+            return instructions
         except Exception as e:
             logger.error(f"Error building sell transaction: {str(e)}")
             raise
@@ -351,19 +352,19 @@ class MEVMeteoraExecutor:
 
         # Account metas must match IDL order for swap/swap2 (same as buy)
         accounts = [
-            {"pubkey": self.wallet.pubkey(), "is_signer": True, "is_writable": True},  # payer (user)
-            {"pubkey": token_account, "is_signer": False, "is_writable": True},  # input_token_account
-            {"pubkey": pool_info.pool_address, "is_signer": False, "is_writable": True},  # pool
-            {"pubkey": params.token_mint, "is_signer": False, "is_writable": True},  # base_mint
+            AccountMeta(pubkey=self.wallet.pubkey(), is_signer=True, is_writable=True),  # payer (user)
+            AccountMeta(pubkey=token_account, is_signer=False, is_writable=True),  # input_token_account
+            AccountMeta(pubkey=pool_info.pool_address, is_signer=False, is_writable=True),  # pool
+            AccountMeta(pubkey=params.token_mint, is_signer=False, is_writable=True),  # base_mint
             # ...add all required accounts in correct order for your pool/trade (see IDL)
 
         ]
         # NOTE: You must update the above to match the full account list for your pool/trade (see IDL)
 
-        instruction = TransactionInstruction(
+        instruction = Instruction(
             program_id=self.METEORA_DYNAMIC_BONDING_CURVE,
             data=instruction_data,
-            keys=accounts
+            accounts=accounts
         )
         logger.info("🎯 Built Meteora DBC sell instruction (IDL-accurate)")
         return instruction
@@ -481,12 +482,12 @@ class MEVMeteoraExecutor:
             # Step 3: Get or create associated token account
             token_account = await self._get_or_create_token_account(params.token_mint)
             
-            # Step 4: Build the transaction
-            transaction = await self._build_meteora_buy_transaction(
+            # Step 4: Build the transaction instructions
+            instructions = await self._build_meteora_buy_transaction(
                 pool_info, params, token_account, expected_tokens
             )
             
-            # Step 5: Convert to VersionedTransaction and sign
+            # Step 5: Create VersionedTransaction and sign
             # Get fresh blockhash
             bh_resp = self.client.get_latest_blockhash()
             if isinstance(bh_resp, tuple):
@@ -494,10 +495,10 @@ class MEVMeteoraExecutor:
             else:
                 bh = bh_resp
             
-            # Convert Transaction to VersionedTransaction
+            # Create VersionedTransaction from instructions
             msg = MessageV0.try_compile(
                 self.wallet.pubkey(),
-                transaction.instructions,
+                instructions,
                 [],  # No address lookup tables
                 bh
             )
@@ -679,9 +680,9 @@ class MEVMeteoraExecutor:
         params: MeteoraTradeParams,
         token_account: PublicKey,
         min_tokens: int
-    ) -> Transaction:
+    ) -> List[Instruction]:
         """
-        Build the Meteora Dynamic Bonding Curve buy transaction.
+        Build the Meteora Dynamic Bonding Curve buy transaction instructions.
         
         Args:
             pool_info: Pool information
@@ -690,15 +691,10 @@ class MEVMeteoraExecutor:
             min_tokens: Minimum tokens expected
             
         Returns:
-            Built transaction
+            List of instructions for the transaction
         """
         try:
-            transaction = Transaction()
-            
-            # Get recent blockhash
-            recent_blockhash = await self.client.get_latest_blockhash()
-            transaction.recent_blockhash = recent_blockhash.value.blockhash
-            transaction.fee_payer = self.wallet.pubkey()
+            instructions = []
             
             # Check if token account exists, create if needed
             account_info = await self.client.get_account_info(token_account)
@@ -709,23 +705,23 @@ class MEVMeteoraExecutor:
                     owner=self.wallet.pubkey(),
                     mint=params.token_mint
                 )
-                transaction.add(create_ata_ix)
+                instructions.append(create_ata_ix)
                 logger.info("📝 Added create ATA instruction")
             
             # Build Meteora DBC buy instruction
             meteora_buy_ix = await self._build_meteora_buy_instruction(
                 pool_info, params, token_account, min_tokens
             )
-            transaction.add(meteora_buy_ix)
+            instructions.append(meteora_buy_ix)
             
             # Add priority fee for faster execution
             if params.priority_fee > 0:
                 compute_budget_ix = self._create_compute_budget_instruction(params.priority_fee)
-                transaction.instructions.insert(0, compute_budget_ix)
+                instructions.insert(0, compute_budget_ix)
                 logger.info(f"⚡ Added priority fee: {params.priority_fee} microlamports")
             
-            logger.info(f"🔧 Transaction built with {len(transaction.instructions)} instructions")
-            return transaction
+            logger.info(f"🔧 Transaction built with {len(instructions)} instructions")
+            return instructions
             
         except Exception as e:
             logger.error(f"Error building transaction: {str(e)}")
@@ -763,23 +759,23 @@ class MEVMeteoraExecutor:
         # For simplicity, use placeholder/None for referral_token_account if not used
         # You must fill these with real addresses in your integration
         accounts = [
-            {"pubkey": self.wallet.pubkey(), "is_signer": True, "is_writable": True},  # payer (user)
-            {"pubkey": token_account, "is_signer": False, "is_writable": True},  # input_token_account
-            {"pubkey": pool_info.pool_address, "is_signer": False, "is_writable": True},  # pool
-            {"pubkey": params.token_mint, "is_signer": False, "is_writable": True},  # base_mint
+            AccountMeta(pubkey=self.wallet.pubkey(), is_signer=True, is_writable=True),  # payer (user)
+            AccountMeta(pubkey=token_account, is_signer=False, is_writable=True),  # input_token_account
+            AccountMeta(pubkey=pool_info.pool_address, is_signer=False, is_writable=True),  # pool
+            AccountMeta(pubkey=params.token_mint, is_signer=False, is_writable=True),  # base_mint
             # ...add all required accounts in correct order for your pool
         ]
         # NOTE: You must update the above to match the full account list for your pool/trade (see IDL)
 
-        instruction = TransactionInstruction(
+        instruction = Instruction(
             program_id=self.METEORA_DYNAMIC_BONDING_CURVE,
             data=instruction_data,
-            keys=accounts
+            accounts=accounts
         )
         logger.info("🎯 Built Meteora DBC buy instruction (IDL-accurate)")
         return instruction
     
-    def _create_compute_budget_instruction(self, priority_fee: int) -> Any:
+    def _create_compute_budget_instruction(self, priority_fee: int) -> Instruction:
         """
         Create compute budget instruction for priority fee.
         
@@ -795,10 +791,10 @@ class MEVMeteoraExecutor:
         # Set compute unit price instruction
         instruction_data = struct.pack('<BQ', 3, priority_fee)  # instruction_type=3, microlamports
         
-        return TransactionInstruction(
+        return Instruction(
             program_id=COMPUTE_BUDGET_PROGRAM,
             data=instruction_data,
-            keys=[]
+            accounts=[]
         )
     
     async def _execute_via_fast_executor(self, vtx: VersionedTransaction) -> MeteoraTradeResult:
