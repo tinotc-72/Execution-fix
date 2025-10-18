@@ -85,6 +85,8 @@ ASSOCIATED_TOKEN_PROGRAM_ID = PublicKey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5
 from env_keys import load_wallet_from_private_key, kz
 from utils import create_associated_token_account
 from utils.fees import with_compute_budget
+# Import ATA utilities for ensuring token accounts exist before swaps
+from utils.ata import ensure_ata_for
 
 @dataclasses.dataclass
 class RPCConfig:
@@ -298,16 +300,18 @@ class MEVMeteoraExecutor:
             instructions = []
 
             # Check if token account exists, create if needed
+            # TODO (Copilot): Consider using utils.ata.ensure_ata_for() instead of manual check
+            # Note: For sell operations, the input token ATA should typically already exist
             account_info = await self.client.get_account_info(token_account)
             if not account_info.value:
-                # Use Raydium's solders-only ATA helper here (assume available as create_ata_ix)
+                # Use solders-only ATA helper to create the account
                 create_ata_ix = create_associated_token_account(
                     payer=self.wallet.pubkey(),
                     owner=self.wallet.pubkey(),
                     mint=params.token_mint
                 )
                 instructions.append(create_ata_ix)
-                logger.info("📝 Added create ATA instruction for sell (solders-only)")
+                logger.info("📝 Added create ATA instruction for sell")
 
             # Build Meteora DBC sell instruction
             meteora_sell_ix = await self._build_meteora_sell_instruction(
@@ -704,6 +708,16 @@ class MEVMeteoraExecutor:
             instructions = []
             
             # Check if token account exists, create if needed
+            # TODO (Copilot): Consider using utils.ata.ensure_ata_for() instead of manual check
+            # Example:
+            #   account_exists = (await self.client.get_account_info(token_account)).value is not None
+            #   ata_instructions = ensure_ata_for(
+            #       owner=self.wallet.pubkey(),
+            #       mint=params.token_mint,
+            #       payer=self.wallet.pubkey(),
+            #       exists=account_exists
+            #   )
+            #   instructions.extend(ata_instructions)
             account_info = await self.client.get_account_info(token_account)
             if not account_info.value:
                 # Add create associated token account instruction
@@ -713,7 +727,7 @@ class MEVMeteoraExecutor:
                     mint=params.token_mint
                 )
                 instructions.append(create_ata_ix)
-                logger.info("📝 Added create ATA instruction")
+                logger.info("📝 Added create ATA instruction for buy")
             
             # Build Meteora DBC buy instruction
             meteora_buy_ix = await self._build_meteora_buy_instruction(

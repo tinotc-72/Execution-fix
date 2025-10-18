@@ -29,6 +29,8 @@ from utils import (
     TOKEN_PROGRAM_ID
 )
 from utils.fees import with_compute_budget
+# Import ATA utilities for ensuring token accounts exist before swaps
+from utils.ata import ensure_ata_for
 
 # Set up logger early for import-time logging
 logger = logging.getLogger(__name__)
@@ -689,16 +691,26 @@ class MEVJupiterExecutor:
             return exec_err("jupiter", str(e))
         
     async def ensure_token_account(self, token_mint: Pubkey) -> Optional[Pubkey]:
-        """Ensure ATA exists for token mint"""
+        """
+        Ensure ATA exists for token mint.
+        
+        Note: This method implements the full RPC check and ATA creation.
+        For a simpler approach in transaction building, see utils.ata.ensure_ata_for()
+        which can be used to conditionally add create ATA instructions to a transaction.
+        
+        TODO (Copilot): Consider refactoring to use utils.ata.ensure_ata_for() with
+        proper RPC existence check instead of creating a separate transaction.
+        """
         try:
             ata = get_associated_token_address(self.wallet_pubkey, token_mint)
             
-            # Check if ATA exists
+            # Check if ATA exists via RPC
             info = await self.client.get_account_info(ata)
             if info.value is not None:
                 return ata
                 
-            # Create ATA instruction
+            # ATA doesn't exist - create it
+            # NOTE: Could use utils.ata.ensure_ata_for() here once it has RPC query support
             create_ata_ix = create_associated_token_account(
                 payer=self.wallet_pubkey,
                 owner=self.wallet_pubkey,
