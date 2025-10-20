@@ -38,18 +38,18 @@ Created a new module with RPC-based helper functions:
 #### Meteora Executor (`mev_meteora_executor.py`)
 - **Status**: Fully integrated
 - **Changes**:
-  1. **ATAManager class** (line 1167):
+  1. **ATAManager class**:
      - Updated `ensure_ata_ix_if_missing()` to use `ensure_ata_ixs()`
      - Now performs real RPC checks instead of placeholder
      - Returns ATA address and creation instruction (or None)
   
-  2. **`_build_and_sign_internal()` function** (line 1312):
+  2. **`_build_and_sign_internal()` function**:
      - Refactored WSOL ATA checking to use `ensure_ata_ixs()`
      - Refactored output token ATA checking to use `ensure_ata_ixs()`
      - Cleaner code with better error handling
      - Consistent logging for ATA creation
 
-  3. **`_build_meteora_buy_transaction()` method** (line 692):
+  3. **`_build_meteora_buy_transaction()` method**:
      - Updated comments to reference `ensure_ata_ixs()`
      - Maintains existing async RPC pattern
      - Ready for future async refactoring
