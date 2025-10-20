@@ -23,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from solders.keypair import Keypair
 from env_keys import load_wallet_from_private_key, EnvKeys
+from executors.submit import SubmitResult
+from utils.logs import log_submit_result
 
 # Configure logging
 logging.basicConfig(
@@ -48,6 +50,10 @@ async def main(args):
         logger.info(f"[RAYDIUM_TEST] Wallet: {wallet.pubkey()}")
         logger.info(f"[RAYDIUM_TEST] RPC: {rpc_url[:50]}...")
         
+        # Determine amount to use
+        amount_lamports = int(args.amount * 1_000_000_000) if hasattr(args, 'amount') else TEST_AMOUNT_LAMPORTS
+        logger.info(f"[RAYDIUM_TEST] Amount: {amount_lamports / 1e9:.6f} SOL ({amount_lamports} lamports)")
+        
         # Raydium CPMM executor is not yet implemented
         logger.warning("[RAYDIUM_TEST] ⚠️  Raydium CPMM executor is not yet functional")
         logger.warning("[RAYDIUM_TEST] This is a minimal scaffold placeholder")
@@ -57,13 +63,21 @@ async def main(args):
         logger.warning("[RAYDIUM_TEST]   - Add proper error handling and validation")
         logger.warning("[RAYDIUM_TEST]   - Integrate with actual Raydium CPMM program")
         
+        # Create a placeholder result for logging
+        result = SubmitResult(
+            ok=False,
+            error="Not implemented yet"
+        )
+        
         if args.simulate:
             logger.info("[RAYDIUM_TEST] === SIMULATION MODE ===")
-            logger.info(f"[RAYDIUM_TEST] Would simulate: 0.001 SOL buy transaction")
+            logger.info(f"[RAYDIUM_TEST] Would simulate: {amount_lamports / 1e9:.6f} SOL buy transaction")
+            log_submit_result(dex="Raydium CPMM", action="buy", mint="N/A", res=result)
             logger.info("[RAYDIUM_TEST] ❌ Not implemented yet")
         elif args.submit:
             logger.info("[RAYDIUM_TEST] === SUBMIT MODE ===")
-            logger.info(f"[RAYDIUM_TEST] Would submit: 0.001 SOL buy transaction")
+            logger.info(f"[RAYDIUM_TEST] Would submit: {amount_lamports / 1e9:.6f} SOL buy transaction")
+            log_submit_result(dex="Raydium CPMM", action="buy", mint="N/A", res=result)
             logger.info("[RAYDIUM_TEST] ❌ Not implemented yet")
         
         logger.info("[RAYDIUM_TEST] Test completed (not functional)")
@@ -81,6 +95,8 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--simulate", action="store_true", help="Simulate transaction (dry-run)")
     group.add_argument("--submit", action="store_true", help="Submit transaction to blockchain")
+    parser.add_argument("--amount", type=float, default=TEST_AMOUNT_SOL,
+                       help=f"Amount in SOL to swap (default: {TEST_AMOUNT_SOL})")
     
     args = parser.parse_args()
     

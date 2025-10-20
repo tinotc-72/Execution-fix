@@ -26,8 +26,9 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 from mev_jupiter_executor import get_best_route, get_swap_transaction
-from executors.submit import send_and_confirm_v0_tx
+from executors.submit import send_and_confirm_v0_tx, SubmitResult
 from env_keys import load_wallet_from_private_key, EnvKeys
+from utils.logs import log_submit_result
 import base64
 
 # Configure logging
@@ -124,20 +125,23 @@ async def submit_transaction(vtx: VersionedTransaction, rpc_url: str):
     logger.info(f"[JUPITER_TEST] Submitting transaction to: {rpc_url}")
     
     # Submit using the standard submitter
-    result = await send_and_confirm_v0_tx(vtx, rpc_url)
+    result_dict = await send_and_confirm_v0_tx(vtx, rpc_url)
     
-    if result.get("success"):
-        signature = result["signature"]
-        status = result.get("status", {})
+    # Convert dict result to SubmitResult for consistent logging
+    result = SubmitResult.from_dict(result_dict)
+    
+    # Print signature and final status via log_submit_result
+    log_submit_result(dex="Jupiter", action="buy", mint=USDC_MINT, res=result)
+    
+    if result.ok:
         logger.info(f"[JUPITER_TEST] ✅ TRANSACTION SUCCESSFUL!")
-        logger.info(f"[JUPITER_TEST] Signature: {signature}")
-        logger.info(f"[JUPITER_TEST] Status: {status.get('confirmationStatus', 'unknown')}")
-        logger.info(f"[JUPITER_TEST] Explorer: https://solscan.io/tx/{signature}")
+        logger.info(f"[JUPITER_TEST] Signature: {result.signature}")
+        logger.info(f"[JUPITER_TEST] Status: {result.confirmationStatus}")
+        logger.info(f"[JUPITER_TEST] Explorer: https://solscan.io/tx/{result.signature}")
     else:
-        error = result.get("error", "Unknown error")
-        logger.error(f"[JUPITER_TEST] ❌ TRANSACTION FAILED: {error}")
-        if "signature" in result:
-            logger.error(f"[JUPITER_TEST] Signature: {result['signature']}")
+        logger.error(f"[JUPITER_TEST] ❌ TRANSACTION FAILED: {result.error}")
+        if result.signature:
+            logger.error(f"[JUPITER_TEST] Signature: {result.signature}")
 
 
 async def main(args):
@@ -152,8 +156,12 @@ async def main(args):
         logger.info(f"[JUPITER_TEST] Wallet: {wallet.pubkey()}")
         logger.info(f"[JUPITER_TEST] RPC: {rpc_url[:50]}...")
         
+        # Determine amount to use
+        amount_lamports = int(args.amount * 1_000_000_000) if hasattr(args, 'amount') else TEST_AMOUNT_LAMPORTS
+        logger.info(f"[JUPITER_TEST] Amount: {amount_lamports / 1e9:.6f} SOL ({amount_lamports} lamports)")
+        
         # Build transaction
-        vtx = await build_jupiter_buy_tx(wallet, TEST_AMOUNT_LAMPORTS)
+        vtx = await build_jupiter_buy_tx(wallet, amount_lamports)
         
         # Execute based on mode
         if args.simulate:
@@ -179,6 +187,8 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--simulate", action="store_true", help="Simulate transaction (dry-run)")
     group.add_argument("--submit", action="store_true", help="Submit transaction to blockchain")
+    parser.add_argument("--amount", type=float, default=TEST_AMOUNT_SOL, 
+                       help=f"Amount in SOL to swap (default: {TEST_AMOUNT_SOL})")
     
     args = parser.parse_args()
     
