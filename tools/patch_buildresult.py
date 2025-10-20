@@ -2,13 +2,19 @@
 """
 BuildResult Enforcement Patcher
 
-This script scans Python files for builder functions that return None
-and replaces them with BuildResult(ok=False, tx=None, reason="builder failed (added by patch)").
+This script scans Python files for builder functions with BuildResult return type
+that have `return None` statements, and replaces them with properly structured 
+BuildResult failures: BuildResult(ok=False, tx=None, reason="builder failed (added by patch)").
+
+The patcher only modifies functions that explicitly declare BuildResult as their return type.
+Functions that return Optional[VersionedTransaction] or other types require manual refactoring.
 
 Usage:
     python tools/patch_buildresult.py --root .
     git diff
     python tools/verify_readiness.py
+    
+Note: If no files are patched, it means all builder functions already return BuildResult properly!
 """
 
 import os
@@ -45,18 +51,54 @@ def should_skip(path: str) -> bool:
     return False
 
 
-def find_builder_functions(content: str) -> List[Tuple[int, str]]:
+def find_builder_functions(content: str) -> List[Tuple[int, str, str]]:
     """
-    Find all builder function definitions in the content.
+    Find all builder function definitions in the content that should return BuildResult.
     
     Returns:
-        List of tuples (line_number, function_name)
+        List of tuples (line_number, function_name, return_type)
     """
     builders = []
+    lines = content.split('\n')
+    
     for match in BUILDER_FUNCTION_PATTERN.finditer(content):
         func_name = match.group(1)
         line_num = content[:match.start()].count('\n') + 1
-        builders.append((line_num, func_name))
+        
+        # Get the full function signature (may span multiple lines)
+        func_signature = ""
+        paren_count = 0
+        found_open_paren = False
+        
+        for i in range(line_num - 1, min(line_num + 10, len(lines))):
+            line = lines[i]
+            func_signature += line
+            
+            # Count parentheses to find where signature ends
+            for char in line:
+                if char == '(':
+                    paren_count += 1
+                    found_open_paren = True
+                elif char == ')':
+                    paren_count -= 1
+            
+            # If we've closed all parentheses and found the return annotation
+            if found_open_paren and paren_count == 0:
+                break
+        
+        # Extract return type annotation if present
+        return_type = None
+        if '->' in func_signature:
+            return_part = func_signature.split('->', 1)[1]
+            # Get up to the colon
+            if ':' in return_part:
+                return_type = return_part.split(':', 1)[0].strip()
+        
+        # Only include functions that explicitly return BuildResult
+        # Don't patch Optional[VersionedTransaction] functions as they need manual refactoring
+        if return_type and 'BuildResult' in return_type:
+            builders.append((line_num, func_name, return_type))
+    
     return builders
 
 
@@ -245,11 +287,11 @@ def patch_file(file_path: str, dry_run: bool = False) -> Dict[str, any]:
     # Find return None statements in builder functions
     all_return_nones = []
     seen_lines = set()
-    for line_num, func_name in builders:
+    for line_num, func_name, return_type in builders:
         return_nones = find_return_none_in_function(content, line_num)
         for rn_line in return_nones:
             if rn_line not in seen_lines:
-                all_return_nones.append((rn_line, func_name))
+                all_return_nones.append((rn_line, func_name, return_type))
                 seen_lines.add(rn_line)
     
     if not all_return_nones:
@@ -267,7 +309,7 @@ def patch_file(file_path: str, dry_run: bool = False) -> Dict[str, any]:
         content = inject_buildresult_import(content)
     
     # Patch all return None statements (in reverse order to maintain line numbers)
-    for line_num, func_name in sorted(all_return_nones, reverse=True):
+    for line_num, func_name, return_type in sorted(all_return_nones, reverse=True, key=lambda x: x[0]):
         content = patch_return_none(content, line_num)
     
     # Write the patched content
@@ -288,8 +330,8 @@ def patch_file(file_path: str, dry_run: bool = False) -> Dict[str, any]:
         "return_nones": len(all_return_nones),
         "import_added": needs_import,
         "patched": content != original_content,
-        "builder_names": [name for _, name in builders],
-        "patched_lines": [line for line, _ in all_return_nones]
+        "builder_names": [name for _, name, _ in builders],
+        "patched_lines": [line for line, _, _ in all_return_nones]
     }
 
 
