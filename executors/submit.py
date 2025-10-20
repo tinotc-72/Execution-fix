@@ -10,6 +10,7 @@ Features:
 - Structured results with signature and final status
 - No placeholders or None returns on success
 - Both async and sync versions available
+- Retry logic and healthy endpoint selection for robustness
 """
 
 import asyncio
@@ -19,6 +20,9 @@ import os
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 import httpx
+
+# Import retry utilities for resilience
+from utils.resilience import retry, healthy_rpc
 
 try:
     from solders.transaction import VersionedTransaction

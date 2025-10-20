@@ -21,8 +21,9 @@ from solders.hash import Hash
 # Import shared RPC submitter for guaranteed chain submission
 from executors.submit import send_and_confirm_v0_tx
 
-# Copilot TODO: Import retry utilities for wrapping RPC calls with bounded attempts
-from utils.health import async_with_retries
+# Import retry utilities for wrapping RPC calls with bounded attempts
+from utils.resilience import retry, healthy_rpc
+from utils.health import async_with_retries  # Keep for backward compatibility
 
 # Set up logger early for import-time logging
 logger = logging.getLogger(__name__)
@@ -65,8 +66,18 @@ class FastExecutor:
         # Use EnvKeys for Jito configuration
         env_keys = EnvKeys()
         
-        # Store RPC URL for confirmation calls
-        self._rpc_url = getattr(env_keys, "HELIUS_RPC_URL", None)
+        # Select healthy RPC endpoint from available options
+        rpc_endpoints = [
+            env_keys.HELIUS_RPC_URL,
+            env_keys.PUBLIC_RPC_URL,
+        ]
+        # Add QuickNode if configured
+        if env_keys.QUICKNODE_RPC_URL:
+            rpc_endpoints.insert(1, env_keys.QUICKNODE_RPC_URL)
+        
+        # Use healthy_rpc to select the best endpoint
+        self._rpc_url = healthy_rpc(rpc_endpoints, timeout=3.0)
+        self.logger.info(f"[FAST_EXECUTOR] Selected healthy RPC: {self._rpc_url[:50]}...")
         
         # Initialize Jito client with auth from env_keys
         # Only use Jito if both ENABLED and AVAILABLE

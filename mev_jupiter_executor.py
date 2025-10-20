@@ -20,8 +20,9 @@ from models.build_result import BuildResult
 # Import shared RPC submitter for guaranteed chain submission
 from executors.submit import send_and_confirm_v0_tx
 
-# Copilot TODO: Import retry utilities for wrapping RPC calls with bounded attempts
-from utils.health import with_retries
+# Import retry utilities for wrapping RPC calls with bounded attempts
+from utils.resilience import retry, healthy_rpc
+from utils.health import with_retries  # Keep for backward compatibility
 
 def _as_mint_str(m) -> str:
     """Coerce any Pubkey or object to string for safe use in API calls."""
@@ -105,7 +106,9 @@ RPC_URL = EnvKeys().HELIUS_RPC_URL
 
 def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps: int = 300) -> Optional[dict]:
     """
-    Get best route with comprehensive error logging and alternate endpoint support.
+    Get best route with comprehensive error logging and resilient endpoint support.
+    
+    Uses retry logic and healthy endpoint selection for robustness.
     
     Returns quote dict on success, None on error.
     Reference: https://station.jup.ag/docs/apis/swap-api
@@ -151,20 +154,21 @@ def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps:
             headers['x-api-key'] = JUPITER_API_KEY
             logger.debug(f"[JUPITER_QUOTE] Using API key authentication")
         
-        # Try all alternate endpoints
+        # Try all alternate endpoints with retry and healthy endpoint selection
         last_error = None
         for endpoint_idx, endpoint_url in enumerate(JUPITER_QUOTE_ENDPOINTS, 1):
             try:
                 logger.info(f"[JUPITER_QUOTE] Attempting endpoint {endpoint_idx}/{len(JUPITER_QUOTE_ENDPOINTS)}: {endpoint_url}...")
                 
-                # Copilot TODO: Wrap quote request with retries to handle transient failures
+                # Wrap quote request with retries using resilience module
+                @retry(attempts=3, base=0.5)
                 def _quote_request():
                     response = requests.get(endpoint_url, params=params, headers=headers, timeout=15)
                     logger.debug(f"[JUPITER_QUOTE] Response status: {response.status_code}")
                     response.raise_for_status()  # Official: Raise for HTTP errors
                     return response.json()
                 
-                data = with_retries(_quote_request, attempts=3, base_sleep=0.5)
+                data = _quote_request()
                 
                 # Check if route is None or not a dict before accessing .keys()
                 if not isinstance(data, dict):
@@ -225,7 +229,9 @@ def get_best_route(input_mint: str, output_mint: str, amount: int, slippage_bps:
 
 def get_swap_transaction(route: dict, user_pubkey: Pubkey) -> Optional[str]:
     """
-    Get swap transaction with comprehensive error logging.
+    Get swap transaction with comprehensive error logging and resilient endpoint support.
+    
+    Uses retry logic for robustness.
     
     Returns base64-encoded transaction string on success, None on error.
     Reference: https://station.jup.ag/docs/apis/swap-api
@@ -264,20 +270,21 @@ def get_swap_transaction(route: dict, user_pubkey: Pubkey) -> Optional[str]:
             headers['x-api-key'] = JUPITER_API_KEY
             logger.debug(f"[JUPITER_SWAP] Using API key authentication")
         
-        # Try each endpoint until one succeeds
+        # Try each endpoint until one succeeds with retry logic
         last_error = None
         for endpoint_idx, endpoint_url in enumerate(JUPITER_SWAP_ENDPOINTS, 1):
             try:
                 logger.info(f"[JUPITER_SWAP] Attempting endpoint {endpoint_idx}/{len(JUPITER_SWAP_ENDPOINTS)}: {endpoint_url}...")
                 
-                # Copilot TODO: Wrap swap request with retries to handle transient failures
+                # Wrap swap request with retries using resilience module
+                @retry(attempts=3, base=0.5)
                 def _swap_request():
                     response = requests.post(endpoint_url, json=payload, headers=headers, timeout=15)
                     logger.debug(f"[JUPITER_SWAP] Response status: {response.status_code}")
                     response.raise_for_status()  # Official: Raise for HTTP errors
                     return response.json()
                 
-                data = with_retries(_swap_request, attempts=3, base_sleep=0.5)
+                data = _swap_request()
                 logger.debug(f"[JUPITER_SWAP] Response data keys: {list(data.keys())}")
                 
                 if 'error' in data:
