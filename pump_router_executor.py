@@ -7,8 +7,17 @@ Handles both direct and router-based Pump.fun trading
 import logging
 import struct
 import base64
+import os
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
+
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
 
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -74,8 +83,8 @@ class PumpRouterExecutor:
                                 program_id: str,
                                 mint: Pubkey, 
                                 amount_lamports: int,
-                                transaction_data: Dict[str, Any] = None) -> Optional[str]:
-        """Execute buy through appropriate router program"""
+                                transaction_data: Dict[str, Any] = None) -> BuildResult:
+        """Execute buy through appropriate router program with PR-02 integration"""
         
         router_type = self.detect_program_type(program_id)
         logger.info(f"🔄 Executing {router_type} buy for {mint}")
@@ -87,36 +96,60 @@ class PumpRouterExecutor:
                 return await self._execute_router_buy(program_id, mint, amount_lamports, transaction_data)
             else:
                 logger.error(f"❌ Unsupported program: {program_id}")
-                return None
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="pump",
+                    action="router_buy",
+                    reason=f"Unsupported program: {program_id}"
+                )
                 
         except Exception as e:
             logger.error(f"❌ Router buy failed: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="pump",
+                action="router_buy",
+                reason=str(e)
+            )
     
-    async def _execute_direct_buy(self, mint: Pubkey, amount_lamports: int) -> Optional[str]:
-        """Execute direct buy through main Pump.fun program"""
+    async def _execute_direct_buy(self, mint: Pubkey, amount_lamports: int) -> BuildResult:
+        """Execute direct buy through main Pump.fun program with PR-02 integration"""
         logger.info("🎯 Executing direct Pump.fun buy")
         
         try:
-            # Use the existing CompleteMEVBot logic for direct calls
-            from complete_mev_bot import CompleteMEVBot
+            # Use the existing tx_builder for direct Pump.fun trades with PR-02 integration
+            from tx_builder import build_buy_tx
             
-            # Create temporary instance for direct trading
-            mev_bot = CompleteMEVBot(self.wallet, self.rpc_client)
-            result = await mev_bot.execute_buy(mint, amount_lamports)
+            # Build transaction using PR-02 infrastructure
+            result = await build_buy_tx(
+                token_mint=str(mint),
+                amount_sol=amount_lamports / 1e9,  # Convert to SOL
+                wallet_keypair=self.wallet,
+                slippage_bps=300,
+                dex="pump"
+            )
             
+            # tx_builder now returns BuildResult
             return result
             
         except Exception as e:
             logger.error(f"❌ Direct buy failed: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="pump",
+                action="direct_buy",
+                reason=str(e)
+            )
     
     async def _execute_router_buy(self, 
                                  program_id: str,
                                  mint: Pubkey, 
                                  amount_lamports: int,
-                                 transaction_data: Dict[str, Any] = None) -> Optional[str]:
-        """Execute buy through router program"""
+                                 transaction_data: Dict[str, Any] = None) -> BuildResult:
+        """Execute buy through router program with PR-02 integration"""
         logger.info(f"🔄 Executing router buy through {program_id}")
         
         try:
@@ -127,14 +160,26 @@ class PumpRouterExecutor:
             
             if not instruction:
                 logger.error("❌ Failed to create router instruction")
-                return None
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="pump",
+                    action="router_buy",
+                    reason="Failed to create router instruction"
+                )
             
-            # Create and send transaction
+            # Create and send transaction using PR-02 infrastructure
             return await self._send_router_transaction([instruction])
             
         except Exception as e:
             logger.error(f"❌ Router buy failed: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="pump",
+                action="router_buy",
+                reason=str(e)
+            )
     
     async def _create_router_instruction(self,
                                         program_id: str,
@@ -232,50 +277,68 @@ class PumpRouterExecutor:
         logger.warning("⚠️ 6H router not fully implemented yet - using F5 pattern")
         return await self._create_f5_router_instruction(mint, amount_lamports, transaction_data)
     
-    async def _send_router_transaction(self, instructions: List[Instruction]) -> Optional[str]:
-        """Send router transaction with proper compute budget"""
+    async def _send_router_transaction(self, instructions: List[Instruction]) -> BuildResult:
+        """Send router transaction with PR-02 integration"""
         
         try:
-            # Add compute budget instructions
-            compute_instructions = [
-                set_compute_unit_limit(self.config.compute_limit),
-                set_compute_unit_price(self.config.priority_fee)
-            ]
+            # 1. Add compute budget using PR-02 utilities
+            instructions_with_budget = with_compute_budget(instructions)
             
-            all_instructions = compute_instructions + instructions
+            # 2. Ensure ATA instructions for token accounts
+            final_instructions = ensure_ata_ixs(
+                instructions_with_budget,
+                self.wallet.pubkey()
+            )
             
-            # Get recent blockhash
-            blockhash_resp = await self.rpc_client.get_latest_blockhash()
-            recent_blockhash = blockhash_resp.value.blockhash
+            # 3. Build ALTs from instruction tables
+            recent_blockhash = get_recent_blockhash()
+            alts = build_alts_from_tables([])  # Empty for now, extend as needed
             
-            # Create versioned transaction
+            # 4. Create versioned transaction with ALT support
             message = MessageV0.try_compile(
                 payer=self.wallet.pubkey(),
-                instructions=all_instructions,
-                address_lookup_table_accounts=[],
+                instructions=final_instructions,
+                address_lookup_table_accounts=alts,
                 recent_blockhash=recent_blockhash
             )
             
-            transaction = VersionedTransaction(message, [self.wallet])
+            vtx = VersionedTransaction(message, [self.wallet])
             
-            # Send transaction
-            opts = {"skip_preflight": self.config.skip_preflight, "max_retries": 3}
-            response = await self.rpc_client.send_transaction(transaction, opts=opts)
+            # 5. Submit using PR-02 infrastructure
+            result = await send_and_confirm_v0_tx(vtx, os.getenv('RPC_URL', 'https://api.mainnet-beta.solana.com'))
+            log_submit_result(result, "router", "pump")
             
-            if hasattr(response, 'value'):
-                signature = str(response.value)
+            if result.get('success'):
+                signature = result.get('signature')
                 logger.info(f"🚀 Router transaction sent: {signature}")
-                return signature
+                return BuildResult(
+                    ok=True,
+                    tx=vtx,
+                    dex="pump",
+                    action="router_trade",
+                    signature=signature
+                )
             else:
-                logger.error(f"❌ Router transaction failed: {response}")
-                return None
+                return BuildResult(
+                    ok=False,
+                    tx=vtx,
+                    dex="pump",
+                    action="router_trade",
+                    reason=result.get('error', 'Transaction submission failed')
+                )
                 
         except Exception as e:
             logger.error(f"❌ Failed to send router transaction: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="pump",
+                action="router_trade",
+                reason=str(e)
+            )
     
-    async def copy_router_transaction(self, original_tx_data: Dict[str, Any]) -> Optional[str]:
-        """Copy a router transaction structure exactly"""
+    async def copy_router_transaction(self, original_tx_data: Dict[str, Any]) -> BuildResult:
+        """Copy a router transaction structure exactly with PR-02 integration"""
         
         try:
             # Extract program ID from original transaction
@@ -309,19 +372,38 @@ class PumpRouterExecutor:
                                     if mint_idx < len(account_keys):
                                         mint = Pubkey.from_string(account_keys[mint_idx])
                                         
-                                        # Execute router buy
+                                        # Execute router buy using PR-02 infrastructure
                                         return await self.execute_router_buy(
                                             program_id, mint, amount, original_tx_data
                                         )
                         except Exception as e:
                             logger.error(f"❌ Failed to decode transaction data: {e}")
+                            return BuildResult(
+                                ok=False,
+                                tx=None,
+                                dex="pump",
+                                action="copy_router",
+                                reason=f"Failed to decode transaction data: {e}"
+                            )
             
             logger.warning("⚠️ No router instructions found in transaction")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="pump",
+                action="copy_router",
+                reason="No router instructions found in transaction"
+            )
             
         except Exception as e:
             logger.error(f"❌ Failed to copy router transaction: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="pump",
+                action="copy_router",
+                reason=str(e)
+            )
 
 # Test function
 async def test_router_compatibility():

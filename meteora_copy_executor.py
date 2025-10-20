@@ -36,6 +36,14 @@ from solders.compute_budget import set_compute_unit_limit, set_compute_unit_pric
 from solders.address_lookup_table_account import AddressLookupTableAccount
 from solders.system_program import transfer, TransferParams
 
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+
 from config import WALLET, HELIUS_RPC_URL
 from fast_executor import FastExecutor
 
@@ -329,10 +337,11 @@ class MeteoraExecutor:
         swap_params: Dict[str, Any],
         target_token: str,
         amount: float,
-        is_buy: bool
-    ) -> Optional[VersionedTransaction]:
+        is_buy: bool,
+        trade_info: dict = None
+    ) -> BuildResult:
         """
-        Build a Meteora swap transaction using reverse-engineered instruction pattern
+        Build a Meteora swap transaction using PR-02 integration pattern
         """
         try:
             action = "buy" if is_buy else "sell"
@@ -401,30 +410,35 @@ class MeteoraExecutor:
                 data=bytes(instruction_data)
             )
             
-            # Create compute budget instructions for better execution
-            compute_limit_ix = set_compute_unit_limit(400_000)  # Higher limit for Meteora
-            compute_price_ix = set_compute_unit_price(2_000_000)  # 2000 micro-lamports for priority
+            # PR-02: Build instruction list starting with swap
+            initial_ixs = [meteora_swap_ix]
             
-            instructions = [
-                compute_limit_ix,
-                compute_price_ix,
-                meteora_swap_ix
-            ]
+            # PR-02: Add compute budget
+            ixs = with_compute_budget(initial_ixs)
             
-            # Create the transaction message
+            # PR-02: Ensure ATA for output token
+            payer = self.wallet_pubkey
+            owner = self.wallet_pubkey
+            out_mint = Pubkey.from_string(target_token) if is_buy else Pubkey.from_string("So11111111111111111111111111111111111111112")  # SOL mint for sell
+            from spl.token.instructions import create_associated_token_account
+            ixs = ensure_ata_ixs(self.rpc_url, payer, owner, out_mint, create_associated_token_account) + ixs
+            
+            # PR-02: ALT support for meteora (if needed)
+            table_pubkeys = swap_params.get("lookup_tables", [])
+            alts = build_alts_from_tables(self.rpc_url, table_pubkeys) if table_pubkeys else []
+            
+            # PR-02: Compile with ALTs and fresh blockhash
             try:
-                message = MessageV0.try_compile(
-                    payer=self.wallet_pubkey,
-                    instructions=instructions,
-                    address_lookup_table_accounts=[],  # Handle ALTs if needed
-                    recent_blockhash=recent_blockhash
+                msg = MessageV0.compile(
+                    instructions=ixs,
+                    payer=payer,
+                    address_lookup_tables=alts,
+                    recent_blockhash=get_recent_blockhash(self.rpc_url),
                 )
+                transaction = VersionedTransaction(msg, [self.wallet_keypair])
             except Exception as e:
                 logger.error(f"❌ Failed to compile message: {e}")
-                return None
-            
-            # Create and sign the transaction
-            transaction = VersionedTransaction(message, [self.wallet_keypair])
+                return BuildResult(ok=False, tx=None, reason=str(e), dex="meteora", action="buy" if is_buy else "sell")
             
             logger.info(f"✅ Meteora {action} transaction built successfully")
             if is_buy:
@@ -434,13 +448,13 @@ class MeteoraExecutor:
             logger.info(f"   🏦 Accounts: {len(account_metas)}")
             logger.info(f"   📦 Instruction data: {len(instruction_data)} bytes")
             
-            return transaction
+            return BuildResult(ok=True, tx=transaction, dex="meteora", action="buy" if is_buy else "sell")
             
         except Exception as e:
             logger.error(f"❌ Error building Meteora transaction: {e}")
             import traceback
             traceback.print_exc()
-            return None
+            return BuildResult(ok=False, tx=None, reason=str(e), dex="meteora", action="buy" if is_buy else "sell")
 
     async def get_meteora_pools_for_token(self, token_mint: str) -> List[Dict[str, Any]]:
         """
@@ -453,8 +467,68 @@ class MeteoraExecutor:
             return []
             
         except Exception as e:
-            logger.error(f"Error getting Meteora pools: {e}")
+            logger.error(f"❌ Error getting Meteora pools: {e}")
             return []
+    
+    def build_and_submit_buy(self, target_token: str, amount: float, trade_info: dict = None) -> BuildResult:
+        """PR-02 integrated buy using build + submit pattern"""
+        try:
+            # Use fake swap params for now (needs actual pool info)
+            swap_params = trade_info or {"pool_info": {}}
+            
+            # Use the PR-02 integrated builder
+            build_result = asyncio.run(self._build_meteora_swap_transaction(
+                swap_params, target_token, amount, True, trade_info or {}
+            ))
+            
+            if not build_result.ok:
+                return build_result
+            
+            # PR-02: Submit and log
+            res = send_and_confirm_v0_tx(self.rpc_url, build_result.tx)
+            log_submit_result("meteora", trade_info.get("action", "buy") if trade_info else "buy", target_token, res)
+            
+            if res.ok:
+                build_result.reason = f"Success: {res.signature}"
+            else:
+                build_result.ok = False
+                build_result.reason = res.error
+            
+            return build_result
+            
+        except Exception as e:
+            logger.error(f"Meteora build_and_submit_buy error: {e}")
+            return BuildResult(ok=False, tx=None, reason=str(e), dex="meteora", action="buy")
+    
+    def build_and_submit_sell(self, target_token: str, amount: float, trade_info: dict = None) -> BuildResult:
+        """PR-02 integrated sell using build + submit pattern"""
+        try:
+            # Use fake swap params for now (needs actual pool info)
+            swap_params = trade_info or {"pool_info": {}}
+            
+            # Use the PR-02 integrated builder
+            build_result = asyncio.run(self._build_meteora_swap_transaction(
+                swap_params, target_token, amount, False, trade_info or {}
+            ))
+            
+            if not build_result.ok:
+                return build_result
+            
+            # PR-02: Submit and log
+            res = send_and_confirm_v0_tx(self.rpc_url, build_result.tx)
+            log_submit_result("meteora", trade_info.get("action", "sell") if trade_info else "sell", target_token, res)
+            
+            if res.ok:
+                build_result.reason = f"Success: {res.signature}"
+            else:
+                build_result.ok = False
+                build_result.reason = res.error
+            
+            return build_result
+            
+        except Exception as e:
+            logger.error(f"Meteora build_and_submit_sell error: {e}")
+            return BuildResult(ok=False, tx=None, reason=str(e), dex="meteora", action="sell")
 
     async def copy_sell_from_transaction(
         self,

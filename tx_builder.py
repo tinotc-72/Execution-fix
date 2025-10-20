@@ -21,6 +21,14 @@ from solders.signature import Signature
 from solders.message import MessageV0
 from datetime import datetime, timezone, UTC
 
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+
 import aiohttp
 import websockets
 from solders.instruction import AccountMeta, CompiledInstruction
@@ -1231,7 +1239,7 @@ def set_compute_unit_price(microlamports: int) -> Instruction:
 
 # === Transaction Builders ===
 
-async def build_buy_tx(mint_str: str, amount: int, curve_str: str, wallet: Keypair) -> VersionedTransaction:
+async def build_buy_tx(mint_str: str, amount: int, curve_str: str, wallet: Keypair, rpc_url: str = None, trade_info: dict = None) -> BuildResult:
     wallet_pubkey = wallet.pubkey()
     mint = Pubkey.from_string(mint_str)
     curve = Pubkey.from_string(curve_str)
@@ -1306,18 +1314,42 @@ async def build_buy_tx(mint_str: str, amount: int, curve_str: str, wallet: Keypa
     assert tip_ix.program_id == SYS_PROGRAM_ID, "🚨 Tip instruction is not SystemProgram"
     assert int.from_bytes(tip_ix.data[1:], "little") >= 1000, "🚨 Tip amount < 1000"
 
-    blockhash_obj: Hash = (await client.get_latest_blockhash()).value.blockhash
-    msg = MessageV0.try_compile(
-        payer=wallet_pubkey,
-        instructions=ixs,
-        recent_blockhash=blockhash_obj,
-        address_lookup_table_accounts=[]
-    )
+    try:
+        if not rpc_url:
+            rpc_url = RPC_URL
+        if not trade_info:
+            trade_info = {}
 
-    await client.close()
-    return VersionedTransaction(msg, [wallet])
+        # PR-02: Add compute budget to existing instructions
+        ixs = with_compute_budget(ixs)
+        
+        # PR-02: Ensure ATA for output token (pump.fun buy creates token account)
+        payer = wallet.pubkey()
+        owner = wallet.pubkey()
+        out_mint = Pubkey.from_string(mint_str)
+        ixs = ensure_ata_ixs(rpc_url, payer, owner, out_mint, create_associated_token_account) + ixs
+        
+        # PR-02: ALT support (pump.fun usually doesn't use ALTs but support anyway)
+        table_pubkeys = trade_info.get("lookup_tables", [])
+        alts = build_alts_from_tables(rpc_url, table_pubkeys) if table_pubkeys else []
+        
+        # PR-02: Compile with ALTs and fresh blockhash
+        msg = MessageV0.compile(
+            instructions=ixs,
+            payer=payer,
+            address_lookup_tables=alts,
+            recent_blockhash=get_recent_blockhash(rpc_url),
+        )
+        
+        tx = VersionedTransaction(msg, [wallet])
+        await client.close()
+        return BuildResult(ok=True, tx=tx, dex="pump", action=trade_info.get("action", "buy"))
+        
+    except Exception as e:
+        await client.close()
+        return BuildResult(ok=False, tx=None, reason=str(e), dex="pump", action=trade_info.get("action", "buy") if trade_info else "buy")
 
-async def build_sell_tx(mint_str: str, amount: int, curve_str: str, wallet: Keypair) -> VersionedTransaction:
+async def build_sell_tx(mint_str: str, amount: int, curve_str: str, wallet: Keypair, rpc_url: str = None, trade_info: dict = None) -> BuildResult:
     wallet_pubkey = wallet.pubkey()
     mint = Pubkey.from_string(mint_str)
     curve = Pubkey.from_string(curve_str)
@@ -1376,17 +1408,40 @@ async def build_sell_tx(mint_str: str, amount: int, curve_str: str, wallet: Keyp
     jito_ixs = get_jito_fee_instructions(wallet_pubkey, total_lamports=5_000)
     ixs = jito_ixs + ixs + [sell_ix]
 
-    # 4. Create and sign transaction
-    blockhash = (await client.get_latest_blockhash()).value.blockhash
-    msg = MessageV0.try_compile(
-        payer=wallet_pubkey,
-        instructions=ixs,
-        recent_blockhash=blockhash,
-        address_lookup_table_accounts=[]
-    )
+    try:
+        if not rpc_url:
+            rpc_url = RPC_URL
+        if not trade_info:
+            trade_info = {}
 
-    await client.close()
-    return VersionedTransaction(msg, [wallet])
+        # PR-02: Add compute budget to existing instructions
+        ixs = with_compute_budget(ixs)
+        
+        # PR-02: Ensure ATA for output token (pump.fun sell outputs SOL/WSOL)
+        payer = wallet.pubkey()
+        owner = wallet.pubkey()
+        out_mint = Pubkey.from_string("So11111111111111111111111111111111111111112")  # SOL mint for sell
+        ixs = ensure_ata_ixs(rpc_url, payer, owner, out_mint, create_associated_token_account) + ixs
+        
+        # PR-02: ALT support (pump.fun usually doesn't use ALTs but support anyway)
+        table_pubkeys = trade_info.get("lookup_tables", [])
+        alts = build_alts_from_tables(rpc_url, table_pubkeys) if table_pubkeys else []
+        
+        # PR-02: Compile with ALTs and fresh blockhash
+        msg = MessageV0.compile(
+            instructions=ixs,
+            payer=payer,
+            address_lookup_tables=alts,
+            recent_blockhash=get_recent_blockhash(rpc_url),
+        )
+        
+        tx = VersionedTransaction(msg, [wallet])
+        await client.close()
+        return BuildResult(ok=True, tx=tx, dex="pump", action=trade_info.get("action", "sell"))
+        
+    except Exception as e:
+        await client.close()
+        return BuildResult(ok=False, tx=None, reason=str(e), dex="pump", action=trade_info.get("action", "sell") if trade_info else "sell")
 
 def get_transaction_type(tx: VersionedTransaction) -> str:
     """Determine transaction type from instructions"""
