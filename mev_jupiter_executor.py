@@ -624,6 +624,18 @@ class MEVJupiterExecutor:
                         # Execute using official retry logic
                         signature = await self.send_transaction_with_retry(transaction)
                         
+                        # Log submission result with standardized format
+                        from utils.logs import log_submit_result
+                        from executors.submit import SubmitResult
+                        if signature:
+                            submit_res = SubmitResult(
+                                ok=True,
+                                signature=signature,
+                                status="confirmed",
+                                confirmationStatus="confirmed"
+                            )
+                            log_submit_result("jupiter", "buy", token_mint_str, submit_res)
+                        
                         if signature:
                             logger.info(f"✅ [JUPITER_BUY] SUCCESS: Bought {token_mint_str[:8]}... with {amount_sol} SOL")
                             logger.info(f"   Signature: {signature}")
@@ -721,6 +733,18 @@ class MEVJupiterExecutor:
                         
                         # Use shared send_transaction_with_retry for Jito + RPC fallback
                         signature = await self.send_transaction_with_retry(transaction)
+                        
+                        # Log submission result with standardized format
+                        from utils.logs import log_submit_result
+                        from executors.submit import SubmitResult
+                        if signature:
+                            submit_res = SubmitResult(
+                                ok=True,
+                                signature=signature,
+                                status="confirmed",
+                                confirmationStatus="confirmed"
+                            )
+                            log_submit_result("jupiter", "sell", token_mint, submit_res)
                         
                         if signature:
                             logger.info(f"✅ EXECUTED via jupiter — signature: {signature}")

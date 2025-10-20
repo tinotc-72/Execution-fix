@@ -328,7 +328,16 @@ class TransactionCloner:
                 if result["success"]:
                     sig = result["signature"]
                     status = result["status"].get("confirmationStatus", "unknown")
-                    logger.info(f"[SUBMIT] DEX=cloner action=clone mint=unknown sig={sig} status={status} ok=True")
+                    # Use standardized logging helper
+                    from utils.logs import log_submit_result
+                    from executors.submit import SubmitResult
+                    submit_res = SubmitResult(
+                        ok=True,
+                        signature=sig,
+                        status=status,
+                        confirmationStatus=status
+                    )
+                    log_submit_result("cloner", "clone", "unknown", submit_res)
                     logger.info(f"Transaction sent successfully. Signature: {sig}")
                     return sig
                 elif "error" in result and "Blockhash not found" in str(result.get("error", "")):
@@ -339,6 +348,16 @@ class TransactionCloner:
                 else:
                     logger.error(f"Failed to send transaction: {result}")
                     logger.error(f"Full error response: {result}")
+                    # Log failed submission
+                    from utils.logs import log_submit_result
+                    from executors.submit import SubmitResult
+                    submit_res = SubmitResult(
+                        ok=False,
+                        signature=result.get("signature"),
+                        status="failed",
+                        error=result.get("error")
+                    )
+                    log_submit_result("cloner", "clone", "unknown", submit_res)
                     return None
             except Exception as e:
                 logger.error(f"Exception sending transaction: {e}")

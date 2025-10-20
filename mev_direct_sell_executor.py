@@ -230,7 +230,7 @@ class MEVDirectSellExecutor:
                 return exec_err("direct_sell_executor", f"Failed to build SELL transaction using copied instruction data")
             
             # 4. Execute the SELL transaction with MEV protection
-            signature = await self._execute_sell_transaction(our_sell_tx)
+            signature = await self._execute_sell_transaction(our_sell_tx, token_mint)
             
             if signature:
                 logger.info(f"✅ Direct SELL copy SUCCESS: {signature}")
@@ -581,7 +581,7 @@ class MEVDirectSellExecutor:
             logger.error(f"❌ Error building Raydium sell transaction: {e}")
             return exec_err("direct_sell_executor", f"Error building Raydium sell transaction: {str(e)}")
     
-    async def _execute_sell_transaction(self, transaction: VersionedTransaction) -> Optional[str]:
+    async def _execute_sell_transaction(self, transaction: VersionedTransaction, token_mint: str = "unknown") -> Optional[str]:
         """Execute SELL transaction with MEV protection and proper confirmation"""
         try:
             logger.info(f"⚡ Executing SELL transaction with MEV protection")
@@ -619,11 +619,30 @@ class MEVDirectSellExecutor:
             if result["success"]:
                 signature = result["signature"]
                 status = result["status"].get("confirmationStatus", "unknown")
-                logger.info(f"[SUBMIT] DEX=raydium action=sell mint=unknown sig={signature} status={status} ok=True")
+                # Use standardized logging helper
+                from utils.logs import log_submit_result
+                from executors.submit import SubmitResult
+                submit_res = SubmitResult(
+                    ok=True,
+                    signature=signature,
+                    status=status,
+                    confirmationStatus=status
+                )
+                log_submit_result("raydium", "sell", token_mint, submit_res)
                 logger.info(f"✅ EXECUTED via direct_sell (rpc) — signature: {signature}")
                 return signature
             else:
                 logger.error(f"❌ RPC submission failed: {result.get('error')}")
+                # Log failed submission
+                from utils.logs import log_submit_result
+                from executors.submit import SubmitResult
+                submit_res = SubmitResult(
+                    ok=False,
+                    signature=result.get("signature"),
+                    status="failed",
+                    error=result.get("error")
+                )
+                log_submit_result("raydium", "sell", token_mint, submit_res)
                 return None
             
             logger.error("❌ Failed to submit SELL transaction")

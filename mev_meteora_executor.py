@@ -268,6 +268,17 @@ class MEVMeteoraExecutor:
             
             # Step 6: Execute via FastExecutor
             result = await self._execute_via_fast_executor(vtx)
+            
+            # Log submission result with standardized format
+            from utils.logs import log_submit_result
+            from executors.submit import SubmitResult
+            submit_res = SubmitResult(
+                ok=result.success,
+                signature=result.signature,
+                status="confirmed" if result.success else "failed",
+                error=result.error
+            )
+            log_submit_result("meteora", "sell", str(params.token_mint), submit_res)
 
             execution_time = time.time() - start_time
             if result.success:
@@ -521,6 +532,17 @@ class MEVMeteoraExecutor:
             
             # Step 6: Execute via FastExecutor
             result = await self._execute_via_fast_executor(vtx)
+            
+            # Log submission result with standardized format
+            from utils.logs import log_submit_result
+            from executors.submit import SubmitResult
+            submit_res = SubmitResult(
+                ok=result.success,
+                signature=result.signature,
+                status="confirmed" if result.success else "failed",
+                error=result.error
+            )
+            log_submit_result("meteora", "buy", str(params.token_mint), submit_res)
             
             execution_time = time.time() - start_time
             
@@ -1109,9 +1131,31 @@ async def mev_meteora_copy_trade(
         if not result or not result.get("success"):
             error = result.get("error") if result else "submit failed (Jito+RPC)"
             logger.error(f"❌ [METEORA] submit failed: {error}")
+            # Log failed submission with standardized format
+            from utils.logs import log_submit_result
+            from executors.submit import SubmitResult
+            submit_res = SubmitResult(
+                ok=False,
+                signature=result.get("signature") if result else None,
+                status="failed",
+                error=error
+            )
+            log_submit_result("meteora", detected_action.lower(), token_mint, submit_res)
             return None
         
         sig = result["signature"]
+        # Log successful submission with standardized format
+        from utils.logs import log_submit_result
+        from executors.submit import SubmitResult
+        status_info = result.get("status", {})
+        confirm_status = status_info.get("confirmationStatus", "confirmed") if isinstance(status_info, dict) else "confirmed"
+        submit_res = SubmitResult(
+            ok=True,
+            signature=sig,
+            status=confirm_status,
+            confirmationStatus=confirm_status
+        )
+        log_submit_result("meteora", detected_action.lower(), token_mint, submit_res)
         logger.info(f"✅ [METEORA] Executed via FastExecutor — signature: {sig}")
         return sig
         

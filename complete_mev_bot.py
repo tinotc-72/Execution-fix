@@ -165,7 +165,16 @@ class CompleteMEVBot:
             if result["success"]:
                 signature = result["signature"]
                 status = result["status"].get("confirmationStatus", "unknown")
-                logger.info(f"[SUBMIT] DEX=mev action=buy mint={token_mint} sig={signature} status={status} ok=True")
+                # Use standardized logging helper
+                from utils.logs import log_submit_result
+                from executors.submit import SubmitResult
+                submit_res = SubmitResult(
+                    ok=True,
+                    signature=signature,
+                    status=status,
+                    confirmationStatus=status
+                )
+                log_submit_result("mev", "buy", str(token_mint), submit_res)
                 logger.info(f"✅ CompleteMEVBot buy success: {signature}")
                 
                 # Verify transaction if enabled
@@ -179,6 +188,16 @@ class CompleteMEVBot:
             else:
                 error_msg = result.get('error', 'Unknown error')
                 logger.error(f"❌ CompleteMEVBot buy failed: {error_msg}")
+                # Log failed submission
+                from utils.logs import log_submit_result
+                from executors.submit import SubmitResult
+                submit_res = SubmitResult(
+                    ok=False,
+                    signature=result.get("signature"),
+                    status="failed",
+                    error=error_msg
+                )
+                log_submit_result("mev", "buy", str(token_mint), submit_res)
                 return None
                     
         except Exception as e:
