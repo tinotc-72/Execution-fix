@@ -369,6 +369,21 @@ def get_swap_transaction_duplicate(route: dict, wallet_pubkey: Pubkey) -> Option
 
 
 def build_buy_tx(token_mint: str, amount_sol: float, wallet: Keypair, slippage: float = 3.0) -> BuildResult:
+    """
+    Build a buy transaction using Jupiter aggregator.
+    
+    Note: Jupiter API (with wrapAndUnwrapSol=True) automatically handles ATA creation
+    for both input (WSOL) and output tokens. The ensure_ata_ixs() enforcement is
+    handled by Jupiter's API, so we don't need to manually check or create ATAs here.
+    
+    For manual ATA enforcement (if needed), use:
+        from utils.ata_enforce import ensure_ata_ixs
+        from utils.ata import create_associated_token_account
+        
+        output_mint = Pubkey.from_string(token_mint_str)
+        ata_ixs = ensure_ata_ixs(RPC_URL, wallet.pubkey(), wallet.pubkey(), 
+                                 output_mint, create_associated_token_account)
+    """
     lamports = int(amount_sol * 1_000_000_000)
     # Coerce token_mint to string in case it's a Pubkey
     token_mint_str = _as_mint_str(token_mint)
@@ -389,6 +404,16 @@ def build_buy_tx(token_mint: str, amount_sol: float, wallet: Keypair, slippage: 
 
 
 def build_sell_tx(token_mint: str, wallet: Keypair, slippage: float = 3.0) -> BuildResult:
+    """
+    Build a sell transaction using Jupiter aggregator.
+    
+    Note: Jupiter API (with wrapAndUnwrapSol=True) automatically handles ATA creation
+    for both input token and output (WSOL). The ensure_ata_ixs() enforcement is
+    handled by Jupiter's API, so we don't need to manually check or create ATAs here.
+    
+    For sell operations, the input token ATA should already exist (we own the tokens).
+    Jupiter handles the output (WSOL) ATA automatically.
+    """
     # Coerce token_mint to string in case it's a Pubkey
     token_mint_str = _as_mint_str(token_mint)
     ata = get_associated_token_address(wallet.pubkey(), Pubkey.from_string(token_mint_str))

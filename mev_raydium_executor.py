@@ -87,20 +87,25 @@ async def try_raydium_buy(trade_info: dict, keypair: Keypair, **kwargs) -> Build
         
     TODOs:
         - Extract pool information from trade_info
-        - Ensure output token ATA exists using ensure_ata_for() before building swap
+        - Ensure output token ATA exists using ensure_ata_ixs() from utils.ata_enforce before building swap
         - Build swap instruction for buy (SOL -> Token)
         - Submit transaction with proper fees
         - Return BuildResult(ok=True, tx=...) on success
         
     Example ATA check (when implemented):
+        from utils.ata_enforce import ensure_ata_ixs
+        from utils.ata import create_associated_token_account
+        
         output_mint = Pubkey.from_string(trade_info['token_mint'])
-        # Check if ATA exists via RPC (TODO: implement RPC query)
-        ata_exists = False  # Placeholder - should query RPC
-        ata_instructions = ensure_ata_for(
-            owner=keypair.pubkey(),
-            mint=output_mint,
-            payer=keypair.pubkey(),
-            exists=ata_exists
+        rpc_url = kwargs.get('rpc_url', 'https://api.mainnet-beta.solana.com')
+        
+        # Ensure output token ATA exists before building swap
+        ata_instructions = ensure_ata_ixs(
+            rpc_url,
+            keypair.pubkey(),  # payer
+            keypair.pubkey(),  # owner
+            output_mint,
+            create_associated_token_account
         )
         # Add ata_instructions to transaction before swap instruction
     """

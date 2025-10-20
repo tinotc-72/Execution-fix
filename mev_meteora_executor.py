@@ -711,17 +711,12 @@ class MEVMeteoraExecutor:
         try:
             instructions = []
             
-            # Check if token account exists, create if needed
-            # TODO (Copilot): Consider using utils.ata.ensure_ata_for() instead of manual check
-            # Example:
-            #   account_exists = (await self.client.get_account_info(token_account)).value is not None
-            #   ata_instructions = ensure_ata_for(
-            #       owner=self.wallet.pubkey(),
-            #       mint=params.token_mint,
-            #       payer=self.wallet.pubkey(),
-            #       exists=account_exists
-            #   )
-            #   instructions.extend(ata_instructions)
+            # Use the new RPC-based ATA enforcement instead of manual check
+            from utils.ata_enforce import ensure_ata_ixs
+            # For buy, we need to ensure the output token ATA exists
+            # Note: We can't directly use RPC client here since it's async, but we can use a workaround
+            # For now, keep the existing async pattern but add a comment for future improvement
+            # TODO: Consider refactoring to use ensure_ata_ixs with sync RPC calls
             account_info = await self.client.get_account_info(token_account)
             if not account_info.value:
                 # Add create associated token account instruction
@@ -1168,8 +1163,28 @@ class ATAManager:
     def __init__(self, rpc: SimpleRPC):
         self.rpc = rpc
     def ensure_ata_ix_if_missing(self, owner: Pubkey, mint: Pubkey):
-        # Placeholder: always return None for create ix
-        return find_associated_token_address(owner, mint), None
+        """
+        Check if ATA exists and return creation instruction if needed.
+        
+        Returns:
+            Tuple of (ata_address, create_instruction_or_None)
+        """
+        from utils.ata_enforce import ensure_ata_ixs
+        from utils.ata import create_associated_token_account
+        
+        ata = find_associated_token_address(owner, mint)
+        
+        # Use the new RPC-based ATA enforcement
+        ata_ixs = ensure_ata_ixs(
+            self.rpc.url,
+            owner,  # payer
+            owner,  # owner
+            mint,
+            create_associated_token_account
+        )
+        
+        # Return ATA address and instruction (or None if exists)
+        return ata, ata_ixs[0] if ata_ixs else None
 
 # Solder-only swap data packer
 def _pack_swap_data_from_source(source_data: bytes, amount_lamports: int, min_tokens: int, swap_mode: int = 0) -> bytes:
@@ -1295,35 +1310,34 @@ def _build_and_sign_internal(
     user_wsol_ata = find_associated_token_address(payer, WSOL_MINT)
     user_out_ata = find_associated_token_address(payer, token_mint)
     
-    # Check WSOL ATA existence
-    try:
-        wsol_account = rpc._post("getAccountInfo", [str(user_wsol_ata), {"encoding": "jsonParsed"}])
-        if wsol_account["value"] is None:
-            wsol_create_ix = create_associated_token_account_ix(payer, payer, WSOL_MINT)
-            ixs.append(wsol_create_ix)
-            logger.info("🔧 Added WSOL ATA creation instruction (account doesn't exist)")
-        else:
-            logger.info("✅ WSOL ATA already exists, skipping creation")
-    except Exception as e:
-        # If check fails, be conservative and attempt creation (will no-op if exists)
-        wsol_create_ix = create_associated_token_account_ix(payer, payer, WSOL_MINT)
-        ixs.append(wsol_create_ix)
-        logger.info(f"⚠️ WSOL ATA check failed ({e}), adding creation instruction")
+    # Use the new RPC-based ATA enforcement for WSOL
+    from utils.ata_enforce import ensure_ata_ixs
+    wsol_ata_ixs = ensure_ata_ixs(
+        rpc.url,
+        payer,  # payer
+        payer,  # owner
+        WSOL_MINT,
+        create_associated_token_account_ix
+    )
+    ixs.extend(wsol_ata_ixs)
+    if wsol_ata_ixs:
+        logger.info("🔧 Added WSOL ATA creation instruction (account doesn't exist)")
+    else:
+        logger.info("✅ WSOL ATA already exists, skipping creation")
     
-    # Check output token ATA existence
-    try:
-        token_account = rpc._post("getAccountInfo", [str(user_out_ata), {"encoding": "jsonParsed"}])
-        if token_account["value"] is None:
-            token_create_ix = create_associated_token_account_ix(payer, payer, token_mint)
-            ixs.append(token_create_ix)
-            logger.info(f"🔧 Added output token ATA creation instruction (account doesn't exist)")
-        else:
-            logger.info("✅ Output token ATA already exists, skipping creation")
-    except Exception as e:
-        # If check fails, be conservative and attempt creation (will no-op if exists)
-        token_create_ix = create_associated_token_account_ix(payer, payer, token_mint)
-        ixs.append(token_create_ix)
-        logger.info(f"⚠️ Output token ATA check failed ({e}), adding creation instruction")
+    # Use the new RPC-based ATA enforcement for output token
+    token_ata_ixs = ensure_ata_ixs(
+        rpc.url,
+        payer,  # payer
+        payer,  # owner
+        token_mint,
+        create_associated_token_account_ix
+    )
+    ixs.extend(token_ata_ixs)
+    if token_ata_ixs:
+        logger.info(f"🔧 Added output token ATA creation instruction (account doesn't exist)")
+    else:
+        logger.info("✅ Output token ATA already exists, skipping creation")
     
     # 2. Wrap SOL: system transfer to WSOL ATA
     transfer_ix = transfer(
