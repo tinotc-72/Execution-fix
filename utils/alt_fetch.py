@@ -54,6 +54,7 @@ import requests
 from typing import List, Dict, Any
 from solders.pubkey import Pubkey
 from solders.address_lookup_table_account import AddressLookupTableAccount
+from solders.hash import Hash
 
 logger = logging.getLogger(__name__)
 
@@ -133,3 +134,36 @@ def build_alts_from_tables(rpc_url: str, table_pubkeys: List[str]) -> List[Addre
             continue
     
     return alts
+
+
+def get_recent_blockhash(rpc_url: str) -> Hash:
+    """
+    Get the recent blockhash from the RPC.
+    
+    Args:
+        rpc_url: RPC endpoint URL
+        
+    Returns:
+        Hash object containing the recent blockhash
+        
+    Raises:
+        Exception: If the RPC call fails or the response is invalid
+    """
+    try:
+        resp = rpc_call(rpc_url, "getLatestBlockhash", [{"commitment": "confirmed"}])
+        result = resp.get("result")
+        if not result:
+            raise Exception("No result in getLatestBlockhash response")
+        
+        value = result.get("value")
+        if not value:
+            raise Exception("No value in getLatestBlockhash result")
+        
+        blockhash_str = value.get("blockhash")
+        if not blockhash_str:
+            raise Exception("No blockhash in getLatestBlockhash value")
+        
+        return Hash.from_string(blockhash_str)
+    except Exception as e:
+        logger.error(f"Failed to get recent blockhash: {e}")
+        raise

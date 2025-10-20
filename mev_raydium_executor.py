@@ -37,10 +37,22 @@ except ImportError:
 
 # Import ATA utilities for ensuring token accounts exist before swaps
 try:
-    from utils.ata import ensure_ata_for
+    from utils.ata import ensure_ata_for, create_associated_token_account
+    from utils.ata_enforce import ensure_ata_ixs
+    from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+    from utils.fees import with_compute_budget
+    from executors.submit import send_and_confirm_v0_tx
+    from utils.logs import log_submit_result
 except ImportError:
-    # Allow import to succeed even if utils.ata is not available
+    # Allow import to succeed even if utils are not available
     ensure_ata_for = None
+    create_associated_token_account = None
+    ensure_ata_ixs = None
+    build_alts_from_tables = None
+    get_recent_blockhash = None
+    with_compute_budget = None
+    send_and_confirm_v0_tx = None
+    log_submit_result = None
 
 logger = logging.getLogger(__name__)
 

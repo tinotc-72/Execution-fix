@@ -1,6 +1,14 @@
 import asyncio
 from utils import RPCClient, get_associated_token_address, create_associated_token_account
 
+# Import BuildResult for consistent return values
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+
 # Stub for Jito tip instruction (replace with actual implementation if available)
 def create_jito_tip_instruction(pubkey, amount):
     # Return None or a dummy Instruction for now
