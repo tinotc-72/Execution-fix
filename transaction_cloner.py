@@ -216,6 +216,8 @@ class TransactionCloner:
 
             # Rebuild instructions with proper Instruction objects
             new_instructions = []
+            token_mints = set()  # Track unique token mints for ATA checks
+            
             for ix in message.get("instructions", []):
                 program_id_index = ix.get("programIdIndex")
                 if program_id_index is None or program_id_index >= len(account_keys):
@@ -235,6 +237,16 @@ class TransactionCloner:
                 # Create Instruction object instead of CompiledInstruction
                 from solders.instruction import Instruction
                 program_id = account_keys[program_id_index]
+                
+                # Detect token program instructions that might need ATAs
+                TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                if str(program_id) == TOKEN_PROGRAM_ID and len(account_metas) > 0:
+                    # This is a token instruction, extract potential mint
+                    # In SPL Token, mint is typically in the first few accounts
+                    for account_meta in account_metas[:3]:  # Check first 3 accounts
+                        # Add to set of potential mints
+                        token_mints.add(account_meta.pubkey)
+                
                 new_ix = Instruction(
                     program_id=program_id,
                     accounts=account_metas,
@@ -242,6 +254,31 @@ class TransactionCloner:
                 )
                 new_instructions.append(new_ix)
 
+            # Check and ensure ATAs exist for detected token mints
+            ata_instructions = []
+            if token_mints:
+                logger.info(f"Detected {len(token_mints)} potential token mints, checking ATAs...")
+                for mint in token_mints:
+                    try:
+                        # Check if ATA exists and create if needed
+                        ata_ixs = ensure_ata_ixs(
+                            self.rpc_url,
+                            self.payer.pubkey(),  # payer
+                            self.payer.pubkey(),  # owner (same as payer for cloner)
+                            mint,
+                            create_associated_token_account
+                        )
+                        if ata_ixs:
+                            logger.info(f"Adding ATA creation instruction for mint: {str(mint)[:8]}...")
+                            ata_instructions.extend(ata_ixs)
+                    except Exception as ata_error:
+                        logger.warning(f"Failed to check/create ATA for mint {str(mint)[:8]}: {ata_error}")
+            
+            # Prepend ATA instructions if any
+            if ata_instructions:
+                logger.info(f"Prepending {len(ata_instructions)} ATA creation instructions")
+                new_instructions = ata_instructions + new_instructions
+            
             # Add compute budget to cloned instructions
             new_instructions = with_compute_budget(new_instructions, cu_limit=1000000, cu_price=5000)
 
