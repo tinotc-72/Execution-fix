@@ -22,6 +22,14 @@ from solders.hash import Hash
 from utils import RPCClient
 from utils.fees import with_compute_budget
 
+# Import BuildResult for consistent return values
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.ata import create_associated_token_account
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+
 logger = logging.getLogger(__name__)
 
 # Constants for router detection
