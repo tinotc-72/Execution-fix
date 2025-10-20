@@ -20,8 +20,48 @@ import asyncio
 import json
 
 from utils.fees import with_compute_budget
+from utils.alt_fetch import build_alts_from_tables
+from utils.ata_enforce import ensure_ata_ixs, ata_exists
+from utils.ata import create_associated_token_account
+from models.build_result import BuildResult
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
 
 logger = logging.getLogger(__name__)
+
+
+def get_recent_blockhash(rpc_url: str) -> Optional[str]:
+    """
+    Fetch the most recent blockhash from the Solana network (synchronous).
+    
+    Args:
+        rpc_url: RPC endpoint URL
+        
+    Returns:
+        Blockhash string if successful, None otherwise
+    """
+    try:
+        import requests
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getLatestBlockhash",
+            "params": [{"commitment": "confirmed"}]
+        }
+        
+        response = requests.post(rpc_url, json=payload, timeout=10.0)
+        response.raise_for_status()
+        data = response.json()
+        
+        if "result" in data and "value" in data["result"]:
+            return data["result"]["value"]["blockhash"]
+        else:
+            logger.error(f"Failed to get blockhash: {data}")
+            return None
+    except Exception as e:
+        logger.error(f"Failed to fetch recent blockhash: {e}")
+        return None
+
 
 class TransactionCloner:
     async def initialize(self):
@@ -225,12 +265,12 @@ class TransactionCloner:
             if address_table_lookups:
                 logger.info(f"Detected v0 transaction with {len(address_table_lookups)} Address Lookup Tables")
                 
-                # Import ALT utility
-                from utils.alts import alts_from_lookups
+                # Extract table pubkeys for sync ALT fetching
+                table_pubkeys = [lookup.get("accountKey") for lookup in address_table_lookups if lookup.get("accountKey")]
                 
-                # Fetch and reconstruct ALTs
+                # Fetch and reconstruct ALTs using sync helper
                 try:
-                    address_lookup_tables = await alts_from_lookups(self.rpc_url, address_table_lookups)
+                    address_lookup_tables = build_alts_from_tables(self.rpc_url, table_pubkeys)
                     if address_lookup_tables:
                         logger.info(f"✅ Reconstructed {len(address_lookup_tables)} ALTs for v0 transaction")
                     else:
@@ -391,12 +431,12 @@ async def clone_tx_from_signature(
     rpc: str, 
     signature: str, 
     new_payer: "Keypair"
-) -> Optional[VersionedTransaction]:
+) -> BuildResult:
     """
     Thin wrapper for cloning a transaction from its signature.
     
     Fetches the transaction by signature, rebuilds it with the new payer wallet,
-    updates with a fresh blockhash, re-signs, and returns a VersionedTransaction.
+    updates with a fresh blockhash, re-signs, and returns a BuildResult.
     
     Args:
         rpc: RPC URL to use for fetching transaction and blockhash
@@ -404,7 +444,7 @@ async def clone_tx_from_signature(
         new_payer: Keypair that will be the new payer (fee payer and signer)
         
     Returns:
-        VersionedTransaction if successful, None if cloning fails
+        BuildResult with ok=True and tx set on success, ok=False with reason on failure
     """
     try:
         logger.info(f"ℹ️ [CLONER] Starting transaction clone for signature: {signature[:12]}...")
@@ -417,14 +457,14 @@ async def clone_tx_from_signature(
         
         if vtx:
             logger.info(f"✅ [CLONER] Successfully cloned transaction: {signature[:12]}...")
-            return vtx
+            return BuildResult(ok=True, tx=vtx, dex='cloner', action='clone')
         else:
             logger.error(f"❌ [CLONER] Failed to clone transaction: {signature[:12]}...")
-            return None
+            return BuildResult(ok=False, tx=None, reason="Failed to clone transaction", dex='cloner', action='clone')
             
     except Exception as e:
         logger.error(f"❌ [CLONER] Exception during clone: {e}")
-        return None
+        return BuildResult(ok=False, tx=None, reason=str(e), dex='cloner', action='clone')
 
 
 # Example usage (to be integrated with the main copy bot):
