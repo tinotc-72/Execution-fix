@@ -10,6 +10,12 @@ This test validates that:
 """
 
 import sys
+import os
+from pathlib import Path
+
+# Get the base directory for the project
+BASE_DIR = Path(__file__).parent.absolute()
+
 print("=" * 80)
 print("RESILIENCE INTEGRATION TEST")
 print("=" * 80)
@@ -21,7 +27,7 @@ try:
     print("✅ PASS: resilience module imported successfully")
 except Exception as e:
     print(f"❌ FAIL: Failed to import resilience module: {e}")
-    sys.exit(1)
+    raise AssertionError(f"Import test failed: {e}")
 
 # Test 2: Test retry decorator
 print("\nTest 2: Test retry decorator")
@@ -41,7 +47,7 @@ try:
     print(f"✅ PASS: retry decorator works (retried {call_count[0]} times)")
 except Exception as e:
     print(f"❌ FAIL: retry decorator test failed: {e}")
-    sys.exit(1)
+    raise AssertionError(f"Retry decorator test failed: {e}")
 
 # Test 3: Test healthy_rpc function
 print("\nTest 3: Test healthy_rpc function")
@@ -53,12 +59,13 @@ try:
     print(f"✅ PASS: healthy_rpc returns fallback endpoint: {result}")
 except Exception as e:
     print(f"❌ FAIL: healthy_rpc test failed: {e}")
-    sys.exit(1)
+    raise AssertionError(f"healthy_rpc test failed: {e}")
 
 # Test 4: Verify Jupiter executor imports resilience
 print("\nTest 4: Verify Jupiter executor code uses retry decorator")
 try:
-    with open('/home/runner/work/Execution-fix/Execution-fix/mev_jupiter_executor.py', 'r') as f:
+    jupiter_executor_path = BASE_DIR / 'mev_jupiter_executor.py'
+    with open(jupiter_executor_path, 'r') as f:
         content = f.read()
         assert 'from utils.resilience import retry, healthy_rpc' in content, "Missing resilience import"
         assert '@retry(attempts=3, base=0.5)' in content, "Quote phase not using @retry decorator"
@@ -67,12 +74,13 @@ try:
         print("   - Build phase wrapped with @retry decorator")
 except Exception as e:
     print(f"❌ FAIL: Jupiter executor verification failed: {e}")
-    sys.exit(1)
+    raise AssertionError(f"Jupiter executor verification failed: {e}")
 
 # Test 5: Verify FastExecutor imports resilience
 print("\nTest 5: Verify FastExecutor code uses healthy_rpc")
 try:
-    with open('/home/runner/work/Execution-fix/Execution-fix/fast_executor.py', 'r') as f:
+    fast_executor_path = BASE_DIR / 'fast_executor.py'
+    with open(fast_executor_path, 'r') as f:
         content = f.read()
         assert 'from utils.resilience import retry, healthy_rpc' in content, "Missing resilience import"
         assert 'healthy_rpc(rpc_endpoints' in content, "Submit phase not using healthy_rpc"
@@ -80,18 +88,19 @@ try:
         print("   - Submit phase selects healthy RPC endpoint")
 except Exception as e:
     print(f"❌ FAIL: FastExecutor verification failed: {e}")
-    sys.exit(1)
+    raise AssertionError(f"FastExecutor verification failed: {e}")
 
 # Test 6: Verify executors/submit.py imports resilience
 print("\nTest 6: Verify submit module imports resilience")
 try:
-    with open('/home/runner/work/Execution-fix/Execution-fix/executors/submit.py', 'r') as f:
+    submit_path = BASE_DIR / 'executors' / 'submit.py'
+    with open(submit_path, 'r') as f:
         content = f.read()
         assert 'from utils.resilience import retry, healthy_rpc' in content, "Missing resilience import"
         print("✅ PASS: Submit module imports resilience utilities")
 except Exception as e:
     print(f"❌ FAIL: Submit module verification failed: {e}")
-    sys.exit(1)
+    raise AssertionError(f"Submit module verification failed: {e}")
 
 print("\n" + "=" * 80)
 print("ALL INTEGRATION TESTS PASSED ✅")
