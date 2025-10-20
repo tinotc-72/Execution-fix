@@ -19,6 +19,8 @@ import aiohttp
 import asyncio
 import json
 
+from utils.fees import with_compute_budget
+
 logger = logging.getLogger(__name__)
 
 class TransactionCloner:
@@ -199,6 +201,9 @@ class TransactionCloner:
                     data=data
                 )
                 new_instructions.append(new_ix)
+
+            # Add compute budget to cloned instructions
+            new_instructions = with_compute_budget(new_instructions, cu_limit=1000000, cu_price=5000)
 
             # Get fresh recent blockhash from network
             blockhash_str = await self.get_recent_blockhash()
