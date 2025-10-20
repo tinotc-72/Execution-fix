@@ -36,7 +36,7 @@ log_submit_result(dex="Jupiter", action="buy", mint=USDC_MINT, res=result)
 - ✅ CLI flag: `--amount` (default: 0.001 SOL)
 - ✅ Prints status via `log_submit_result()`
 - ✅ Supports both `--simulate` and `--submit` modes
-- ⚠️ Not functional (requires transaction cloning architecture)
+- ⚠️ Not functional (requires transaction cloning architecture - see `transaction_cloner.py`)
 
 **Key Changes:**
 ```python
@@ -55,7 +55,7 @@ log_submit_result(dex="Pumpfun", action="buy", mint="N/A", res=result)
 - ✅ CLI flag: `--amount` (default: 0.001 SOL)
 - ✅ Prints status via `log_submit_result()`
 - ✅ Supports both `--simulate` and `--submit` modes
-- ❌ Not functional (minimal scaffold, needs implementation)
+- ⚠️ Not functional (minimal scaffold, needs implementation - see `mev_raydium_executor.py`)
 
 **Key Changes:**
 ```python
@@ -124,11 +124,12 @@ DEX={dex_name} action={action} mint={mint} sig={signature} status={status} ok={s
 **Example Output:**
 ```
 # Successful Jupiter transaction
-DEX=Jupiter action=buy mint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v sig=5j7s8... status=confirmed ok=True
+DEX=Jupiter action=buy mint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v sig=5j7s8d9a2b3c4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z... status=confirmed ok=True
 
 # Failed placeholder (Pumpfun)
 DEX=Pumpfun action=buy mint=N/A sig=None status=None ok=False
 ```
+Note: Actual Solana signatures are 88-character base58 strings.
 
 ## Benefits
 
