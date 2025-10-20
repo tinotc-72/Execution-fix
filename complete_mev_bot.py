@@ -157,46 +157,29 @@ class CompleteMEVBot:
             
             transaction = VersionedTransaction(message, [self.keypair])
             
-            # Submit transaction
-            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-                serialized = b58encode(bytes(transaction)).decode()
+            # Submit transaction using unified helper
+            from executors.submit import send_and_confirm_v0_tx
+            
+            result = await send_and_confirm_v0_tx(transaction, self.env.HELIUS_RPC_URL)
+            
+            if result["success"]:
+                signature = result["signature"]
+                status = result["status"].get("confirmationStatus", "unknown")
+                logger.info(f"[SUBMIT] DEX=mev action=buy mint={token_mint} sig={signature} status={status} ok=True")
+                logger.info(f"✅ CompleteMEVBot buy success: {signature}")
                 
-                response = await client.post(
-                    self.env.HELIUS_RPC_URL,
-                    json={
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "sendTransaction",
-                        "params": [
-                            serialized,
-                            {
-                                "encoding": "base58",
-                                "skipPreflight": False,
-                                "preflightCommitment": "confirmed"
-                            }
-                        ]
-                    }
-                )
+                # Verify transaction if enabled
+                if self.config.verify_transactions:
+                    await asyncio.sleep(5)
+                    success = await self.verify_transaction(signature)
+                    if success:
+                        logger.info(f"✅ Transaction {signature} verified on-chain")
                 
-                result = response.json()
-                
-                if 'result' in result:
-                    signature = result['result']
-                    logger.info(f"✅ CompleteMEVBot buy success: {signature}")
-                    
-                    # Verify transaction if enabled
-                    if self.config.verify_transactions:
-                        await asyncio.sleep(5)
-                        success = await self.verify_transaction(signature)
-                        if success:
-                            logger.info(f"✅ Transaction {signature} verified on-chain")
-                    
-                    return signature
-                else:
-                    error = result.get('error', {})
-                    error_msg = error.get('message', str(error))
-                    logger.error(f"❌ CompleteMEVBot buy failed: {error_msg}")
-                    return None
+                return signature
+            else:
+                error_msg = result.get('error', 'Unknown error')
+                logger.error(f"❌ CompleteMEVBot buy failed: {error_msg}")
+                return None
                     
         except Exception as e:
             logger.error(f"❌ CompleteMEVBot buy error: {e}")

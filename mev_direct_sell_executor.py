@@ -594,7 +594,7 @@ class MEVDirectSellExecutor:
             # Sign the transaction
             transaction.sign([self.wallet])
             
-            # Serialize transaction for submission
+            # Serialize transaction for Jito if needed
             serialized_tx = bytes(transaction)
             
             # Dual-path execution: Jito first, RPC fallback
@@ -612,11 +612,19 @@ class MEVDirectSellExecutor:
                 except Exception as jito_error:
                     logger.warning(f"⏭️ Skipped direct_sell (jito): {jito_error}")
             
-            # RPC fallback (must exist) - use proper AsyncClient methods
-            signature = await self._submit_via_rpc_fixed(serialized_tx)
-            if signature:
+            # RPC fallback (must exist) - use unified submit helper
+            from executors.submit import send_and_confirm_v0_tx
+            
+            result = await send_and_confirm_v0_tx(transaction, self.rpc_url)
+            if result["success"]:
+                signature = result["signature"]
+                status = result["status"].get("confirmationStatus", "unknown")
+                logger.info(f"[SUBMIT] DEX=raydium action=sell mint=unknown sig={signature} status={status} ok=True")
                 logger.info(f"✅ EXECUTED via direct_sell (rpc) — signature: {signature}")
-                return signature  # Return just the signature string
+                return signature
+            else:
+                logger.error(f"❌ RPC submission failed: {result.get('error')}")
+                return None
             
             logger.error("❌ Failed to submit SELL transaction")
             return None
