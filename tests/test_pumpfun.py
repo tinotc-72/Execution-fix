@@ -23,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from solders.keypair import Keypair
 from env_keys import load_wallet_from_private_key, EnvKeys
+from executors.submit import SubmitResult
+from utils.logs import log_submit_result
 
 # Configure logging
 logging.basicConfig(
@@ -48,6 +50,10 @@ async def main(args):
         logger.info(f"[PUMPFUN_TEST] Wallet: {wallet.pubkey()}")
         logger.info(f"[PUMPFUN_TEST] RPC: {rpc_url[:50]}...")
         
+        # Determine amount to use
+        amount_lamports = int(args.amount * 1_000_000_000) if hasattr(args, 'amount') else TEST_AMOUNT_LAMPORTS
+        logger.info(f"[PUMPFUN_TEST] Amount: {amount_lamports / 1e9:.6f} SOL ({amount_lamports} lamports)")
+        
         # Pump.fun uses transaction cloning architecture
         logger.warning("[PUMPFUN_TEST] ⚠️  Pump.fun executor uses transaction cloning")
         logger.warning("[PUMPFUN_TEST] This requires a source transaction to clone and modify")
@@ -60,13 +66,21 @@ async def main(args):
         logger.warning("[PUMPFUN_TEST] Standalone buy transactions not supported")
         logger.warning("[PUMPFUN_TEST] Use copy trading workflow instead")
         
+        # Create a placeholder result for logging
+        result = SubmitResult(
+            ok=False,
+            error="Requires source transaction for cloning"
+        )
+        
         if args.simulate:
             logger.info("[PUMPFUN_TEST] === SIMULATION MODE ===")
-            logger.info(f"[PUMPFUN_TEST] Would simulate: 0.001 SOL buy transaction")
+            logger.info(f"[PUMPFUN_TEST] Would simulate: {amount_lamports / 1e9:.6f} SOL buy transaction")
+            log_submit_result(dex="Pumpfun", action="buy", mint="N/A", res=result)
             logger.info("[PUMPFUN_TEST] ❌ Requires source transaction for cloning")
         elif args.submit:
             logger.info("[PUMPFUN_TEST] === SUBMIT MODE ===")
-            logger.info(f"[PUMPFUN_TEST] Would submit: 0.001 SOL buy transaction")
+            logger.info(f"[PUMPFUN_TEST] Would submit: {amount_lamports / 1e9:.6f} SOL buy transaction")
+            log_submit_result(dex="Pumpfun", action="buy", mint="N/A", res=result)
             logger.info("[PUMPFUN_TEST] ❌ Requires source transaction for cloning")
         
         logger.info("[PUMPFUN_TEST] Test completed (cloning architecture)")
@@ -84,6 +98,8 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--simulate", action="store_true", help="Simulate transaction (dry-run)")
     group.add_argument("--submit", action="store_true", help="Submit transaction to blockchain")
+    parser.add_argument("--amount", type=float, default=TEST_AMOUNT_SOL,
+                       help=f"Amount in SOL to swap (default: {TEST_AMOUNT_SOL})")
     
     args = parser.parse_args()
     
