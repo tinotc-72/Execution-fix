@@ -49,6 +49,10 @@ COMPUTE_BUDGET_PROGRAM_ID = PublicKey.from_string("ComputeBudget1111111111111111
 ADVANCED_MEV_BOT_PROGRAM = PublicKey.from_string("BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW")
 CUSTOM_ROUTING_PROGRAM = PublicKey.from_string("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")
 
+# Set up logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Jito client - optional dependency
 try:
     from jito_service import JitoClient

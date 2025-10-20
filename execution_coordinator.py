@@ -1369,7 +1369,7 @@ class ExecutionCoordinator:
             # MEVMeteoraExecutor requires a proper Keypair - explicit validation, no fallback
             wallet_keypair = self._require_keypair()
             self.logger.info(f"Initializing MEVMeteoraExecutor with wallet type: {type(wallet_keypair)}")
-            self.meteora_executor = MEVMeteoraExecutor(wallet_keypair, self.rpc_client, jito_service=self.jito_service)
+            self.meteora_executor = MEVMeteoraExecutor(wallet_keypair, self.rpc_client, fast_executor=self.fast_executor)
         except ImportError:
             self.logger.warning("⚠️ MEVMeteoraExecutor not available")
             self.meteora_executor = None
