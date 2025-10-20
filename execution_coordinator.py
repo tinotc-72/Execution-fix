@@ -86,15 +86,19 @@ logger.info(f"[ROUTE_MAP LOADED] {ROUTE_MAP}")
 
 async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_executor=None, jito_service=None) -> Optional[dict]:
     """
-    Simplified execution coordinator that tries build_and_sign paths before falling back to clone.
+    Fail-open execution coordinator that normalizes trade_info and always attempts execution.
     
-    For dex=="jupiter" and use_universal_cloner=False: Try Jupiter build_and_sign → direct_copy fallback
-    For dex=="meteora" and use_universal_cloner=False: Try Meteora build_and_sign → Jupiter → direct_copy
-    For dex=="meteora" and use_universal_cloner=True: Try builders if mint exists, else direct_copy
-    For dex=="unknown" with mint: Try Jupiter → direct_copy
-    For dex=="unknown" with JUP6 in logs/meta: Treat as jupiter and try Jupiter build_and_sign → direct_copy
+    **Fail-Open Logic:**
+    - If amount is missing/invalid, uses config.INVESTMENT_PER_TRADE_SOL
+    - If action is missing, defaults to 'buy'
+    - If DEX is missing/unknown, uses fallback route order
+    - Never stalls on missing fields - always attempts execution
     
-    Always logs sanity check messages even when fields are incomplete.
+    **Routing:**
+    - dex=="jupiter": Try Jupiter build_and_sign → direct_copy fallback
+    - dex=="meteora": Try Meteora build_and_sign → Jupiter → direct_copy
+    - dex=="unknown" with mint: Try Jupiter → direct_copy
+    - dex=="unknown" with JUP6 in logs/meta: Treat as jupiter
     
     Args:
         trade_info: Trade information dictionary
@@ -106,7 +110,34 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
     Returns:
         dict with success/signature on success, or None on failure
     """
+    # ============================================
+    # FAIL-OPEN NORMALIZATION
+    # ============================================
+    
+    # Import config for fallback values
+    from config import INVESTMENT_PER_TRADE_SOL
+    
+    # Normalize amount - use config default if missing or invalid
+    amount_sol = trade_info.get("amount_sol") or trade_info.get("amount")
+    if not amount_sol or not isinstance(amount_sol, (int, float)) or amount_sol <= 0:
+        amount_sol = INVESTMENT_PER_TRADE_SOL
+        logger.info(f"🔧 [FAIL-OPEN] Amount missing/invalid, using default: {amount_sol} SOL")
+        trade_info["amount_sol"] = amount_sol
+    
+    # Normalize action - default to 'buy' if missing
+    action = trade_info.get("action")
+    if not action or not isinstance(action, str):
+        action = "buy"
+        logger.info(f"🔧 [FAIL-OPEN] Action missing, defaulting to: {action}")
+        trade_info["action"] = action
+    
+    # Normalize DEX - set to 'unknown' if missing
     dex = (trade_info.get("dex") or "unknown").lower()
+    if dex not in ["jupiter", "pumpfun", "raydium", "meteora"]:
+        logger.info(f"🔧 [FAIL-OPEN] DEX '{dex}' not recognized, treating as 'unknown'")
+        dex = "unknown"
+        trade_info["dex"] = dex
+    
     prefer_clone = bool(trade_info.get("use_universal_cloner"))
     
     # Detect Jupiter from logs/meta if dex is unknown
@@ -119,21 +150,36 @@ async def maybe_execute(trade_info: dict, rpc_url: str, keypair: Keypair, fast_e
         if "JUP6" in log_text or "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4" in log_text:
             logger.info("🧭 [COORDINATOR] Detected Jupiter from logs, treating as jupiter")
             dex = "jupiter"
+            trade_info["dex"] = dex
         elif isinstance(meta, dict):
             meta_str = str(meta)
             if "JUP6" in meta_str or "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4" in meta_str:
                 logger.info("🧭 [COORDINATOR] Detected Jupiter from meta, treating as jupiter")
                 dex = "jupiter"
+                trade_info["dex"] = dex
     
     logger.info("🧭 [COORDINATOR] route start: dex=%s, prefer_clone=%s", dex, prefer_clone)
     
-    # Check if we have required fields for actual execution
+    # ============================================
+    # FAIL-OPEN TOKEN MINT VALIDATION
+    # ============================================
+    
+    # Check if we have token_mint - required for execution
     token_mint = trade_info.get("token_mint")
     if not token_mint or token_mint in ("UNKNOWN", "PENDING_ANALYSIS", "unknown", ""):
-        logger.error("❌ [COORDINATOR] Missing or invalid token_mint, cannot execute")
-        logger.info("🧭 [ROUTE] Skipped → missing token_mint")
-        logger.error("❌ [EXECUTION] Failed: missing required fields")
-        return None
+        logger.warning("⚠️ [FAIL-OPEN] Missing or invalid token_mint")
+        logger.info("🧭 [ROUTE] Attempting execution with signature-based direct_copy")
+        
+        # If we have a signature, we can still try direct_copy
+        signature = trade_info.get("signature")
+        if signature:
+            logger.info("✅ [FAIL-OPEN] Signature available, attempting direct_copy despite missing mint")
+            return await execute_direct_copy(trade_info, rpc_url, keypair, jito_service)
+        else:
+            logger.error("❌ [COORDINATOR] No token_mint and no signature - cannot execute")
+            logger.info("🧭 [ROUTE] Skipped → missing both token_mint and signature")
+            logger.error("❌ [EXECUTION] Failed: missing required fields")
+            return None
     
     async def try_submit(build_result_or_tx):
         """
@@ -339,11 +385,42 @@ class ExecutionCoordinator:
     async def _execute_copy_buy(self, token_mint: str, source_wallet: str, *, amount_sol: float = 0.001, trade_info: dict = None, **kwargs) -> dict:
         """
         Canonical copy buy: route by normalized DEX and plan, try each executor in order.
+        
+        **Fail-Open Behavior:**
+        - Uses normalized trade_info from coordinator (DEX, amount, action)
+        - Falls back to config.INVESTMENT_PER_TRADE_SOL if amount not specified
+        - Uses fallback route for unknown DEX
+        - Always attempts execution, never stalls on missing fields
         """
         import traceback
         import time
         
         start_time = time.time()
+        
+        # Import config for fallback values
+        from config import INVESTMENT_PER_TRADE_SOL
+        
+        # ============================================
+        # FAIL-OPEN NORMALIZATION AT EXECUTOR LEVEL
+        # ============================================
+        
+        # Ensure trade_info exists
+        trade_info = trade_info or {}
+        
+        # Use normalized amount from trade_info, or parameter, or config default
+        if "amount_sol" in trade_info and trade_info["amount_sol"]:
+            amount_sol = trade_info["amount_sol"]
+            logger.info(f"[FAIL-OPEN] Using amount from trade_info: {amount_sol} SOL")
+        elif amount_sol and amount_sol > 0:
+            logger.info(f"[FAIL-OPEN] Using amount from parameter: {amount_sol} SOL")
+        else:
+            amount_sol = INVESTMENT_PER_TRADE_SOL
+            logger.info(f"[FAIL-OPEN] Using config default amount: {amount_sol} SOL")
+        
+        # Ensure action is set (should already be normalized by maybe_execute)
+        if "action" not in trade_info or not trade_info["action"]:
+            trade_info["action"] = "buy"
+            logger.info(f"[FAIL-OPEN] Action not set, defaulting to: buy")
         
         # Debug logging controlled by config flags
         if getattr(self.config, "execution_debug", False):
@@ -351,8 +428,7 @@ class ExecutionCoordinator:
         
         self.logger.info(f"[EXECUTION_START] 🚀 Starting copy buy execution...")
         
-        trade_info = trade_info or {}
-        dex_key = normalize_dex(trade_info.get("dex_type") or "unknown")
+        dex_key = normalize_dex(trade_info.get("dex_type") or trade_info.get("dex") or "unknown")
         route_hint = trade_info.get("route_hint", "").strip()
         retry_hint = trade_info.get("retry_hint", "").strip()
         source_tx_failed = trade_info.get("source_tx_failed", False)
@@ -376,6 +452,9 @@ class ExecutionCoordinator:
         # Enhanced routing logic with route_hint priority
         signature = (trade_info.get("signature") or "").strip()
         
+        # Log routing decision for fail-open transparency
+        logger.info(f"[FAIL-OPEN ROUTING] DEX: {dex_key}, Source failed: {source_tx_failed}, Mint available: {have_mint}")
+        
         # NEW ROUTING LOGIC: Handle special cases first
         # 1) Meteora path with retry support
         if dex_key == "meteora":
@@ -387,14 +466,17 @@ class ExecutionCoordinator:
         # 2) Unknown but mint present → Jupiter first
         elif dex_key == "unknown" and have_mint:
             self.logger.info("🧭 [COORDINATOR] Route=unknown; mint present → Jupiter → Meteora → Clone")
+            self.logger.info("[FAIL-OPEN] Using builder-first fallback route for unknown DEX with mint")
             plan = ["jupiter", "meteora", "direct_copy"]
         # 3) Unknown and no mint → if source failed, avoid clone first
         elif dex_key == "unknown" and not have_mint:
             if source_tx_failed:
                 self.logger.info("🧭 [COORDINATOR] Source failed → avoid clone; try builders first")
+                self.logger.info("[FAIL-OPEN] Source transaction failed, using builder-first route")
                 plan = ["jupiter", "meteora", "direct_copy"]
             else:
                 # Use existing logic for unknown without mint
+                self.logger.info("[FAIL-OPEN] Unknown DEX without mint - using fallback route from ROUTE_MAP")
                 plan = ROUTE_MAP.get(dex_key, ROUTE_MAP["unknown"])
         # Priority 1: Check for route_hint == 'direct_copy' (from validation when mint is unresolved)
         elif route_hint == "direct_copy":
@@ -408,6 +490,8 @@ class ExecutionCoordinator:
         else:
             plan = ROUTE_MAP.get(dex_key, ROUTE_MAP["unknown"])
             self.logger.info(f"[ROUTING] Using ROUTE_MAP for dex='{dex_key}': {plan}")
+            if dex_key == "unknown":
+                self.logger.info("[FAIL-OPEN] DEX unknown - using fallback route order from ROUTE_MAP")
         
         if getattr(self.config, "execution_debug", False):
             self.logger.debug(f"[COPY BUY] Plan: {plan}")
@@ -482,6 +566,11 @@ class ExecutionCoordinator:
         logger.error(f"   - Executors attempted: {', '.join(executors_attempted)}")
         logger.error(f"   - Last error: {last_error}")
         logger.error(f"   - Total execution time: {execution_time:.2f}s")
+        logger.info(f"[FAIL-OPEN] Despite all executor failures, attempt was made using fallback routes")
+        logger.info(f"[FAIL-OPEN] Trade detection triggered execution with normalized values:")
+        logger.info(f"   - Amount: {amount_sol} SOL (from config or trade_info)")
+        logger.info(f"   - DEX: {dex_key} (normalized)")
+        logger.info(f"   - Route: {plan}")
         return exec_err("all_executors", f"All executors failed. Last error: {last_error}")
 
     
