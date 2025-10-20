@@ -22,7 +22,14 @@ All 6 files that construct `MessageV0` or `VersionedTransaction` objects now pro
 A Python script that automatically injects compute budget calls:
 
 ```bash
+# Example with specific override values (not defaults)
 python tools/patch_compute_budget.py --root . --cu-limit 1000000 --cu-price 5000
+
+# Note: Actual defaults from utils/fees.py are:
+#   - DEFAULT_COMPUTE_UNIT_LIMIT = 400,000
+#   - DEFAULT_COMPUTE_UNIT_PRICE = 1,000
+# The values shown here (1,000,000 and 5,000) were used during implementation
+# as conservative overrides to ensure sufficient compute budget.
 ```
 
 **Features:**
@@ -81,20 +88,24 @@ new_instructions = with_compute_budget(new_instructions, cu_limit=1000000, cu_pr
 These files already had compute budget implemented:
 
 1. **mev_meteora_executor.py** ✅
-   - Multiple transaction construction paths
-   - All use `with_compute_budget()`
+   - Multiple transaction construction paths (lines 250, 503, 1219, 1242, 1491)
+   - Example: `instructions = with_compute_budget(instructions)`
 
 2. **mev_jupiter_executor.py** ✅
-   - ATA creation path uses compute budget
+   - ATA creation path (line 746)
+   - Example: `instructions = with_compute_budget([create_ata_ix])`
 
 3. **mev_direct_sell_executor.py** ✅
-   - Direct sell builder uses compute budget
+   - Direct sell builder (line 66)
+   - Example: `instructions = with_compute_budget([])`
 
 4. **mev_advanced_bot_executor.py** ✅
-   - Advanced MEV transactions use compute budget
+   - Advanced MEV transactions (lines 200-204)
+   - Example: `instructions = with_compute_budget(instructions, compute_unit_limit=params.compute_units, compute_unit_price=params.priority_fee)`
 
 5. **complete_mev_bot.py** ✅
-   - Buy transactions use compute budget
+   - Buy transactions (lines 145-149)
+   - Example: `instructions = with_compute_budget([buy_instruction], compute_unit_limit=self.config.compute_limit, compute_unit_price=self.config.priority_fee)`
 
 ## Verification Results
 
@@ -165,6 +176,10 @@ instructions = [
 ]
 
 # Add compute budget (required!)
+# Option 1: Use environment variables or defaults (recommended)
+instructions = with_compute_budget(instructions)
+
+# Option 2: Override with specific values if needed
 instructions = with_compute_budget(instructions, cu_limit=1000000, cu_price=5000)
 
 # Build transaction
@@ -198,9 +213,17 @@ python test_compute_budget_integration.py
 
 ### Compute Budget Parameters
 
-Default values used in the implementation:
-- **CU Limit:** 1,000,000 compute units
-- **CU Price:** 5,000 micro-lamports per CU
+**Values used during implementation** (transaction_cloner.py):
+- **CU Limit:** 1,000,000 compute units (override value)
+- **CU Price:** 5,000 micro-lamports per CU (override value)
+
+**Default values from utils/fees.py:**
+- **DEFAULT_COMPUTE_UNIT_LIMIT:** 400,000 compute units
+- **DEFAULT_COMPUTE_UNIT_PRICE:** 1,000 micro-lamports per CU
+
+Note: The implementation uses higher values (1M CU limit, 5K price) to ensure
+sufficient compute budget for complex transactions. When called without parameters,
+`with_compute_budget()` uses the lower defaults from environment or utils/fees.py.
 
 ### Environment Variables
 
