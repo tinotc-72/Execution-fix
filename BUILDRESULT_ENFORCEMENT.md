@@ -6,6 +6,8 @@ This document describes the BuildResult enforcement pattern and tools for mainta
 
 All builder functions in this codebase should return a structured `BuildResult` instead of `None` to provide clear failure reasons and enable consistent error handling.
 
+**Important:** The automated patcher only modifies functions that explicitly declare `BuildResult` as their return type. Functions returning `Optional[VersionedTransaction]` or other types require manual refactoring.
+
 ### BuildResult Structure
 
 ```python
@@ -13,7 +15,7 @@ All builder functions in this codebase should return a structured `BuildResult` 
 class BuildResult:
     ok: bool                              # True if build succeeded
     tx: Optional[VersionedTransaction]    # The transaction if successful
-    reason: Optional[str] = None          # Failure reason if ok=False
+    reason: Optional[str] = None          # Failure reason (REQUIRED when ok=False)
     dex: Optional[str] = None             # DEX name (jupiter, meteora, etc.)
     action: Optional[str] = None          # Action (buy, sell)
 ```
@@ -85,8 +87,6 @@ git diff
 - Replaces them with `return BuildResult(ok=False, tx=None, reason="builder failed (added by patch)")`
 - Injects `from models.build_result import BuildResult` if missing
 
-**Note:** The patcher only modifies functions that explicitly declare `BuildResult` as their return type. Functions returning `Optional[VersionedTransaction]` require manual refactoring.
-
 ### 2. Verification Tool (`tools/verify_buildresult.py`)
 
 Verifies that all builder functions follow the BuildResult pattern correctly.
@@ -113,7 +113,7 @@ No 'return None' statements found in BuildResult functions.
 
 As of the latest verification:
 
-- ✅ **2 files** with builder functions: `mev_jupiter_executor.py`, `mev_meteora_executor.py`
+- ✅ **3 files** with builder functions: `mev_jupiter_executor.py`, `mev_meteora_executor.py`, `mev_raydium_executor.py`
 - ✅ **All builder functions** return `BuildResult` properly
 - ✅ **No `return None`** statements in builder functions
 - ✅ **Executors check `.ok`** property correctly
@@ -123,6 +123,8 @@ Main builder functions:
 - `mev_jupiter_executor.build_buy_tx()` → Returns `BuildResult`
 - `mev_jupiter_executor.build_sell_tx()` → Returns `BuildResult`
 - `mev_meteora_executor.build_and_sign()` → Returns `BuildResult`
+- `mev_raydium_executor.try_raydium_buy()` → Returns `BuildResult`
+- `mev_raydium_executor.try_raydium_sell_all()` → Returns `BuildResult`
 
 Executors that check `.ok`:
 - `execution_coordinator.py` - Checks `build_result.ok` before using transaction
