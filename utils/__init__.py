@@ -14,6 +14,11 @@ from .ata import (
     SYSTEM_PROGRAM_ID,
     RENT_SYSVAR_ID,
 )
+from .ata_enforce import (
+    rpc_call,
+    ata_exists,
+    ensure_ata_ixs,
+)
 
 __all__ = [
     'run_with_watchdog',
@@ -30,4 +35,7 @@ __all__ = [
     'SPL_TOKEN_PROGRAM_ID',
     'SYSTEM_PROGRAM_ID',
     'RENT_SYSVAR_ID',
+    'rpc_call',
+    'ata_exists',
+    'ensure_ata_ixs',
 ]
