@@ -639,7 +639,12 @@ class MEVDirectSellExecutor:
         return None
 
     async def _submit_via_rpc(self, serialized_tx: bytes) -> Optional[str]:
-        """Submit transaction via RPC (legacy method - kept for compatibility)"""
+        """
+        Submit transaction via RPC (DEPRECATED - legacy method kept for compatibility only).
+        
+        This method is no longer used. All RPC submissions now use the unified submit helper
+        in executors.submit.send_and_confirm_v0_tx for consistent confirmation and logging.
+        """
         try:
             import base64
             
@@ -678,7 +683,12 @@ class MEVDirectSellExecutor:
             return None
 
     async def _submit_via_rpc_fixed(self, serialized_tx: bytes) -> Optional[str]:
-        """Submit transaction via RPC with proper AsyncClient and confirmation"""
+        """
+        Submit transaction via RPC with proper AsyncClient (DEPRECATED).
+        
+        This method is no longer used. All RPC submissions now use the unified submit helper
+        in executors.submit.send_and_confirm_v0_tx for consistent confirmation and logging.
+        """
         try:
             # Create RPCClient for proper async RPC calls
             from utils import RPCClient

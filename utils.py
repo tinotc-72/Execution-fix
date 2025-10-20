@@ -203,7 +203,11 @@ async def get_balance(pubkey: str) -> Dict[str, Any]:
 
 async def send_raw_transaction(serialized_tx: bytes, skip_preflight: bool = False, preflight_commitment: str = "processed", max_retries: int = 0) -> Dict[str, Any]:
     """
-    Send a raw transaction to the Solana network
+    Send a raw transaction to the Solana network.
+    
+    DEPRECATED: This function is kept for backward compatibility only.
+    New code should use executors.submit.send_and_confirm_v0_tx() for consistent
+    confirmation polling and structured logging.
     """
     import base64
     try:
