@@ -49,13 +49,16 @@ NOTE: meta.loadedAddresses contains the resolved addresses, not the ALT referenc
       Always use message.addressTableLookups to get the actual ALT addresses.
 """
 from __future__ import annotations
+import logging
 import requests
 from typing import List, Dict, Any
 from solders.pubkey import Pubkey
 from solders.address_lookup_table_account import AddressLookupTableAccount
 
+logger = logging.getLogger(__name__)
 
-def rpc_call(rpc_url: str, method: str, params: list, timeout: float = 10.0) -> dict:
+
+def rpc_call(rpc_url: str, method: str, params: List[Any], timeout: float = 10.0) -> dict:
     """
     Make a synchronous JSON-RPC call to Solana RPC.
     
@@ -97,8 +100,6 @@ def fetch_lookup_table(rpc_url: str, table_pubkey: str) -> List[str]:
         return addrs
     except Exception as e:
         # Log error but return empty list to allow caller to handle gracefully
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Failed to fetch lookup table {table_pubkey}: {e}")
         return []
 
@@ -128,8 +129,6 @@ def build_alts_from_tables(rpc_url: str, table_pubkeys: List[str]) -> List[Addre
             alt_account = AddressLookupTableAccount(key=alt_key, addresses=address_pubkeys)
             alts.append(alt_account)
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Failed to build ALT account for {tbl}: {e}")
             continue
     
