@@ -9,12 +9,15 @@ Features:
 - Confirmation polling with real signature tracking
 - Structured results with signature and final status
 - No placeholders or None returns on success
+- Both async and sync versions available
 """
 
 import asyncio
 import base64
 import logging
+import os
 from typing import Optional, Dict, Any
+from dataclasses import dataclass
 import httpx
 
 try:
@@ -26,6 +29,34 @@ except ImportError:
     Signature = None
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SubmitResult:
+    """Structured result from transaction submission"""
+    ok: bool
+    signature: Optional[str] = None
+    status: Optional[str] = None
+    confirmationStatus: Optional[str] = None
+    error: Optional[str] = None
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'SubmitResult':
+        """Create SubmitResult from legacy dict format"""
+        if data.get("success"):
+            status_dict = data.get("status", {})
+            return cls(
+                ok=True,
+                signature=data.get("signature"),
+                status="confirmed",
+                confirmationStatus=status_dict.get("confirmationStatus", "confirmed")
+            )
+        else:
+            return cls(
+                ok=False,
+                error=data.get("error", "Unknown error"),
+                signature=data.get("signature")
+            )
 
 
 async def send_and_confirm_v0_tx(
@@ -189,3 +220,51 @@ async def send_and_confirm_v0_tx(
         "signature": sig,
         "error": f"Confirmation timeout after {max_retries} attempts"
     }
+
+
+def send_and_confirm_v0_tx_sync(
+    rpc_url: str,
+    vtx: VersionedTransaction,
+    max_retries: int = 5,
+    retry_delay: float = 0.8,
+    timeout: float = 15.0
+) -> SubmitResult:
+    """
+    Synchronous wrapper for send_and_confirm_v0_tx.
+    
+    This is the unified transaction submission helper that all executors should use.
+    It ensures consistent logging, confirmation, and result format.
+    
+    Args:
+        rpc_url: The RPC endpoint URL (can be from os.getenv())
+        vtx: The VersionedTransaction to submit (must be signed)
+        max_retries: Number of confirmation retry attempts (default: 5)
+        retry_delay: Delay between confirmation attempts in seconds (default: 0.8)
+        timeout: HTTP request timeout in seconds (default: 15.0)
+    
+    Returns:
+        SubmitResult with:
+        - ok (bool): True if transaction was submitted and confirmed
+        - signature (str): The transaction signature (present on success)
+        - status (str): Human-readable status ("confirmed", "failed", etc.)
+        - confirmationStatus (str): RPC confirmation status
+        - error (str): Error message (only present on failure)
+    
+    Example usage:
+        res = send_and_confirm_v0_tx_sync(os.getenv("RPC_URL"), versioned_tx)
+        print(f"DEX={dex} action={action} mint={mint} sig={res.signature} status={res.confirmationStatus} ok={res.ok}")
+    """
+    # Run the async function in a new event loop
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result_dict = loop.run_until_complete(
+            send_and_confirm_v0_tx(vtx, rpc_url, max_retries, retry_delay, timeout)
+        )
+        loop.close()
+    except Exception as e:
+        logger.error(f"[SUBMIT_SYNC] Unexpected error: {e}")
+        return SubmitResult(ok=False, error=str(e))
+    
+    # Convert dict result to SubmitResult
+    return SubmitResult.from_dict(result_dict)

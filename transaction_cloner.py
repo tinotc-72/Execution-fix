@@ -313,38 +313,28 @@ class TransactionCloner:
                 except Exception as rebuild_error:
                     logger.error(f"Failed to rebuild transaction for send: {rebuild_error}")
                     return None
-                params = {"encoding": "base64"}
-                params["preflightCommitment"] = "confirmed"
-                params["maxRetries"] = max_retries
-                params["minContextSlot"] = None
-                params["skipPreflight"] = False
-                params["feePayer"] = str(self.payer.pubkey())
-                params["prioritizationFee"] = priority_fee
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "sendTransaction",
-                    "params": [tx_b64, params]
-                }
+                
+                # Use unified submit helper for consistent confirmation and logging
+                from executors.submit import send_and_confirm_v0_tx
+                
                 logger.debug(f"Attempt {attempt+1}: Sending transaction with blockhash: {blockhash_str}")
-                logger.debug(f"Transaction base64: {tx_b64}")
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(self.rpc_url, json=payload) as response:
-                        data = await response.json()
-                        if "result" in data:
-                            logger.info(f"Transaction sent successfully. Signature: {data['result']}")
-                            return data["result"]
-                        elif "error" in data and "Blockhash not found" in str(data["error"]):
-                            logger.warning(f"Blockhash not found, retrying with fresh blockhash... Last blockhash: {blockhash_str}")
-                            logger.error(f"Full error response: {data}")
-                            attempt += 1
-                            continue
-                        else:
-                            logger.error(f"Failed to send transaction: {data}")
-                            logger.error(f"Full error response: {data}")
-                            logger.debug(f"Transaction base64: {tx_b64}")
-                            logger.debug(f"Blockhash used: {blockhash_str}")
-                            return None
+                result = await send_and_confirm_v0_tx(new_tx, self.rpc_url)
+                
+                if result["success"]:
+                    sig = result["signature"]
+                    status = result["status"].get("confirmationStatus", "unknown")
+                    logger.info(f"[SUBMIT] DEX=cloner action=clone mint=unknown sig={sig} status={status} ok=True")
+                    logger.info(f"Transaction sent successfully. Signature: {sig}")
+                    return sig
+                elif "error" in result and "Blockhash not found" in str(result.get("error", "")):
+                    logger.warning(f"Blockhash not found, retrying with fresh blockhash... Last blockhash: {blockhash_str}")
+                    logger.error(f"Full error response: {result}")
+                    attempt += 1
+                    continue
+                else:
+                    logger.error(f"Failed to send transaction: {result}")
+                    logger.error(f"Full error response: {result}")
+                    return None
             except Exception as e:
                 logger.error(f"Exception sending transaction: {e}")
                 attempt += 1

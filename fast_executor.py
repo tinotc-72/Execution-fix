@@ -161,32 +161,21 @@ class FastExecutor:
             return None
     
     async def _submit_via_rpc(self, vtx) -> str | None:
-        """Submit transaction via RPC - parses signature from JSON-RPC 'result' field"""
+        """Submit transaction via RPC using unified helper for consistent confirmation and logging"""
         try:
-            raw = bytes(vtx)
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "sendTransaction",
-                "params": [base64.b64encode(raw).decode(), {"encoding": "base64"}]
-            }
+            from executors.submit import send_and_confirm_v0_tx
             
-            # Copilot TODO: Wrap RPC submission with retries to handle transient failures
-            async def _send_rpc():
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    r = await client.post(self._rpc_url, json=payload)
-                    r.raise_for_status()
-                    return r.json()
-            
-            data = await async_with_retries(_send_rpc, attempts=3, base_sleep=0.5)
-            sig = (data or {}).get("result")
-            if sig:
-                self.logger.info(f"[SUBMIT_RPC] sig={sig}")
+            result = await send_and_confirm_v0_tx(vtx, self._rpc_url)
+            if result["success"]:
+                sig = result["signature"]
+                status = result["status"].get("confirmationStatus", "unknown")
+                self.logger.info(f"[SUBMIT_RPC] sig={sig} status={status} ok=True")
                 return sig
-            self.logger.error(f"[SUBMIT_RPC] no result: {data}")
-            return None
+            else:
+                self.logger.error(f"[SUBMIT_RPC] error: {result.get('error')}")
+                return None
         except Exception as e:
-            self.logger.error(f"[SUBMIT_RPC] error: {e}")
+            self.logger.error(f"[SUBMIT_RPC] exception: {e}")
             return None
 
     async def _confirm_once(self, sig: str) -> dict | None:

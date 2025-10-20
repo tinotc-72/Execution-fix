@@ -121,13 +121,14 @@ class SimpleRPC:
         return self._post("getMinimumBalanceForRentExemption", [span])
 
     def send_transaction(self, txn: VersionedTransaction, skip_preflight: bool = False) -> Signature:
-        raw = base64.b64encode(bytes(txn)).decode()
-        params = [
-            raw,
-            {"encoding": "base64", "skipPreflight": skip_preflight, "maxRetries": 3},
-        ]
-        sig_str = self._post("sendTransaction", params)
-        return Signature.from_string(sig_str)
+        """Send transaction using unified helper for consistent confirmation and logging"""
+        from executors.submit import send_and_confirm_v0_tx_sync
+        
+        result = send_and_confirm_v0_tx_sync(self.url, txn)
+        if result.ok:
+            return Signature.from_string(result.signature)
+        else:
+            raise RuntimeError(f"Transaction submission failed: {result.error}")
 
     def confirm_signature(self, sig: Signature, timeout_s: float = 25.0) -> dict:
         # Poll for confirmation
