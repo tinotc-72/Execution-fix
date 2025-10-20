@@ -7,12 +7,12 @@ import websockets
 import json
 import re
 import time
+import logging
 from datetime import datetime, UTC
 from typing import Optional, Dict, Any, List, Callable
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
-from solana.rpc.api import Client
 
 # Only import what's available to avoid import errors
 try:
@@ -31,97 +31,856 @@ from solders.pubkey import Pubkey
 # Optional: import Helius SDK or custom decoder modules here
 # from helius import decode_transaction, decode_instruction
 
+# Constants for enhanced log parsing
+JUPITER_PID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+JUPITER_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+METEORA_AGGREGATOR = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+# Meteora program IDs for DEX detection
+METEORA_PROGRAM_IDS = {
+    "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",  # Meteora AMM (seen in our log)
+    "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",  # alt id observed in your executor init
+}
+
+def merge_parsed_fields(trade_info: dict, parsed: dict) -> None:
+    """
+    Merge parser-detected fields into trade_info if the destination fields are empty/unknown.
+    
+    This prevents downstream code from clobbering fields that the parser already identified.
+    Only updates fields if they are currently None, empty string, "unknown", or "PENDING_ANALYSIS".
+    
+    Args:
+        trade_info: The trade dictionary to update
+        parsed: The parser result dictionary (may contain parsed_tx wrapper)
+    """
+    if not parsed:
+        return
+    
+    # Some code paths store parser result under "parsed_tx"
+    if isinstance(parsed.get("parsed_tx"), dict):
+        parsed = parsed["parsed_tx"]
+    
+    # normalize names from parser → trade_info
+    mapping = {
+        "dex": "dex",
+        "action": "action",
+        "token_mint": "token_mint",
+        "mint": "token_mint",
+        "wallet_address": "wallet_address",
+        "signature": "signature",
+    }
+    for src, dst in mapping.items():
+        val = parsed.get(src)
+        if val and trade_info.get(dst) in (None, "", "unknown", "PENDING_ANALYSIS"):
+            trade_info[dst] = val
+
+def enhance_from_logs_and_meta(trade: dict) -> dict:
+    """
+    Enhanced log/meta-based parser for Jupiter/Meteora transactions.
+    Fills in dex/action/mint/amount fields from logs and metadata when signatures are not available.
+    """
+    logs = trade.get("logs") or []
+    meta = trade.get("meta") or {}
+    log_line = " | ".join(logs)
+
+    # DEX detection
+    if JUPITER_PROGRAM in log_line:
+        trade["dex"] = "jupiter"
+    if METEORA_AGGREGATOR in log_line:
+        # If both appear, prefer the aggregator recorded under Jupiter router: we'll still route fine.
+        trade.setdefault("dex", "meteora")
+
+    # Action (coarse but robust) - set action for any detected DEX
+    if ("Instruction: RouteV2" in log_line or "Instruction: Swap" in log_line or 
+        JUPITER_PROGRAM in log_line or METEORA_AGGREGATOR in log_line):
+        # We can't always infer buy vs sell without wallet POV; default to 'buy'
+        trade.setdefault("action", "buy")
+
+    # Mint inference: choose the *non-USDC* token in postTokenBalances if present
+    ptb = (meta.get("postTokenBalances") or []) + (meta.get("preTokenBalances") or [])
+    candidate = None
+    for b in ptb:
+        mint = b.get("mint")
+        if mint and mint != USDC_MINT:
+            candidate = mint
+            break
+    if candidate:
+        trade["mint"] = candidate
+
+    # Amount default for buys if not present (budgeted buy)
+    trade.setdefault("amount", trade.get("budget_sol", 0.001))
+    return trade
+
 class ModularDEXDecoder:
     """
-    Modular DEX decoder registry. Add new DEX decoders here for best-practice extensibility.
+    Enhanced Modular DEX decoder registry with comprehensive action detection.
+    Flags swap/buy/sell instructions even when balance delta is not detected.
     """
     def __init__(self):
         self.decoders = {}
         self.register_default_decoders()
+        
+        # Enhanced DEX program mapping for comprehensive detection
+        self.dex_programs = {
+            # Jupiter
+            "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4": "Jupiter",
+            "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB": "Jupiter",
+            
+            # Raydium
+            "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "Raydium",
+            "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C": "Raydium", 
+            "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK": "Raydium",
+            "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1": "Raydium",
+            
+            # Pump.fun
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun",
+            "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": "Pump.fun",
+            
+            # Orca
+            "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc": "Orca",
+            "SwaPpA9LAaLfeLi3a68M4DjnLqgtticKg6CnyNwgAC8": "Orca",
+            
+            # Meteora
+            "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN": "Meteora",
+            "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB": "Meteora",
+            
+            # Other DEXs
+            "ALPHAQmeA7bjrVuccPsYPiCvsi428SNwte66Srvs4pHA": "Alpha",
+        }
+        
+        # Action detection patterns for instruction data and logs
+        self.action_patterns = {
+            'buy': ['buy', 'purchase', 'acquire', 'in', 'deposit'],
+            'sell': ['sell', 'dispose', 'out', 'withdraw'],
+            'swap': ['swap', 'exchange', 'route', 'trade', 'convert'],
+        }
 
     def register_default_decoders(self):
         self.decoders["Jupiter"] = self.decode_jupiter
         self.decoders["Raydium"] = self.decode_raydium
         self.decoders["Pump.fun"] = self.decode_pumpfun
+        self.decoders["Orca"] = self.decode_orca
+        self.decoders["Meteora"] = self.decode_meteora
+        self.decoders["Alpha"] = self.decode_alpha
         self.decoders["ALT"] = self.decode_alt
 
     def decode(self, dex_type, tx_data):
         decoder = self.decoders.get(dex_type, self.decode_unknown)
-        return decoder(tx_data)
+        result = decoder(tx_data)
+        
+        # Enhanced: Always attempt action detection regardless of balance data
+        action_info = self._detect_action_from_instructions(tx_data, dex_type)
+        result.update(action_info)
+        
+        return result
+    
+    def _detect_action_from_instructions(self, tx_data, dex_type):
+        """
+        Enhanced action detection from instruction analysis.
+        Works independently of balance delta detection.
+        """
+        try:
+            instructions = tx_data.get("instructions", [])
+            logs = tx_data.get("logs", []) or []  # Handle None logs
+            meta = tx_data.get("meta", {})
+            
+            # Add log messages from meta if available
+            if meta and "logMessages" in meta and meta["logMessages"]:
+                logs.extend(meta["logMessages"])
+            
+            detected_actions = []
+            instruction_details = []
+            
+            # Analyze each instruction for trade patterns
+            for i, instruction in enumerate(instructions):
+                program_id = instruction.get("programId")
+                if not program_id:
+                    continue
+                
+                # Check if this is a known DEX program
+                if program_id in self.dex_programs:
+                    dex_name = self.dex_programs[program_id]
+                    
+                    # Analyze instruction for action patterns
+                    action_result = self._analyze_instruction_for_action(instruction, logs, dex_name, i)
+                    if action_result:
+                        detected_actions.append(action_result)
+                        instruction_details.append({
+                            'instruction_index': i,
+                            'program_id': program_id,
+                            'dex_name': dex_name,
+                            'action': action_result.get('action'),
+                            'confidence': action_result.get('confidence', 0)
+                        })
+            
+            # Determine primary action
+            primary_action = 'unknown'
+            max_confidence = 0
+            
+            if detected_actions:
+                # Find action with highest confidence
+                for action_result in detected_actions:
+                    if action_result.get('confidence', 0) > max_confidence:
+                        max_confidence = action_result['confidence']
+                        primary_action = action_result['action']
+            
+            return {
+                'detected_action': primary_action,
+                'action_confidence': max_confidence,
+                'instruction_actions': detected_actions,
+                'instruction_details': instruction_details,
+                'has_trade_instructions': len(detected_actions) > 0
+            }
+            
+        except Exception as e:
+            return {
+                'detected_action': 'unknown',
+                'action_confidence': 0,
+                'instruction_actions': [],
+                'instruction_details': [],
+                'has_trade_instructions': False,
+                'error': str(e)
+            }
+    
+    def _analyze_instruction_for_action(self, instruction, logs, dex_name, instruction_index):
+        """
+        Analyze individual instruction to determine trade action.
+        """
+        try:
+            # Get instruction data and accounts
+            data = instruction.get("data", "")
+            accounts = instruction.get("accounts", [])
+            
+            # Look for relevant logs for this instruction
+            relevant_logs = [log for log in logs if f"invoke [{instruction_index + 1}]" in log or f"Program {instruction.get('programId')}" in log]
+            
+            # Combine instruction data and logs for analysis
+            analysis_text = f"{data} {' '.join(relevant_logs)}".lower()
+            
+            # Score each action type
+            action_scores = {}
+            for action_type, patterns in self.action_patterns.items():
+                score = sum(1 for pattern in patterns if pattern in analysis_text)
+                if score > 0:
+                    action_scores[action_type] = score
+            
+            # Special handling for different DEXs
+            action_scores = self._apply_dex_specific_logic(dex_name, instruction, logs, action_scores)
+            
+            if not action_scores:
+                return None
+            
+            # Determine best action
+            best_action = max(action_scores.items(), key=lambda x: x[1])
+            confidence = min(best_action[1] * 0.3, 1.0)  # Scale confidence
+            
+            return {
+                'action': best_action[0],
+                'confidence': confidence,
+                'method': f'{dex_name}_instruction_analysis',
+                'scores': action_scores,
+                'relevant_logs': relevant_logs[:3]  # Limit log count
+            }
+            
+        except Exception as e:
+            return None
+    
+    def _apply_dex_specific_logic(self, dex_name, instruction, logs, action_scores):
+        """
+        Apply DEX-specific logic to improve action detection accuracy.
+        """
+        log_text = ' '.join(logs).lower()
+        
+        if dex_name == "Jupiter":
+            # Jupiter-specific patterns
+            if 'sharedaccountsroute' in log_text:
+                action_scores['swap'] = action_scores.get('swap', 0) + 2
+            if 'route' in log_text or 'swap' in log_text:
+                action_scores['swap'] = action_scores.get('swap', 0) + 1
+                
+        elif dex_name == "Pump.fun":
+            # Pump.fun typically involves buying new tokens
+            if 'buy' in log_text or 'purchase' in log_text:
+                action_scores['buy'] = action_scores.get('buy', 0) + 2
+            else:
+                # Default to buy for pump.fun if unclear
+                action_scores['buy'] = action_scores.get('buy', 0) + 1
+                
+        elif dex_name in ["Raydium", "Orca", "Meteora"]:
+            # AMM DEXs - look for swap patterns
+            if any(pattern in log_text for pattern in ['swap', 'trade', 'exchange']):
+                action_scores['swap'] = action_scores.get('swap', 0) + 2
+        
+        return action_scores
 
     def decode_jupiter(self, tx_data):
-        # Robust Jupiter decoder: extract swap details, token mints, amounts, and user wallet
+        """Enhanced Jupiter decoder with comprehensive action detection"""
         instructions = tx_data.get("instructions", [])
         accounts = tx_data.get("accounts", [])
         meta = tx_data.get("meta", {})
+        logs = tx_data.get("logs", []) or []  # Handle None logs
+        if meta and "logMessages" in meta and meta["logMessages"]:
+            logs.extend(meta["logMessages"])
+        
         swap_info = {}
+        action_info = {'action': 'swap', 'confidence': 0}
+        
+        # Parse Jupiter instructions
+        jupiter_instructions_found = 0
         for ix in instructions:
-            if ix.get("programId") == "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4":
+            if ix.get("programId") in ["JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"]:
+                jupiter_instructions_found += 1
                 swap_info["in_token"] = ix.get("accounts", [])[0] if ix.get("accounts") else None
                 swap_info["out_token"] = ix.get("accounts", [])[1] if len(ix.get("accounts", [])) > 1 else None
                 swap_info["amount_in"] = ix.get("data", {}).get("amountIn")
                 swap_info["amount_out_min"] = ix.get("data", {}).get("minOut")
+        
+        # Enhanced action detection
+        if jupiter_instructions_found > 0:
+            log_text = ' '.join(logs).lower()
+            confidence = 0.7  # Base confidence for Jupiter swap
+            
+            # Boost confidence based on log analysis
+            if any(pattern in log_text for pattern in ['sharedaccountsroute', 'route', 'swap']):
+                confidence += 0.2
+            if 'jupiter' in log_text:
+                confidence += 0.1
+                
+            action_info = {'action': 'swap', 'confidence': min(confidence, 1.0)}
+        
         swap_info["user_wallet"] = tx_data.get("signer", None)
         swap_info["fee"] = meta.get("fee", None)
+        swap_info.update(action_info)
+        
         return {"dex": "Jupiter", "parsed": True, "swap_info": swap_info}
 
     def decode_raydium(self, tx_data):
-        # Robust Raydium decoder: extract pool, token mints, amounts, and user wallet
+        """Enhanced Raydium decoder with comprehensive action detection"""
         instructions = tx_data.get("instructions", [])
         accounts = tx_data.get("accounts", [])
         meta = tx_data.get("meta", {})
+        logs = tx_data.get("logs", [])
+        if meta and "logMessages" in meta:
+            logs.extend(meta["logMessages"])
+        
         raydium_info = {}
+        action_info = {'action': 'swap', 'confidence': 0}
+        
+        # Parse Raydium instructions (AMM, CPMM, CLMM)
+        raydium_programs = [
+            "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # AMM
+            "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",  # CPMM
+            "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",  # CLMM
+            "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1"   # Legacy
+        ]
+        
+        raydium_instructions_found = 0
         for ix in instructions:
-            if ix.get("programId") in ["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"]:
+            if ix.get("programId") in raydium_programs:
+                raydium_instructions_found += 1
                 raydium_info["pool"] = ix.get("accounts", [])[0] if ix.get("accounts") else None
                 raydium_info["in_token"] = ix.get("accounts", [])[1] if len(ix.get("accounts", [])) > 1 else None
                 raydium_info["out_token"] = ix.get("accounts", [])[2] if len(ix.get("accounts", [])) > 2 else None
                 raydium_info["amount_in"] = ix.get("data", {}).get("amountIn")
                 raydium_info["amount_out_min"] = ix.get("data", {}).get("minOut")
+        
+        # Enhanced action detection
+        if raydium_instructions_found > 0:
+            log_text = ' '.join(logs).lower()
+            confidence = 0.6  # Base confidence for Raydium swap
+            action = 'swap'
+            
+            # Analyze logs for specific actions
+            if any(pattern in log_text for pattern in ['buy', 'purchase', 'acquire']):
+                action = 'buy'
+                confidence += 0.2
+            elif any(pattern in log_text for pattern in ['sell', 'dispose', 'withdraw']):
+                action = 'sell'
+                confidence += 0.2
+            elif any(pattern in log_text for pattern in ['swap', 'trade', 'exchange']):
+                confidence += 0.2
+            
+            if 'raydium' in log_text:
+                confidence += 0.1
+                
+            action_info = {'action': action, 'confidence': min(confidence, 1.0)}
+        
         raydium_info["user_wallet"] = tx_data.get("signer", None)
         raydium_info["fee"] = meta.get("fee", None)
+        raydium_info.update(action_info)
+        
         return {"dex": "Raydium", "parsed": True, "raydium_info": raydium_info}
 
     def decode_pumpfun(self, tx_data):
-        # Robust Pump.fun decoder: extract token mint, buy/sell amounts, and user wallet
+        """Enhanced Pump.fun decoder with comprehensive action detection"""
         instructions = tx_data.get("instructions", [])
         accounts = tx_data.get("accounts", [])
         meta = tx_data.get("meta", {})
+        logs = tx_data.get("logs", [])
+        if meta and "logMessages" in meta:
+            logs.extend(meta["logMessages"])
+        
         pumpfun_info = {}
+        action_info = {'action': 'buy', 'confidence': 0}  # Default to buy for pump.fun
+        
+        # Parse Pump.fun instructions
+        pumpfun_programs = [
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+            "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+        ]
+        
+        pumpfun_instructions_found = 0
         for ix in instructions:
-            if ix.get("programId") in ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"]:
+            if ix.get("programId") in pumpfun_programs:
+                pumpfun_instructions_found += 1
                 pumpfun_info["token_mint"] = ix.get("accounts", [])[0] if ix.get("accounts") else None
                 pumpfun_info["amount_in"] = ix.get("data", {}).get("amountIn")
                 pumpfun_info["amount_out_min"] = ix.get("data", {}).get("minOut")
+        
+        # Enhanced action detection - Pump.fun is typically for buying new tokens
+        if pumpfun_instructions_found > 0:
+            log_text = ' '.join(logs).lower()
+            confidence = 0.8  # High base confidence for pump.fun buy
+            action = 'buy'  # Default action
+            
+            # Analyze logs for specific actions
+            if any(pattern in log_text for pattern in ['sell', 'dispose', 'out', 'withdraw']):
+                action = 'sell'
+                confidence = 0.7  # Lower confidence for sells on pump.fun
+            elif any(pattern in log_text for pattern in ['buy', 'purchase', 'acquire', 'in']):
+                action = 'buy'
+                confidence += 0.1
+            
+            if 'pump' in log_text or 'pumpfun' in log_text:
+                confidence += 0.1
+                
+            action_info = {'action': action, 'confidence': min(confidence, 1.0)}
+        
         pumpfun_info["user_wallet"] = tx_data.get("signer", None)
         pumpfun_info["fee"] = meta.get("fee", None)
+        pumpfun_info.update(action_info)
+        
         return {"dex": "Pump.fun", "parsed": True, "pumpfun_info": pumpfun_info}
 
+    def decode_orca(self, tx_data):
+        """Enhanced Orca decoder with action detection"""
+        instructions = tx_data.get("instructions", [])
+        meta = tx_data.get("meta", {})
+        logs = tx_data.get("logs", [])
+        if meta and "logMessages" in meta:
+            logs.extend(meta["logMessages"])
+        
+        orca_info = {}
+        action_info = {'action': 'swap', 'confidence': 0}
+        
+        orca_programs = [
+            "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",  # Whirlpools
+            "SwaPpA9LAaLfeLi3a68M4DjnLqgtticKg6CnyNwgAC8"   # Legacy Orca
+        ]
+        
+        orca_instructions_found = 0
+        for ix in instructions:
+            if ix.get("programId") in orca_programs:
+                orca_instructions_found += 1
+                accounts = ix.get("accounts", [])
+                orca_info["pool"] = accounts[0] if accounts else None
+                orca_info["in_token"] = accounts[1] if len(accounts) > 1 else None
+                orca_info["out_token"] = accounts[2] if len(accounts) > 2 else None
+        
+        if orca_instructions_found > 0:
+            log_text = ' '.join(logs).lower()
+            confidence = 0.6
+            action = 'swap'
+            
+            if any(pattern in log_text for pattern in ['swap', 'whirlpool']):
+                confidence += 0.2
+            if 'orca' in log_text:
+                confidence += 0.1
+                
+            action_info = {'action': action, 'confidence': min(confidence, 1.0)}
+        
+        orca_info["user_wallet"] = tx_data.get("signer", None)
+        orca_info.update(action_info)
+        
+        return {"dex": "Orca", "parsed": True, "orca_info": orca_info}
+    
+    def decode_meteora(self, tx_data):
+        """Enhanced Meteora decoder with action detection"""
+        instructions = tx_data.get("instructions", [])
+        meta = tx_data.get("meta", {})
+        logs = tx_data.get("logs", [])
+        if meta and "logMessages" in meta:
+            logs.extend(meta["logMessages"])
+        
+        meteora_info = {}
+        action_info = {'action': 'swap', 'confidence': 0}
+        
+        meteora_programs = [
+            "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",
+            "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB"
+        ]
+        
+        meteora_instructions_found = 0
+        for ix in instructions:
+            if ix.get("programId") in meteora_programs:
+                meteora_instructions_found += 1
+                accounts = ix.get("accounts", [])
+                meteora_info["pool"] = accounts[0] if accounts else None
+        
+        if meteora_instructions_found > 0:
+            log_text = ' '.join(logs).lower()
+            confidence = 0.6
+            
+            if any(pattern in log_text for pattern in ['swap', 'meteora']):
+                confidence += 0.2
+                
+            action_info = {'action': 'swap', 'confidence': min(confidence, 1.0)}
+        
+        meteora_info["user_wallet"] = tx_data.get("signer", None)
+        meteora_info.update(action_info)
+        
+        return {"dex": "Meteora", "parsed": True, "meteora_info": meteora_info}
+    
+    def decode_alpha(self, tx_data):
+        """Enhanced Alpha DEX decoder with action detection"""
+        instructions = tx_data.get("instructions", [])
+        meta = tx_data.get("meta", {})
+        logs = tx_data.get("logs", [])
+        if meta and "logMessages" in meta:
+            logs.extend(meta["logMessages"])
+        
+        alpha_info = {}
+        action_info = {'action': 'swap', 'confidence': 0}
+        
+        alpha_instructions_found = 0
+        for ix in instructions:
+            if ix.get("programId") == "ALPHAQmeA7bjrVuccPsYPiCvsi428SNwte66Srvs4pHA":
+                alpha_instructions_found += 1
+                accounts = ix.get("accounts", [])
+                alpha_info["pool"] = accounts[0] if accounts else None
+        
+        if alpha_instructions_found > 0:
+            confidence = 0.6
+            action_info = {'action': 'swap', 'confidence': confidence}
+        
+        alpha_info["user_wallet"] = tx_data.get("signer", None)
+        alpha_info.update(action_info)
+        
+        return {"dex": "Alpha", "parsed": True, "alpha_info": alpha_info}
+
     def decode_alt(self, tx_data):
-        # Robust ALT decoder: extract address lookup table usage and resolved accounts
+        """ALT decoder: extract address lookup table usage and resolved accounts"""
         alt_info = {}
         alt_info["lookup_tables"] = tx_data.get("addressTableLookups", [])
         alt_info["resolved_accounts"] = tx_data.get("resolvedAccounts", [])
         alt_info["user_wallet"] = tx_data.get("signer", None)
+        alt_info["action"] = "alt_usage"
+        alt_info["confidence"] = 0.5
         return {"dex": "ALT", "parsed": True, "alt_info": alt_info}
 
     def decode_unknown(self, tx_data):
-        # Fallback for unknown DEXs
-        return {"dex": "Unknown", "parsed": False}
+        """Fallback for unknown DEXs with basic action attempt"""
+        unknown_info = {
+            "user_wallet": tx_data.get("signer", None),
+            "action": "unknown",
+            "confidence": 0
+        }
+        
+        # Try to detect any trading patterns in logs
+        logs = tx_data.get("logs", [])
+        meta = tx_data.get("meta", {})
+        if meta and "logMessages" in meta:
+            logs.extend(meta["logMessages"])
+        
+        if logs:
+            log_text = ' '.join(logs).lower()
+            if any(pattern in log_text for pattern in ['swap', 'trade', 'buy', 'sell']):
+                unknown_info["action"] = "possible_trade"
+                unknown_info["confidence"] = 0.3
+        
+        return {"dex": "Unknown", "parsed": False, "unknown_info": unknown_info}
 
+
+def parse_from_logs_and_meta(trade):
+    """
+    Enhanced log parsing to extract Pump.fun and other DEX details from logs and metadata
+    when signatures are not available. Now includes Jupiter/Meteora enhancement.
+    """
+    # FIRST: Apply the new Jupiter/Meteora enhancer
+    trade = enhance_from_logs_and_meta(trade)
+    
+    logs = trade.get("logs") or []
+    meta = trade.get("meta") or {}
+    
+    # Extend logs with meta logMessages if available
+    if meta and "logMessages" in meta and meta["logMessages"]:
+        logs.extend(meta["logMessages"])
+
+    # 1) Detect Pump.fun (only if not already detected by enhancer)
+    if not trade.get("dex"):
+        is_pumpfun = any("BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW" in str(s) for s in logs)
+        if is_pumpfun:
+            trade["dex"] = "pumpfun"
+            trade["dex_type"] = "pumpfun"
+
+    # 2) Action detection from logs (only if not already set by enhancer)
+    if not trade.get("action"):
+        for log in logs:
+            log_str = str(log)
+            if "Instruction: PumpBuy" in log_str:
+                trade["action"] = "buy"
+                break
+            elif "Instruction: PumpSell" in log_str:
+                trade["action"] = "sell"
+                break
+            elif "buy" in log_str.lower() and ("pump" in log_str.lower() or "swap" in log_str.lower()):
+                trade["action"] = "buy"
+            elif "sell" in log_str.lower() and ("pump" in log_str.lower() or "swap" in log_str.lower()):
+                trade["action"] = "sell"
+
+    # 3) Mint extraction (only if not already set by enhancer)
+    if not trade.get("mint"):
+        ptb = meta.get("postTokenBalances") or []
+        if ptb and len(ptb) > 0 and "mint" in ptb[0]:
+            trade["mint"] = ptb[0]["mint"]
+            trade["token_mint"] = ptb[0]["mint"]
+        else:
+            # Try to extract mint from logs (look for token addresses)
+            for log in logs:
+                log_str = str(log)
+                # Look for mint addresses (typical Solana token format)
+                if "pump" in log_str and len([word for word in log_str.split() if len(word) > 40]) > 0:
+                    # Find potential token addresses in the log
+                    words = log_str.split()
+                    for word in words:
+                        if len(word) > 40 and word.isalnum():  # Likely a Solana address
+                            trade["mint"] = word
+                            trade["token_mint"] = word
+                            break
+
+    # 4) Amount estimation (only if not already set by enhancer)
+    if not trade.get("amount"):
+        # If it's a sell: try to derive from token balance changes
+        if trade.get("action") == "sell":
+            pre_balances = meta.get("preTokenBalances") or []
+            post_balances = meta.get("postTokenBalances") or []
+            if pre_balances and post_balances:
+                # Calculate token amount difference
+                for pre, post in zip(pre_balances, post_balances):
+                    if pre.get("mint") == post.get("mint"):
+                        pre_amount = float(pre.get("uiTokenAmount", {}).get("uiAmount") or 0)
+                        post_amount = float(post.get("uiTokenAmount", {}).get("uiAmount") or 0)
+                        if pre_amount > post_amount:  # Tokens decreased (sell)
+                            trade["amount"] = pre_amount - post_amount
+                            break
+        
+        # If it's a buy: use configured budget if no amount specified
+        if trade.get("action") == "buy" and trade.get("amount") is None:
+            trade["amount"] = trade.get("budget_sol", 0.001)  # Default buy amount
+
+    return trade
 
 class WalletTransactionParser:
     def __init__(self, rpc_client):
         self.rpc_client = rpc_client
         self.dex_decoder = ModularDEXDecoder()
+        self.logger = logging.getLogger(__name__)
 
     def parse_transaction(self, tx_data):
         """
-        Main entrypoint for transaction parsing. Decodes transaction, meta, and accounts.
-        Uses modular DEX decoder registry. Legacy fallback logic removed.
+        Main entrypoint for transaction parsing. Always returns standardized format.
+        Ensures consistent output structure with required fields.
         """
+        # Import normalize_dex function
+        try:
+            from execution_coordinator import normalize_dex
+        except ImportError:
+            # Fallback if import fails
+            def normalize_dex(label: str) -> str:
+                if not label:
+                    return "unknown"
+                return label.lower()
+        
+        # Initialize parsed result
+        parsed = {}
+        
+        # Get transaction structure - handle both formats
+        tx = tx_data
+        if "transaction" in tx_data:
+            tx = tx_data.get("transaction", {})
+        
+        # Get message and meta for DEX detection
+        msg = tx.get("message", {})
+        instrs = msg.get("instructions") or []
+        meta = tx_data.get("meta") or {}
+        
+        # 1) DEX detection - Detect Jupiter
+        for ix in instrs:
+            pid = ix.get("programId") or ix.get("program")
+            if pid == JUPITER_PID:
+                parsed["dex"] = "jupiter"
+                parsed.setdefault("action", "swap")
+                self.logger.info(f"✅ [PARSER] Jupiter detected: programId={pid[:8]}...")
+                break
+        
+        # Check logs for Jupiter if not detected by programId
+        if parsed.get("dex") != "jupiter" and meta:
+            logs = " ".join(meta.get("logMessages") or [])
+            if "SharedAccountsRouteV2" in logs or "JUP6LkbZ" in logs:
+                parsed["dex"] = "jupiter"
+                parsed.setdefault("action", "swap")
+                self.logger.info(f"✅ [PARSER] Jupiter detected from logs")
+        
+        # 2) DEX detection - Detect Meteora (if Jupiter not detected)
+        if not parsed.get("dex"):
+            for ix in instrs:
+                pid = ix.get("programId") or ix.get("program")
+                if pid in METEORA_PROGRAM_IDS:
+                    parsed["dex"] = "meteora"
+                    if parsed.get("action") in (None, "unknown"):
+                        parsed["action"] = "swap"
+                    self.logger.info(f"✅ [PARSER] Meteora detected: programId={pid[:8]}...")
+                    break
+        
+        # 3) wallet_address: signer or fee payer (index 0)
+        keys = msg.get("accountKeys") or []
+        # When keys are dicts with .signer:
+        signers = [k["pubkey"] for k in keys if isinstance(k, dict) and k.get("signer")]
+        if signers:
+            parsed["wallet_address"] = signers[0]
+        elif keys:
+            # v0 messages typically: fee payer at index 0
+            parsed["wallet_address"] = keys[0] if isinstance(keys[0], str) else keys[0].get("pubkey")
+        
+        # Get original decoder result
         dex_type = self.identify_dex(tx_data)
-        return self.dex_decoder.decode(dex_type, tx_data)
+        decoder_result = self.dex_decoder.decode(dex_type, tx_data)
+        
+        # Extract standardized information
+        signature = tx_data.get("signature", None)
+        
+        # Extract DEX from decoder result or use parsed dex
+        dex = parsed.get("dex")
+        if not dex:
+            dex_raw = decoder_result.get("dex", dex_type)
+            # Ensure proper normalization (handle case-insensitive matching)
+            if dex_raw:
+                dex = normalize_dex(dex_raw.lower().replace(".", ""))
+            else:
+                dex = "unknown"
+        
+        # Extract action from decoder result or use parsed action
+        action = parsed.get("action", "unknown")
+        mint = None
+        amount = None
+        wallet_address = parsed.get("wallet_address")
+        
+        # Get action and other info from the decoder result based on DEX type (only if not already set)
+        if action == "unknown":
+            if dex == "jupiter":
+                swap_info = decoder_result.get("swap_info", {})
+                action = swap_info.get("action", "swap")
+                mint = swap_info.get("out_token")  # For swaps, we care about the output token
+                amount = swap_info.get("amount_in")
+                if not wallet_address:
+                    wallet_address = swap_info.get("user_wallet")
+                
+            elif dex == "raydium":
+                raydium_info = decoder_result.get("raydium_info", {})
+                action = raydium_info.get("action", "swap")
+                mint = raydium_info.get("out_token") or raydium_info.get("in_token")
+                amount = raydium_info.get("amount_in")
+                if not wallet_address:
+                    wallet_address = raydium_info.get("user_wallet")
+                
+            elif dex == "pumpfun":
+                pumpfun_info = decoder_result.get("pumpfun_info", {})
+                action = pumpfun_info.get("action", "buy")
+                mint = pumpfun_info.get("token_mint")
+                amount = pumpfun_info.get("amount_in")
+                if not wallet_address:
+                    wallet_address = pumpfun_info.get("user_wallet")
+                
+            elif dex == "meteora":
+                meteora_info = decoder_result.get("meteora_info", {})
+                action = meteora_info.get("action", "swap")
+                if not wallet_address:
+                    wallet_address = meteora_info.get("user_wallet")
+                
+            elif dex == "orca":
+                orca_info = decoder_result.get("orca_info", {})
+                action = orca_info.get("action", "swap")
+                if not wallet_address:
+                    wallet_address = orca_info.get("user_wallet")
+                
+            else:
+                # Unknown DEX - try to extract from unknown_info
+                unknown_info = decoder_result.get("unknown_info", {})
+                action = unknown_info.get("action", "unknown")
+                if not wallet_address:
+                    wallet_address = unknown_info.get("user_wallet")
+        
+        # Fallback: try to extract from general decoder result
+        if action == "unknown":
+            action = decoder_result.get("detected_action", "unknown")
+        if not wallet_address:
+            wallet_address = tx_data.get("signer")
+        
+        # Enhanced log parsing when regular parsing fails or returns unknown
+        if dex == "unknown" or action == "unknown" or mint is None:
+            self.logger.debug(f"[PARSER] Regular parsing incomplete - trying log/meta analysis...")
+            
+            # Create a trade dict with current parsed data and tx_data
+            trade_for_enhancement = {
+                "dex": dex,
+                "dex_type": dex,
+                "action": action,
+                "mint": mint,
+                "token_mint": mint,
+                "amount": amount,
+                "signature": signature,
+                "source_wallet": wallet_address,
+                "logs": tx_data.get("logs", []),
+                "meta": tx_data.get("meta", {}),
+                "budget_sol": 0.001  # Default budget for buys
+            }
+            
+            # Apply log parsing enhancement
+            enhanced_trade = parse_from_logs_and_meta(trade_for_enhancement)
+            
+            # Update our values if the enhancement found better data
+            if enhanced_trade.get("dex") != dex and enhanced_trade.get("dex") != "unknown":
+                dex = enhanced_trade.get("dex")
+                self.logger.info(f"[PARSER] ✅ Enhanced DEX detection: {dex}")
+            
+            if enhanced_trade.get("action") != action and enhanced_trade.get("action") != "unknown":
+                action = enhanced_trade.get("action")
+                self.logger.info(f"[PARSER] ✅ Enhanced action detection: {action}")
+            
+            if enhanced_trade.get("mint") != mint and enhanced_trade.get("mint") is not None:
+                mint = enhanced_trade.get("mint")
+                self.logger.info(f"[PARSER] ✅ Enhanced mint detection: {mint[:8]}...")
+            
+            if enhanced_trade.get("amount") != amount and enhanced_trade.get("amount") is not None:
+                amount = enhanced_trade.get("amount")
+                self.logger.info(f"[PARSER] ✅ Enhanced amount detection: {amount}")
+
+        # Log when DEX is still unknown after enhancement
+        if dex == "unknown":
+            self.logger.warning(f"⚠️ [PARSER] DEX=unknown after enhancement; proceeding with fallback route. mint={mint} action={action} amount={amount}")
+        
+        # Return standardized format
+        return {
+            "dex": dex,
+            "action": action,
+            "mint": mint,
+            "amount": amount,
+            "signature": signature,
+            "wallet_address": wallet_address,
+            # Include original decoder result for compatibility
+            "original_result": decoder_result
+        }
 
     def identify_dex(self, tx_data):
         """
@@ -561,27 +1320,29 @@ class WebSocketWalletMonitor:
             log_debug(f"❌ Error in fallback fetch for {wallet_address[:8]}: {e}")
             
     async def _analyze_transaction_logs(self, signature: str, logs: List[str], wallet_address: str):
-        """Analyze transaction logs to detect meme coin buy/sell activities"""
+        """
+        Analyze transaction logs to detect trade activities with STRICT balance change requirement.
+        
+        Execution ONLY occurs when:
+        1. Token balance changes are detected for monitored wallets, AND
+        2. Transaction involves monitored wallet (validated)
+        
+        Balance changes are REQUIRED - no synthetic trades or zero-delta execution.
+        """
         try:
-            log_debug(f"🔍 DETAILED ANALYSIS: {signature[:8]}... from {wallet_address[:8]}...")
+            log_debug(f"🔍 ANALYSIS: {signature[:8]}... from {wallet_address[:8]}...")
             log_debug(f"   📊 Total logs: {len(logs)}")
             
             # Show first few logs for debugging
             for i, log in enumerate(logs[:5]):
                 log_debug(f"   Log {i}: {log}")
 
-            # 🚨 NEW: Try official Solana balance analysis FIRST
-            log_debug(f"🔧 TRYING OFFICIAL SOLANA BALANCE ANALYSIS FIRST...")
+            # PRIMARY: Try balance analysis (REQUIRED for execution)
+            log_debug(f"🔧 Running balance analysis (REQUIRED for execution)...")
             trade_info = await self._analyze_with_official_balance_method(signature, wallet_address, logs)
             
             if trade_info:
-                log_debug(f"✅ OFFICIAL METHOD SUCCESS! Token: {trade_info.get('token_mint', 'Unknown')[:8]}...")
-            else:
-                log_debug(f"❌ Official method failed - no evidence of token movement or trade pattern")
-                log_debug(f"🚫 Skipping: No token balance changes or swap/trade logs detected")
-                trade_info = None
-            
-            if trade_info:
+                log_debug(f"✅ Balance analysis SUCCESS! Token: {trade_info.get('token_mint', 'Unknown')[:8]}...")
                 log_debug(f"🚨 TRADE DETECTED! Calling main bot callback...")
                 log_debug(f"   💎 Token: {trade_info.get('token_mint', 'Unknown')[:8]}...")
                 log_debug(f"   🏪 DEX: {trade_info.get('dex', 'Unknown')}")
@@ -596,9 +1357,9 @@ class WebSocketWalletMonitor:
                 else:
                     log_debug(f"❌ ERROR: No trade_callback set!")
             else:
-                log_debug(f"⚠️ NO TRADE DETECTED - Both official and log parsing methods failed")
-                log_debug(f"   🔍 This means neither balance analysis nor log parsing found a valid trade")
-                log_debug(f"   📋 Consider checking the transaction patterns for this type")
+                log_debug(f"⚠️ NO TRADE DETECTED - No balance changes for monitored wallets")
+                log_debug(f"   🔍 Balance changes are REQUIRED for trade detection")
+                log_debug(f"   📋 No execution will occur without balance changes")
                     
         except Exception as e:
             log_debug(f"❌ ERROR in _analyze_transaction_logs: {e}")
@@ -607,9 +1368,13 @@ class WebSocketWalletMonitor:
 
     async def _analyze_with_official_balance_method(self, signature: str, wallet_address: str, logs: List[str]) -> Optional[Dict[str, Any]]:
         """
-        🎯 PRODUCTION-READY BALANCE-BASED TRADE DETECTION - 100% ACCURATE
-        Uses actual balance changes to determine buy/sell/swap actions
-        This completely replaces all flawed detection methods
+        Balance-based trade detection - REQUIRED for execution.
+        Uses actual balance changes to determine buy/sell/swap actions and token info.
+        NO execution without balance changes.
+        
+        This method analyzes token balance changes to detect trades.
+        Returns None if no balance changes are detected, which prevents execution.
+        Balance changes are the PRIMARY requirement for trade detection and execution.
         """
         
         log_debug(f"🎯 BALANCE-BASED ANALYSIS for {signature[:12]}...")
@@ -636,16 +1401,16 @@ class WebSocketWalletMonitor:
                     
                     if 'error' in data:
                         log_debug(f"   ❌ RPC Error: {data['error']}")
-                        # 🚀 SMART FALLBACK: If balance analysis fails, use the log data we already have
-                        log_debug(f"   🔧 SMART FALLBACK: Using log-based analysis since balance fetch failed")
-                        return await self._analyze_logs_for_trade_smart(signature, wallet_address, logs)
+                        # Balance analysis failed - return None (no execution without balance changes)
+                        log_debug(f"   ⚠️ Cannot proceed without balance data - skipping")
+                        return None
                     
                     result = data.get('result')
                     if not result:
                         log_debug(f"   ❌ No transaction data")
-                        # 🚀 SMART FALLBACK: Use log-based analysis 
-                        log_debug(f"   🔧 SMART FALLBACK: Using log-based analysis since no transaction data")
-                        return await self._analyze_logs_for_trade_smart(signature, wallet_address, logs)
+                        # Balance analysis failed - return None (no execution without balance changes)
+                        log_debug(f"   ⚠️ Cannot proceed without transaction data - skipping")
+                        return None
                     
                     meta = result.get('meta', {})
                     transaction = result.get('transaction', {})
@@ -802,85 +1567,94 @@ class WebSocketWalletMonitor:
                         
         except Exception as e:
             log_debug(f"   ❌ Error in balance analysis: {e}")
-            # 🚀 SMART FALLBACK: Try log-based analysis when RPC fails
-            log_debug(f"   🔧 Attempting smart log analysis fallback...")
-            return await self._analyze_logs_for_trade_smart(signature, wallet_address, logs)
-
-    async def _analyze_logs_for_trade_smart(self, signature: str, wallet_address: str, logs: List[str]) -> Optional[Dict[str, Any]]:
-        """🚀 SMART LOG ANALYSIS: Extract trade info from logs when balance analysis fails due to timing"""
-        try:
-            log_debug(f"🔧 SMART LOG ANALYSIS: {signature[:8]}... using available log data")
-            
-            # Look for common trading patterns in logs
-            has_pump_fun = False
-            has_raydium = False
-            has_jupiter = False
-            is_buy = False
-            is_sell = False
-            
-            for log in logs:
-                # Pump.fun detection
-                if "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW" in log or "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" in log:
-                    has_pump_fun = True
-                    if "Instruction: Buy" in log:
-                        is_buy = True
-                    elif "Instruction: Sell" in log:
-                        is_sell = True
-                
-                # Raydium detection
-                if "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" in log or "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C" in log:
-                    has_raydium = True
-                    if "Instruction: Swap" in log:
-                        # For Raydium, require additional evidence to determine direction
-                        # Don't assume buy/sell without token balance evidence
-                        pass
-                
-                # Jupiter detection  
-                if "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB" in log:
-                    has_jupiter = True
-                    # Don't assume buy/sell without additional evidence
-            
-            # Determine DEX and action based on evidence only
-            dex = "Unknown"
-            action = None  # Don't assume any action
-            
-            if has_pump_fun:
-                dex = "Pump.fun"
-                # Only set action if we have clear evidence from logs
-                if is_buy:
-                    action = "buy"
-                elif is_sell:
-                    action = "sell"
-                # If no clear evidence, don't assume anything
-            elif has_raydium:
-                dex = "Raydium"
-                # Don't assume action without evidence
-            elif has_jupiter:
-                dex = "Jupiter"
-                # Don't assume action without evidence
-            
-            # Only return trade info if we have clear action evidence
-            if (has_pump_fun or has_raydium or has_jupiter) and action:
-                log_debug(f"   ✅ SMART ANALYSIS: {dex} {action} detected with evidence")
-                return {
-                    'signature': signature,
-                    'wallet_address': wallet_address,
-                    'action': action,
-                    'dex': dex,
-                    'token_mint': 'BALANCE_ANALYSIS_REQUIRED',  # Flag for main bot to do balance analysis
-                    'timestamp': datetime.now(UTC),
-                    'requires_balance_analysis': True,
-                    'method': 'smart_log_analysis'
-                }
-            else:
-                log_debug(f"   ❌ SMART ANALYSIS: No trading patterns detected")
-                return None
-                
-        except Exception as e:
-            log_debug(f"   ❌ Error in smart log analysis: {e}")
+            # Balance analysis failed - return None (no execution without balance changes)
+            log_debug(f"   ⚠️ Cannot proceed without balance analysis - skipping")
             return None
 
-    async def _get_token_from_balance_changes(self, signature: str, wallet_address: str) -> Optional[str]:
+    def _check_dex_instruction_in_logs(self, logs: List[str]) -> bool:
+        """
+        Check if logs contain DEX trade instructions.
+        Returns True if any known DEX program or trade instruction is found.
+        """
+        # Known DEX program IDs
+        dex_programs = [
+            'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',  # Jupiter V6
+            'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB',  # Jupiter V4
+            '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',  # Pump.fun
+            '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',  # Raydium AMM
+            'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C',  # Raydium CPMM
+            '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1',  # Raydium CLMM
+            'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',  # Raydium CLMM v2
+            'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',  # Orca Whirlpool
+            'SwaPpA9LAaLfeLi3a68M4DjnLqgtticKg6CnyNwgAC8',  # Orca Swap
+            'dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN',  # Meteora Aggregator
+            'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',  # Meteora DLMM
+            'ALPHAQmeA7bjrVuccPsYPiCvsi428SNwte66Srvs4pHA',  # Alpha DEX
+        ]
+        
+        # Trade instruction keywords
+        trade_keywords = [
+            'Instruction: Swap',
+            'Instruction: Buy',
+            'Instruction: Sell',
+            'Instruction: Route',
+            'Program log: swap',
+            'Program log: trade',
+            'SharedAccountsRoute'
+        ]
+        
+        for log in logs:
+            # Check for DEX programs
+            for program_id in dex_programs:
+                if program_id in log:
+                    log_debug(f"   ✅ DEX program found in logs: {program_id[:8]}...")
+                    return True
+            
+            # Check for trade keywords
+            for keyword in trade_keywords:
+                if keyword.lower() in log.lower():
+                    log_debug(f"   ✅ Trade keyword found in logs: {keyword}")
+                    return True
+        
+        return False
+    
+    def _is_monitored_wallet(self, wallet_address: str) -> bool:
+        """
+        Check if wallet is in the monitored wallets list (case-insensitive).
+        """
+        if not hasattr(self, 'target_wallets') or not self.target_wallets:
+            return False
+        
+        wallet_lower = wallet_address.lower()
+        for monitored in self.target_wallets:
+            if monitored.lower() == wallet_lower:
+                log_debug(f"   ✅ Wallet is monitored: {wallet_address[:8]}...")
+                return True
+        
+        return False
+    
+    async def _create_synthetic_trade_info(self, signature: str, wallet_address: str, logs: List[str], has_dex_instruction: bool) -> Optional[Dict[str, Any]]:
+        """
+        DEPRECATED: This method created synthetic trades without balance changes.
+        This violates the principle of requiring actual balance changes for execution.
+        Returns None to prevent execution without balance proof.
+        """
+        log_debug(f"⚠️ DEPRECATED METHOD CALLED: _create_synthetic_trade_info")
+        log_debug(f"   This method is deprecated and returns None")
+        log_debug(f"   Balance changes are REQUIRED for trade detection")
+        return None
+
+    async def _analyze_logs_for_trade_smart(self, signature: str, wallet_address: str, logs: List[str]) -> Optional[Dict[str, Any]]:
+        """
+        DEPRECATED: This method attempted log-based trade detection without balance changes.
+        This violates the principle of requiring actual balance changes for execution.
+        Returns None to prevent execution without balance proof.
+        """
+        log_debug(f"⚠️ DEPRECATED METHOD CALLED: _analyze_logs_for_trade_smart")
+        log_debug(f"   This method is deprecated and returns None")
+        log_debug(f"   Balance changes are REQUIRED for trade detection")
+        return None
+
         """OFFICIAL: Extract token mint using official Solana getTransaction with jsonParsed encoding"""
         try:
             log_debug(f"   🔧 OFFICIAL BALANCE ANALYSIS: Using Solana jsonParsed for {signature[:8]}...")

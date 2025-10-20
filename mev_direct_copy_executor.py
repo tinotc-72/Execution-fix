@@ -1,6 +1,5 @@
 import asyncio
-from spl.token.instructions import create_associated_token_account, get_associated_token_address
-from solana.rpc.async_api import AsyncClient
+from utils import RPCClient, get_associated_token_address, create_associated_token_account
 
 # Stub for Jito tip instruction (replace with actual implementation if available)
 def create_jito_tip_instruction(pubkey, amount):
@@ -38,62 +37,224 @@ from solders.instruction import Instruction, AccountMeta
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from complete_mev_bot import CompleteMEVBot, CompleteMEVConfig
 from env_keys import EnvKeys
+from execution_coordinator import exec_ok, exec_err
 
-# Import JitoClient for MEV protection
+# Import JitoClient for MEV protection - optional dependency
 try:
     from jito_service import JitoClient
     JITO_AVAILABLE = True
-except ImportError:
+    logger.info("[DIRECT_COPY] ✅ JitoClient available for MEV protection")
+except ImportError as e:
     JITO_AVAILABLE = False
     JitoClient = None
+    logger.info(f"[DIRECT_COPY] ℹ️  JitoClient not available: {e}. Will use RPC fallback.")
+
+import logging
 
 logger = logging.getLogger(__name__)
+
+def jito_is_configured(jito_service) -> bool:
+    """
+    Check if Jito is properly configured and available.
+    
+    Returns True only if:
+    1. JITO_AVAILABLE (jito_service module can be imported)
+    2. jito_service instance is not None
+    3. jito_service has send_transaction method
+    """
+    return JITO_AVAILABLE and jito_service is not None and hasattr(jito_service, 'send_transaction')
+
+
+async def submit_cloned_tx(final_vtx, fast_executor):
+    """
+    Helper function to submit a cloned transaction via FastExecutor.
+    Supports both Jito (if available) and RPC fallback.
+    
+    Args:
+        final_vtx: VersionedTransaction to submit
+        fast_executor: FastExecutor instance with send_and_confirm method
+        
+    Returns:
+        Signature string on success, None on failure
+    """
+    try:
+        if fast_executor is None:
+            logger.error("[SUBMIT_CLONED_TX] ❌ FastExecutor is None")
+            return None
+        
+        if not hasattr(fast_executor, 'send_and_confirm'):
+            logger.error("[SUBMIT_CLONED_TX] ❌ FastExecutor missing send_and_confirm method")
+            return None
+        
+        logger.info("[SUBMIT_CLONED_TX] 🚀 Submitting via FastExecutor.send_and_confirm...")
+        result = await fast_executor.send_and_confirm(final_vtx)
+        
+        if result and result.get("success"):
+            signature = result["signature"]
+            logger.info(f"[SUBMIT_CLONED_TX] ✅ Submission successful: {signature}")
+            return signature
+        else:
+            error = result.get("error") if result else "no result returned"
+            logger.error(f"[SUBMIT_CLONED_TX] ❌ Submission failed: {error}")
+            return None
+        
+    except Exception as e:
+        logger.error(f"[SUBMIT_CLONED_TX] ❌ Exception during submission: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
 
 
 class MEVDirectCopyExecutor:
     async def _submit_mev_transaction(self, instructions):
+        """Submit MEV transaction with comprehensive logging"""
+        import traceback
+        
         try:
-            logger.info("[LIVE] Submitting MEV direct copy transaction...")
+            logger.info("[DIRECT_COPY] 🚀 Starting MEV transaction submission...")
+            logger.debug(f"[DIRECT_COPY] Input instructions count: {len(instructions)}")
+            
             # Filter out duplicate ComputeBudget instructions
             filtered = [ix for ix in instructions if str(ix.program_id) != "ComputeBudget111111111111111111111111111111"]
+            logger.debug(f"[DIRECT_COPY] After filtering ComputeBudget: {len(filtered)} instructions")
+            
             # Prepend only the bot's ComputeBudget instructions
             bot_limit_ix = set_compute_unit_limit(self.config.compute_limit)
             bot_price_ix = set_compute_unit_price(self.config.pumpfun_priority_fee // 1000)
             final_instructions = [bot_limit_ix, bot_price_ix] + filtered
+            logger.info(f"[DIRECT_COPY] Final instruction count: {len(final_instructions)}")
+            logger.debug(f"[DIRECT_COPY] Compute limit: {self.config.compute_limit}")
+            logger.debug(f"[DIRECT_COPY] Priority fee: {self.config.pumpfun_priority_fee} lamports")
             
-            # Try Jito first for MEV protection
-            if hasattr(self, 'jito_service') and self.jito_service:
+            # Dual-path execution: Jito first, RPC fallback
+            if jito_is_configured(self.jito_service):
                 try:
-                    logger.info("🚀 Using Jito for MEV protection...")
-                    # Build and sign transaction for Jito
+                    logger.info("[DIRECT_COPY] 🔄 Attempting Jito submission for MEV protection...")
+                    logger.debug(f"[DIRECT_COPY] Building signed transaction...")
+                    
                     signed_tx = await self.mev_bot._build_signed_transaction(final_instructions)
                     if signed_tx:
+                        logger.debug(f"[DIRECT_COPY] Signed transaction built successfully")
+                        logger.info(f"[DIRECT_COPY] Sending transaction via Jito...")
+                        
                         result = await self.jito_service.send_transaction(signed_tx)
+                        logger.debug(f"[DIRECT_COPY] Jito response: {result}")
+                        
                         signature = result.get("signature")
                         if signature:
-                            logger.info(f"✅ Jito MEV Direct Copy SUCCESS: {signature}")
+                            logger.info(f"[DIRECT_COPY] ✅ EXECUTED via Jito — signature: {signature}")
                             return signature
                         else:
-                            logger.warning(f"⚠️ Jito failed, falling back to RPC: {result}")
+                            logger.warning(f"[DIRECT_COPY] ⏭️ Jito submission returned no signature: {result}")
+                    else:
+                        logger.warning(f"[DIRECT_COPY] ⏭️ Failed to build signed transaction for Jito")
+                        
                 except Exception as jito_error:
-                    logger.warning(f"⚠️ Jito error, falling back to RPC: {jito_error}")
+                    logger.error(f"[DIRECT_COPY] ❌ Jito submission failed: {jito_error}")
+                    logger.debug(traceback.format_exc())
+            else:
+                logger.info(f"[DIRECT_COPY] ℹ️  Jito not configured, using RPC directly")
             
-            # Fallback to standard RPC transaction sending
-            result_signature = await self.mev_bot._send_transaction(final_instructions, "MEV Direct Copy", skip_priority_instructions=True)
+            # RPC fallback (must exist)
+            logger.info(f"[DIRECT_COPY] 🔄 Attempting RPC submission...")
+            result_signature = await self.mev_bot._send_transaction(
+                final_instructions, 
+                "MEV Direct Copy", 
+                skip_priority_instructions=True
+            )
+            
             if result_signature:
-                logger.info(f"✅ MEV Direct Copy SUCCESS: {result_signature}")
+                logger.info(f"[DIRECT_COPY] ✅ EXECUTED via RPC — signature: {result_signature}")
                 return result_signature
             else:
-                logger.error("❌ MEV transaction submission failed")
+                logger.error("[DIRECT_COPY] ❌ RPC submission failed - no signature returned")
                 return None
+                
         except Exception as e:
-            logger.error(f"❌ MEV direct copy submission failed: {e}")
+            logger.error(f"[DIRECT_COPY] ❌ MEV transaction submission failed: {e}")
+            logger.error(traceback.format_exc())
             return None
-    def __init__(self, private_key: str, config=None, jito_service=None):
-        self.config = config or MEVDirectCopyConfig()
-        self.keypair = Keypair.from_base58_string(private_key)
-        self.mev_bot = CompleteMEVBot(private_key, self.config)
-        self.jito_service = jito_service  # Add JitoClient support
+    def __init__(self, private_key: str, config=None, jito_service=None, env_keys=None, fast_executor=None):
+        """Initialize Direct Copy Executor with comprehensive error logging"""
+        import traceback
+        
+        logger.info(f"[DIRECT_COPY] 🚀 Initializing MEV Direct Copy Executor...")
+        logger.debug(f"[DIRECT_COPY] Config type: {type(config)}")
+        logger.debug(f"[DIRECT_COPY] Jito service available: {jito_service is not None}")
+        logger.debug(f"[DIRECT_COPY] FastExecutor provided: {fast_executor is not None}")
+        
+        try:
+            # Validate and set config
+            if config is None:
+                self.config = MEVDirectCopyConfig()
+                logger.debug(f"[DIRECT_COPY] Using default MEVDirectCopyConfig")
+            elif isinstance(config, MEVDirectCopyConfig):
+                self.config = config
+                logger.debug(f"[DIRECT_COPY] Using provided MEVDirectCopyConfig")
+            else:
+                error_msg = f"config must be MEVDirectCopyConfig object or None, got {type(config).__name__}"
+                logger.error(f"[DIRECT_COPY] ❌ Config type error: {error_msg}")
+                raise TypeError(error_msg)
+            
+            logger.debug(f"[DIRECT_COPY] Config attributes: {vars(self.config)}")
+            logger.info(f"[DIRECT_COPY] ✅ Config validated successfully")
+            
+            # Validate private key type
+            if not isinstance(private_key, str):
+                error_msg = f"PHANTOM_PRIVATE_KEY must be string, got {type(private_key)}"
+                logger.error(f"[DIRECT_COPY] ❌ Type error: {error_msg}")
+                raise TypeError(error_msg)
+            
+            logger.debug(f"[DIRECT_COPY] Private key length: {len(private_key)} chars")
+            
+            # Create keypair
+            logger.info(f"[DIRECT_COPY] Creating keypair from private key...")
+            self.keypair = Keypair.from_base58_string(private_key)
+            logger.info(f"[DIRECT_COPY] ✅ Keypair created: {self.keypair.pubkey()}")
+            
+            # Initialize MEV bot - needs EnvKeys object, not private_key string
+            logger.info(f"[DIRECT_COPY] Initializing CompleteMEVBot...")
+            # If env_keys not provided, create one
+            if env_keys is None:
+                from env_keys import EnvKeys
+                env_keys = EnvKeys()
+                logger.debug(f"[DIRECT_COPY] Created new EnvKeys instance")
+            # Create CompleteMEVConfig from MEVDirectCopyConfig
+            from complete_mev_bot import CompleteMEVConfig
+            mev_bot_config = CompleteMEVConfig(
+                priority_fee=self.config.pumpfun_priority_fee,
+                compute_limit=self.config.compute_limit,
+                max_slippage=0.06,  # Default from CompleteMEVConfig
+                timeout=30.0,  # Default from CompleteMEVConfig
+                verify_transactions=True  # Default from CompleteMEVConfig
+            )
+            self.mev_bot = CompleteMEVBot(env_keys, mev_bot_config)
+            logger.info(f"[DIRECT_COPY] ✅ CompleteMEVBot initialized")
+            
+            # Set Jito service
+            self.jito_service = jito_service
+            if jito_service:
+                logger.info(f"[DIRECT_COPY] ✅ Jito service configured for MEV protection")
+            else:
+                logger.info(f"[DIRECT_COPY] ℹ️  No Jito service - using RPC only")
+            
+            # Set FastExecutor
+            self.fast_executor = fast_executor
+            if fast_executor:
+                logger.info(f"[DIRECT_COPY] ✅ FastExecutor configured for transaction submission")
+            else:
+                logger.info(f"[DIRECT_COPY] ℹ️  No FastExecutor - will use internal _submit_mev_transaction")
+                
+            logger.info(f"[DIRECT_COPY] 🎉 Executor initialization complete")
+            
+        except TypeError as te:
+            logger.error(f"[DIRECT_COPY] ❌ Type error during initialization: {te}")
+            logger.error(traceback.format_exc())
+            raise
+        except Exception as e:
+            logger.error(f"[DIRECT_COPY] ❌ Unexpected error during initialization: {e}")
+            logger.error(traceback.format_exc())
+            raise
     async def _copy_and_modify_instructions(self, original_instructions, account_keys, original_wallet):
         """
         Detect router program for Pump.fun and rebuild router instruction with user's wallet and derived ATA.
@@ -129,8 +290,18 @@ class MEVDirectCopyExecutor:
             for i, account_index in enumerate(accounts_list):
                 logger.info(f"[ORIG IX {ix_idx}]   idx {i}: {account_keys[account_index]}")
             if program_id_str == str(ATA_PROGRAM_ID):
-                if len(accounts_list) > 1:
+                # Add bounds checks for ATA instruction accounts
+                if len(accounts_list) > 1 and accounts_list[1] < len(account_keys):
                     mint_pubkey = Pubkey.from_string(account_keys[accounts_list[1]])
+                else:
+                    logger.warning(f"[COPY EXECUTOR] Skipping ATA instruction {ix_idx}: insufficient accounts or out of bounds")
+                    continue
+                
+                if accounts_list[0] >= len(account_keys):
+                    logger.warning(f"[COPY EXECUTOR] Skipping ATA instruction {ix_idx}: account[0] index out of bounds")
+                    continue
+                
+                if True:  # Continue with ATA processing
                     ata_address, _ = Pubkey.find_program_address(
                         [bytes(user_wallet), bytes(TOKEN_PROGRAM_ID), bytes(mint_pubkey)],
                         ATA_PROGRAM_ID
@@ -155,6 +326,10 @@ class MEVDirectCopyExecutor:
                 accounts_list = ix_data.get('accounts', [])
                 logger.info(f"[PATCH IX {ix_idx}] Program: {program_id_str}")
                 for i, account_index in enumerate(accounts_list):
+                    # Add bounds check for account_index
+                    if account_index >= len(account_keys):
+                        logger.warning(f"[PATCH IX {ix_idx}] Skipping account {i}: index {account_index} out of bounds (len={len(account_keys)})")
+                        continue
                     logger.info(f"[PATCH IX {ix_idx}]   idx {i}: {account_keys[account_index]}")
                 # Check ATA creation: only create if ATA doesn't already exist
                 if program_id_str == str(ATA_PROGRAM_ID):
@@ -350,6 +525,10 @@ class MEVDirectCopyExecutor:
                 # Log all original instruction accounts
                 logger.info(f"[ORIG IX {ix_idx}] Program: {program_id_str}")
                 for i, account_index in enumerate(accounts_list):
+                    # Add bounds check for account_index
+                    if account_index >= len(account_keys):
+                        logger.warning(f"[ORIG IX {ix_idx}] Skipping account {i}: index {account_index} out of bounds (len={len(account_keys)})")
+                        continue
                     logger.info(f"[ORIG IX {ix_idx}]   idx {i}: {account_keys[account_index]}")
                 logger.info(f"[DEBUG:IX] User wallet: {user_wallet}")
                 logger.info(f"[DEBUG:IX] Derived ATA map: {derived_ata_map}")
@@ -586,25 +765,53 @@ class MEVDirectCopyExecutor:
     ) -> Dict[str, Any]:
         """
         Generic direct copy for any DEX transaction
+        
+        Implements comprehensive transaction validation:
+        - Validates transaction structure before processing
+        - Adds bounds checks for all list/array accesses
+        - Logs and skips trades with insufficient instruction/account data
+        - Prevents list index out of range runtime errors
         """
         start_time = asyncio.get_event_loop().time()
         
         try:
             logger.info("🚀 MEV Direct Copy: Generic transaction")
             
+            # Validate transaction structure before processing
+            if not original_tx_data:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: original_tx_data is None or empty")
+                return {"success": False, "error": "Invalid transaction data"}
+            
             # Extract the original transaction data
             if 'transaction' in original_tx_data:
                 tx_data = original_tx_data['transaction']
             else:
                 tx_data = original_tx_data
+            
+            if not tx_data:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: tx_data is None or empty")
+                return {"success": False, "error": "Invalid transaction data structure"}
                 
-            # Get the original message and instructions
+            # Get the original message and instructions with validation
             message = tx_data.get('message', {})
+            if not message:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: message is None or empty")
+                return {"success": False, "error": "No message found in transaction"}
+            
             original_instructions = message.get('instructions', [])
             account_keys = message.get('accountKeys', [])
             
+            # Validate instructions exist
             if not original_instructions:
+                logger.error("[DIRECT_COPY] ❌ Skipping trade: No instructions found in original transaction")
                 return {"success": False, "error": "No instructions found in original transaction"}
+            
+            # Validate account keys exist
+            if not account_keys:
+                logger.error("[DIRECT_COPY] ❌ Skipping trade: No account keys found in transaction")
+                return {"success": False, "error": "No account keys found in transaction"}
+            
+            logger.info(f"[DIRECT_COPY] ✅ Transaction validation passed: {len(original_instructions)} instructions, {len(account_keys)} account keys")
             
             # Build MEV-optimized instruction list
             all_instructions = []
@@ -633,27 +840,49 @@ class MEVDirectCopyExecutor:
             )
             all_instructions.extend(copied_instructions)
             
-            # 4. Build and submit the transaction using MEV bot
-            signature = await self._submit_mev_transaction(all_instructions)
+            # 4. Build and submit the transaction
+            # If FastExecutor is available, use it; otherwise use internal method
+            if self.fast_executor:
+                # Build the VersionedTransaction first
+                from solders.transaction import VersionedTransaction
+                from solders.message import MessageV0
+                
+                signed_tx = await self.mev_bot._build_signed_transaction(all_instructions)
+                if not signed_tx:
+                    elapsed_time = (asyncio.get_event_loop().time() - start_time) * 1000
+                    return exec_err("direct_copy", "Failed to build transaction", {
+                        "execution_time_ms": elapsed_time,
+                        "dex": "generic"
+                    })
+                
+                # Submit via FastExecutor
+                signature = await submit_cloned_tx(signed_tx, self.fast_executor)
+            else:
+                # Fallback to internal _submit_mev_transaction
+                signature = await self._submit_mev_transaction(all_instructions)
             
             elapsed_time = (asyncio.get_event_loop().time() - start_time) * 1000
             
             if signature:
                 logger.info(f"✅ MEV Direct Copy SUCCESS! {elapsed_time:.1f}ms - {signature}")
-                return {
-                    "success": True, 
-                    "signature": signature,
+                return exec_ok("direct_copy", signature, {
                     "execution_time_ms": elapsed_time,
                     "method": "mev_direct_copy",
                     "dex": "generic"
-                }
+                })
             else:
-                return {"success": False, "error": "Transaction submission failed"}
+                return exec_err("direct_copy", "Transaction submission failed", {
+                    "execution_time_ms": elapsed_time,
+                    "dex": "generic"
+                })
                 
         except Exception as e:
             elapsed_time = (asyncio.get_event_loop().time() - start_time) * 1000
             logger.error(f"❌ MEV Direct Copy failed in {elapsed_time:.1f}ms: {e}")
-            return {"success": False, "error": str(e), "execution_time_ms": elapsed_time}
+            return exec_err("direct_copy", str(e), {
+                "execution_time_ms": elapsed_time,
+                "dex": "generic"
+            })
 
     async def copy_jupiter_transaction_direct(
         self, 
@@ -664,25 +893,53 @@ class MEVDirectCopyExecutor:
         """
         Copy Jupiter transaction using direct instruction copying with MEV optimizations
         This is the FAST method - no API calls
+        
+        Implements comprehensive transaction validation:
+        - Validates transaction structure before processing
+        - Adds bounds checks for all list/array accesses
+        - Logs and skips trades with insufficient instruction/account data
+        - Prevents list index out of range runtime errors
         """
         start_time = asyncio.get_event_loop().time()
         
         try:
             logger.info("🚀 MEV Direct Copy: Jupiter transaction")
             
+            # Validate transaction structure before processing
+            if not original_tx_data:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: original_tx_data is None or empty")
+                return {"success": False, "error": "Invalid transaction data"}
+            
             # Extract the original transaction data
             if 'transaction' in original_tx_data:
                 tx_data = original_tx_data['transaction']
             else:
                 tx_data = original_tx_data
+            
+            if not tx_data:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: tx_data is None or empty")
+                return {"success": False, "error": "Invalid transaction data structure"}
                 
-            # Get the original message and instructions
+            # Get the original message and instructions with validation
             message = tx_data.get('message', {})
+            if not message:
+                logger.error("[DIRECT_COPY] ❌ Invalid transaction: message is None or empty")
+                return {"success": False, "error": "No message found in transaction"}
+            
             original_instructions = message.get('instructions', [])
             account_keys = message.get('accountKeys', [])
             
+            # Validate instructions exist
             if not original_instructions:
+                logger.error("[DIRECT_COPY] ❌ Skipping trade: No instructions found in original transaction")
                 return {"success": False, "error": "No instructions found in original transaction"}
+            
+            # Validate account keys exist
+            if not account_keys:
+                logger.error("[DIRECT_COPY] ❌ Skipping trade: No account keys found in transaction")
+                return {"success": False, "error": "No account keys found in transaction"}
+            
+            logger.info(f"[DIRECT_COPY] ✅ Transaction validation passed: {len(original_instructions)} instructions, {len(account_keys)} account keys")
             
             # Build MEV-optimized instruction list
             all_instructions = []
@@ -711,27 +968,49 @@ class MEVDirectCopyExecutor:
             )
             all_instructions.extend(copied_instructions)
             
-            # 4. Build and submit the transaction using MEV bot
-            signature = await self._submit_mev_transaction(all_instructions)
+            # 4. Build and submit the transaction
+            # If FastExecutor is available, use it; otherwise use internal method
+            if self.fast_executor:
+                # Build the VersionedTransaction first
+                from solders.transaction import VersionedTransaction
+                from solders.message import MessageV0
+                
+                signed_tx = await self.mev_bot._build_signed_transaction(all_instructions)
+                if not signed_tx:
+                    elapsed_time = (asyncio.get_event_loop().time() - start_time) * 1000
+                    return exec_err("direct_copy", "Failed to build transaction", {
+                        "execution_time_ms": elapsed_time,
+                        "dex": "jupiter"
+                    })
+                
+                # Submit via FastExecutor
+                signature = await submit_cloned_tx(signed_tx, self.fast_executor)
+            else:
+                # Fallback to internal _submit_mev_transaction
+                signature = await self._submit_mev_transaction(all_instructions)
             
             elapsed_time = (asyncio.get_event_loop().time() - start_time) * 1000
             
             if signature:
                 logger.info(f"✅ MEV Direct Copy SUCCESS! {elapsed_time:.1f}ms - {signature}")
-                return {
-                    "success": True, 
-                    "signature": signature,
+                return exec_ok("direct_copy", signature, {
                     "execution_time_ms": elapsed_time,
                     "method": "mev_direct_copy",
                     "dex": "jupiter"
-                }
+                })
             else:
-                return {"success": False, "error": "Transaction submission failed"}
+                return exec_err("direct_copy", "Transaction submission failed", {
+                    "execution_time_ms": elapsed_time,
+                    "dex": "jupiter"
+                })
                 
         except Exception as e:
             elapsed_time = (asyncio.get_event_loop().time() - start_time) * 1000
             logger.error(f"❌ MEV Direct Copy failed in {elapsed_time:.1f}ms: {e}")
-            return {"success": False, "error": str(e), "execution_time_ms": elapsed_time}
+            return exec_err("direct_copy", str(e), {
+                "execution_time_ms": elapsed_time,
+                "dex": "jupiter"
+            })
 
     async def copy_pumpfun_transaction_direct(
         self, 
@@ -785,21 +1064,45 @@ class MEVDirectCopyExecutor:
             # Add all other instructions
             final_instructions.extend(filtered)
 
-            signature = await self._submit_mev_transaction(final_instructions)
+            # Build and submit the transaction
+            # If FastExecutor is available, use it; otherwise use internal method
+            if self.fast_executor:
+                # Build the VersionedTransaction first
+                from solders.transaction import VersionedTransaction
+                from solders.message import MessageV0
+                
+                signed_tx = await self.mev_bot._build_signed_transaction(final_instructions)
+                if not signed_tx:
+                    elapsed = (asyncio.get_event_loop().time() - start_time) * 1000
+                    return exec_err("direct_copy", "Failed to build transaction", {
+                        "execution_time_ms": elapsed,
+                        "dex": "pumpfun"
+                    })
+                
+                # Submit via FastExecutor
+                signature = await submit_cloned_tx(signed_tx, self.fast_executor)
+            else:
+                # Fallback to internal _submit_mev_transaction
+                signature = await self._submit_mev_transaction(final_instructions)
+            
             elapsed = (asyncio.get_event_loop().time() - start_time) * 1000
             if signature:
-                return {
-                    "success": True,
-                    "signature": signature,
+                return exec_ok("direct_copy", signature, {
                     "execution_time_ms": elapsed,
                     "method": "mev_direct_copy",
                     "dex": "pumpfun"
-                }
-            return {"success": False, "error": "Transaction submission failed"}
+                })
+            return exec_err("direct_copy", "Transaction submission failed", {
+                "execution_time_ms": elapsed,
+                "dex": "pumpfun"
+            })
         except Exception as e:
             elapsed = (asyncio.get_event_loop().time() - start_time) * 1000
             logger.error(f"❌ MEV Direct Copy failed in {elapsed:.1f}ms: {e}")
-            return {"success": False, "error": str(e), "execution_time_ms": elapsed}
+            return exec_err("direct_copy", str(e), {
+                "execution_time_ms": elapsed,
+                "dex": "pumpfun"
+            })
 
 
 # Convenience functions for integration with existing execution coordinator

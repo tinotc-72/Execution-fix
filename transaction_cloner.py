@@ -19,6 +19,8 @@ import aiohttp
 import asyncio
 import json
 
+from utils.fees import with_compute_budget
+
 logger = logging.getLogger(__name__)
 
 class TransactionCloner:
@@ -119,6 +121,7 @@ class TransactionCloner:
         Given a transaction signature, fetch and reconstruct the transaction for replay.
         Explicitly reconstructs AccountMeta for each account in every instruction.
         Optionally override certain accounts (e.g., payer, user wallet).
+        Supports v0 transactions with Address Lookup Tables (ALTs).
         """
         from solders.instruction import AccountMeta
         tx_data = await self.fetch_transaction(signature)
@@ -128,6 +131,7 @@ class TransactionCloner:
         try:
             transaction = tx_data.get("transaction", {})
             message = transaction.get("message", {})
+            meta = tx_data.get("meta", {})
             account_keys_raw = message.get("accountKeys", [])
             
             # Convert string account keys to Pubkey objects
@@ -198,6 +202,9 @@ class TransactionCloner:
                 )
                 new_instructions.append(new_ix)
 
+            # Add compute budget to cloned instructions
+            new_instructions = with_compute_budget(new_instructions, cu_limit=1000000, cu_price=5000)
+
             # Get fresh recent blockhash from network
             blockhash_str = await self.get_recent_blockhash()
             if not blockhash_str:
@@ -211,14 +218,46 @@ class TransactionCloner:
                 logger.error(f"Failed to parse blockhash '{blockhash_str}': {hash_error}")
                 return None
 
-            # Rebuild message using the correct Message constructor
+            # Check for Address Lookup Tables (v0 transaction support)
+            address_table_lookups = message.get("addressTableLookups", [])
+            address_lookup_tables = []
+            
+            if address_table_lookups:
+                logger.info(f"Detected v0 transaction with {len(address_table_lookups)} Address Lookup Tables")
+                
+                # Import ALT utility
+                from utils.alts import alts_from_lookups
+                
+                # Fetch and reconstruct ALTs
+                try:
+                    address_lookup_tables = await alts_from_lookups(self.rpc_url, address_table_lookups)
+                    if address_lookup_tables:
+                        logger.info(f"✅ Reconstructed {len(address_lookup_tables)} ALTs for v0 transaction")
+                    else:
+                        logger.warning("⚠️ No ALTs reconstructed, may cause account resolution errors")
+                except Exception as alt_error:
+                    logger.error(f"Failed to reconstruct ALTs: {alt_error}")
+                    # Continue anyway, let the transaction build attempt fail naturally
+
+            # Rebuild message using the appropriate constructor
             try:
-                # Message.new_with_blockhash expects: instructions, payer, recent_blockhash
-                new_message = Message.new_with_blockhash(
-                    new_instructions,
-                    self.payer.pubkey(),
-                    recent_blockhash
-                )
+                if address_lookup_tables:
+                    # Use MessageV0 for transactions with ALTs
+                    from solders.message import MessageV0
+                    logger.info("Building MessageV0 with Address Lookup Tables")
+                    new_message = MessageV0.try_compile(
+                        self.payer.pubkey(),
+                        new_instructions,
+                        address_lookup_tables,
+                        recent_blockhash
+                    )
+                else:
+                    # Use legacy Message for transactions without ALTs
+                    new_message = Message.new_with_blockhash(
+                        new_instructions,
+                        self.payer.pubkey(),
+                        recent_blockhash
+                    )
             except Exception as msg_error:
                 logger.error(f"Failed to create message: {msg_error}")
                 return None
@@ -227,10 +266,9 @@ class TransactionCloner:
             try:
                 # Use the correct VersionedTransaction API
                 # Create VersionedTransaction directly with message and keypairs
-                # Extract raw keypair from WalletWithSign wrapper
                 signed_tx = VersionedTransaction(
                     message=new_message,
-                    keypairs=[self.payer.keypair]
+                    keypairs=[self.payer]
                 )
                 return signed_tx
             except Exception as tx_error:
@@ -273,45 +311,54 @@ class TransactionCloner:
                     )
                     new_tx = VersionedTransaction(
                         message=new_message,
-                        keypairs=[self.payer.keypair]
+                        keypairs=[self.payer]
                     )
                     tx_bytes = bytes(new_tx)
                     tx_b64 = base64.b64encode(tx_bytes).decode()
                 except Exception as rebuild_error:
                     logger.error(f"Failed to rebuild transaction for send: {rebuild_error}")
                     return None
-                params = {"encoding": "base64"}
-                params["preflightCommitment"] = "confirmed"
-                params["maxRetries"] = max_retries
-                params["minContextSlot"] = None
-                params["skipPreflight"] = False
-                params["feePayer"] = str(self.payer.pubkey())
-                params["prioritizationFee"] = priority_fee
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "sendTransaction",
-                    "params": [tx_b64, params]
-                }
+                
+                # Use unified submit helper for consistent confirmation and logging
+                from executors.submit import send_and_confirm_v0_tx
+                
                 logger.debug(f"Attempt {attempt+1}: Sending transaction with blockhash: {blockhash_str}")
-                logger.debug(f"Transaction base64: {tx_b64}")
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(self.rpc_url, json=payload) as response:
-                        data = await response.json()
-                        if "result" in data:
-                            logger.info(f"Transaction sent successfully. Signature: {data['result']}")
-                            return data["result"]
-                        elif "error" in data and "Blockhash not found" in str(data["error"]):
-                            logger.warning(f"Blockhash not found, retrying with fresh blockhash... Last blockhash: {blockhash_str}")
-                            logger.error(f"Full error response: {data}")
-                            attempt += 1
-                            continue
-                        else:
-                            logger.error(f"Failed to send transaction: {data}")
-                            logger.error(f"Full error response: {data}")
-                            logger.debug(f"Transaction base64: {tx_b64}")
-                            logger.debug(f"Blockhash used: {blockhash_str}")
-                            return None
+                result = await send_and_confirm_v0_tx(new_tx, self.rpc_url)
+                
+                if result["success"]:
+                    sig = result["signature"]
+                    status = result["status"].get("confirmationStatus", "unknown")
+                    # Use standardized logging helper
+                    from utils.logs import log_submit_result
+                    from executors.submit import SubmitResult
+                    submit_res = SubmitResult(
+                        ok=True,
+                        signature=sig,
+                        status=status,
+                        confirmationStatus=status
+                    )
+                    log_submit_result("cloner", "clone", "unknown", submit_res)
+                    logger.info(f"Transaction sent successfully. Signature: {sig}")
+                    return sig
+                elif "error" in result and "Blockhash not found" in str(result.get("error", "")):
+                    logger.warning(f"Blockhash not found, retrying with fresh blockhash... Last blockhash: {blockhash_str}")
+                    logger.error(f"Full error response: {result}")
+                    attempt += 1
+                    continue
+                else:
+                    logger.error(f"Failed to send transaction: {result}")
+                    logger.error(f"Full error response: {result}")
+                    # Log failed submission
+                    from utils.logs import log_submit_result
+                    from executors.submit import SubmitResult
+                    submit_res = SubmitResult(
+                        ok=False,
+                        signature=result.get("signature"),
+                        status="failed",
+                        error=result.get("error")
+                    )
+                    log_submit_result("cloner", "clone", "unknown", submit_res)
+                    return None
             except Exception as e:
                 logger.error(f"Exception sending transaction: {e}")
                 attempt += 1
@@ -339,6 +386,46 @@ class TransactionCloner:
                 logger.error(f"❌ Failed to clone transaction for {signature}")
         tasks = [process_one(sig) for sig in signatures]
         await asyncio.gather(*tasks)
+
+async def clone_tx_from_signature(
+    rpc: str, 
+    signature: str, 
+    new_payer: "Keypair"
+) -> Optional[VersionedTransaction]:
+    """
+    Thin wrapper for cloning a transaction from its signature.
+    
+    Fetches the transaction by signature, rebuilds it with the new payer wallet,
+    updates with a fresh blockhash, re-signs, and returns a VersionedTransaction.
+    
+    Args:
+        rpc: RPC URL to use for fetching transaction and blockhash
+        signature: Transaction signature to clone
+        new_payer: Keypair that will be the new payer (fee payer and signer)
+        
+    Returns:
+        VersionedTransaction if successful, None if cloning fails
+    """
+    try:
+        logger.info(f"ℹ️ [CLONER] Starting transaction clone for signature: {signature[:12]}...")
+        
+        # Create cloner instance
+        cloner = TransactionCloner(rpc_url=rpc, payer=new_payer)
+        
+        # Clone the transaction (fetches, rebuilds with new payer, updates blockhash, signs)
+        vtx = await cloner.clone_transaction(signature)
+        
+        if vtx:
+            logger.info(f"✅ [CLONER] Successfully cloned transaction: {signature[:12]}...")
+            return vtx
+        else:
+            logger.error(f"❌ [CLONER] Failed to clone transaction: {signature[:12]}...")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ [CLONER] Exception during clone: {e}")
+        return None
+
 
 # Example usage (to be integrated with the main copy bot):
 # cloner = TransactionCloner(rpc_url, payer_keypair)

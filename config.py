@@ -17,6 +17,11 @@ import traceback
 # === URLs and Endpoints ===
 HELIUS_WS_URL = kz.HELIUS_Standard_Websocket_URL or f"wss://ws.helius-rpc.com/?api-key={kz.HELIUS_API_KEY}"
 HELIUS_RPC_URL = kz.HELIUS_RPC_URL
+
+# === Secondary RPC for Failover ===
+# Copilot TODO: If primary RPC is unhealthy, automatically switch to secondary
+SECONDARY_RPC_URL = getattr(kz, 'SECONDARY_RPC_URL', 'https://api.mainnet-beta.solana.com')
+
 WALLET_DEBUG = {
     "ENABLE_TX_LOGGING": True,
     "LOG_SIGNATURES": True,
@@ -25,9 +30,14 @@ WALLET_DEBUG = {
     "CONFIRMATION_TIMEOUT": 60
 }
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+# Setup logging - DEEP DEBUG MODE
+logging.basicConfig(
+    level=logging.DEBUG,  # Changed to DEBUG for deeper logging
+    format='%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # Ensure DEBUG level
 
 def debug_keypair_creation(private_key_bytes: bytes) -> None:
     """Debug utility to verify keypair creation parameters"""
@@ -234,8 +244,12 @@ BUNDLE_CONFIG = {
     "tip_percentage": 90
 }
 
-# === Debug Flag ===
-DEBUG = True
+# === Global Debug Configuration ===
+DEBUG = True  # Global debug flag - set to False for production
+DEEP_DEBUG = True  # Extra verbose debug logging - set to False for performance
+EXECUTION_DEBUG = True  # Debug execution flow and parameters
+TRANSACTION_DEBUG = True  # Debug transaction parsing and analysis
+WEBSOCKET_DEBUG = True  # Debug WebSocket message processing
 
 # === Program IDs ===
 TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
@@ -256,61 +270,50 @@ class CopyTradeConfig:
         # Target wallets to monitor
         self.target_wallets = target_wallets if target_wallets is not None else MONITORED_WALLETS
         
-        # Trading settings - TESTING CONFIGURATION for copy trading
-        # Testing settings - conservative for initial functionality testing
-        self.investment_amount_sol = investment_amount_sol if investment_amount_sol is not None else 0.001  # 🧪 TESTING: MEV executor minimum requirement (was 0.0005)
-        self.min_sol_amount = 0.001  # Minimum SOL amount for Jupiter executor
-        self.slippage_tolerance = slippage_tolerance if slippage_tolerance is not None else 0.3  # 🧪 TESTING: 30% slippage for meme coins (was 100%)
-        self.use_jito = use_jito if use_jito is not None else False  # 🧪 TESTING: Disable Jito for simpler testing
-        self.slippage_bps = slippage_bps if slippage_bps is not None else 3000  # 🧪 TESTING: 30% slippage (3,000 basis points)
-        self.max_positions = max_positions if max_positions is not None else 5  # 🧪 TESTING: Limit positions during testing
+        # Trading settings - MORE PERMISSIVE CONFIGURATION for aggressive copy trading
+        self.investment_amount_sol = investment_amount_sol if investment_amount_sol is not None else 0.0001  # Lower minimum
+        self.min_sol_amount = 0.0001  # Lower minimum SOL
+        self.slippage_tolerance = slippage_tolerance if slippage_tolerance is not None else 0.99  # 99% slippage
+        self.use_jito = use_jito if use_jito is not None else True  # Enable Jito for faster execution
+        self.slippage_bps = slippage_bps if slippage_bps is not None else 9900  # 99% slippage in basis points
+        self.max_positions = max_positions if max_positions is not None else 20  # Allow more positions
         
         # === EXECUTOR CONFIG COMPATIBILITY ===
-        # Add all required SolanaExecutorConfig fields for executor compatibility
+        # More permissive retry parameters
+        self.max_retries = 10  # More retries
+        self.retry_delay = 0.5  # Shorter delay
         
-        # Official retry parameters
-        self.max_retries = 3  # Official docs recommend 3 retries max
-        self.retry_delay = 1.0  # 1 second between retries per docs
+        # Permissive transaction parameters
+        self.skip_preflight = True  # Permissive: skip preflight checks for speed
+        self.preflight_commitment = "processed"
+        self.max_retries_rpc = 10  # More RPC retries
         
-        # Official transaction parameters
-        self.skip_preflight = True  # Official docs: Skip for speed in production
-        self.preflight_commitment = "processed"  # Official default
-        self.max_retries_rpc = 3  # RPC level retries
+        # Faster confirmation parameters
+        self.confirmation_timeout = 10.0  # Lower confirmation wait
+        self.confirmation_commitment = "processed"  # Faster commitment level
+        self.confirmation_check_interval = 0.5  # Faster checks
         
-        # Official confirmation parameters
-        self.confirmation_timeout = 60.0  # Official: Allow up to 60s for confirmation
-        self.confirmation_commitment = "confirmed"  # Official recommendation
-        self.confirmation_check_interval = 2.0  # Check every 2 seconds
+        # Higher compute budget parameters for better execution
+        self.compute_unit_limit = 1_600_000  # Higher compute units
+        self.compute_unit_price = 1  # Lower priority fee
         
-        # Official compute budget parameters (per docs)
-        self.compute_unit_limit = 300_000  # Official: Request specific compute limit
-        self.compute_unit_price = 10_000  # Official: 10,000 micro-lamports = priority fee
+        # Extended timeout parameters
+        self.transaction_timeout = 300.0  # Longer blockhash timeout
+        self.fresh_blockhash_timeout = 120.0
         
-        # Official timeout parameters
-        self.transaction_timeout = 150.0  # Official: Blockhash expires after ~150 blocks (75s)
-        self.fresh_blockhash_timeout = 60.0  # Get fresh blockhash if older than 60s
+        # Permissive slippage and amounts
+        self.default_slippage = 0.99  # 99% default slippage
+        self.max_slippage = 0.99  # 99% max slippage
+        self.gas_buffer_sol = 0.001  # Lower SOL buffer for gas fees
         
-        # Official slippage and amounts (CRITICAL FIELDS)
-        self.default_slippage = 0.05  # 5% default slippage
-        self.max_slippage = 0.30  # 30% max for meme coins
-        self.gas_buffer_sol = 0.01  # SOL buffer for gas fees
+        # Additional executor fields - more permissive
+        self.priority_fee = 1_000  # Lower priority fee in lamports
+        self.jito_tip_amount = 10_000  # Lower Jito tip amount
         
-        # Additional executor fields
-        self.priority_fee = 2_000_000  # Priority fee in lamports
-        self.jito_tip_amount = 100_000  # Jito tip amount
-        
-        # DEX configuration - Enable all DEXes by default
-        default_dexes = {
-            "direct_pumpfun": True,
-            "pumpfun": True,
-            "jupiter": True,
-            "raydium": True,
-            "cpmm": True,
-            "clmm": True,
-            "orca": True,
-            "phoenix": True,
-            "meteora": True  # 🌊 Enable Meteora DEX support
-        }
+        # DEX configuration - Enable all DEXes by default for maximum permissiveness
+        default_dexes = {dex: True for dex in [
+            "direct_pumpfun", "pumpfun", "jupiter", "raydium", "cpmm", "clmm", "orca", "phoenix", "meteora"
+        ]}
         self.enable_dexes = enable_dexes if enable_dexes is not None else default_dexes
         
         # WebSocket and RPC settings
@@ -330,6 +333,13 @@ class CopyTradeConfig:
         # Position tracking
         self.enable_position_tracking = True
         self.auto_liquidate_on_stop = True
+        
+        # Debug configuration - inherit from global flags
+        self.debug = DEBUG
+        self.deep_debug = DEEP_DEBUG
+        self.execution_debug = EXECUTION_DEBUG
+        self.transaction_debug = TRANSACTION_DEBUG
+        self.websocket_debug = WEBSOCKET_DEBUG
     
     def to_solana_executor_config(self):
         """Convert CopyTradeConfig to SolanaExecutorConfig for executor compatibility"""
@@ -378,6 +388,27 @@ class CopyTradeConfig:
         
         logger.info("✅ All executor config fields validated successfully")
         return True
+    
+    # Dict-like methods for executor compatibility (Jupiter executor needs these)
+    def get(self, key, default=None):
+        """Get config value with default fallback (dict-like behavior)"""
+        return getattr(self, key, default)
+    
+    def __getitem__(self, key):
+        """Allow dict-style access config['key']"""
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(f"Config key '{key}' not found")
+    
+    def __setitem__(self, key, value):
+        """Allow dict-style assignment config['key'] = value"""
+        setattr(self, key, value)
+    
+    def setdefault(self, key, default=None):
+        """Set default value if key doesn't exist (dict-like behavior)"""
+        if not hasattr(self, key):
+            setattr(self, key, default)
+        return getattr(self, key)
 
 __all__ = [
     "WALLET",
@@ -385,6 +416,7 @@ __all__ = [
     "PUMP_FUN_PROGRAM_ID",
     "PUMP_TRADE_PROGRAM",
     "RPC_URL",
+    "SECONDARY_RPC_URL",
     "JITO_AUTH_TOKEN",
     "JITO_BLOCK_ENGINE",
     "JITO_RELAYER",
@@ -405,6 +437,10 @@ __all__ = [
     "MONITORED_WALLET_PUBKEYS",
     "BUNDLE_CONFIG",
     "DEBUG",
+    "DEEP_DEBUG",
+    "EXECUTION_DEBUG", 
+    "TRANSACTION_DEBUG",
+    "WEBSOCKET_DEBUG",
     "TOKEN_PROGRAM_ID",
     "SYSTEM_PROGRAM_ID",
     "ASSOCIATED_TOKEN_PROGRAM_ID",

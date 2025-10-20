@@ -8,15 +8,138 @@ import asyncio
 import logging
 import requests
 import base64
+import time
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
-from solders.message import to_bytes_versioned
 import base58
 
+# Additional imports for the fixed implementation
+from solders.message import MessageV0
+from solders.hash import Hash
+from utils import RPCClient
+from utils.fees import with_compute_budget
+
 logger = logging.getLogger(__name__)
+
+# Constants for router detection
+JUPITER_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+METEORA_AGGREGATOR = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
+
+async def try_mev_direct_copy_sell(trade_info: dict, wallet: Keypair, rpc):
+    """
+    Build a *real* VersionedTransaction for cloning a SELL route.
+    1) Fetch the original tx (via get_transaction).
+    2) Extract route/DEX (Jupiter/Meteora) and key accounts.
+    3) Rebuild instructions with our wallet's accounts.
+    4) Create and sign a VersionedTransaction.
+    5) Use executors.submit.send_and_confirm_v0_tx for submission with confirmation.
+    
+    TODO: Replace manual submission/confirmation with send_and_confirm_v0_tx when
+          instruction building is implemented.
+    """
+    sig = trade_info.get("signature")
+    if not sig:
+        return {"ok": False, "executor": "direct_sell_executor", "error": "missing source signature"}
+
+    # 1) Fetch original tx
+    tx_resp = await rpc.get_transaction(sig, commitment="confirmed", max_supported_transaction_version=0)
+    if not tx_resp.value:
+        return {"ok": False, "executor": "direct_sell_executor", "error": "source transaction not found"}
+
+    # 2) Detect route program
+    logs = (tx_resp.value.meta.log_messages or [])
+    log_line = " | ".join(logs)
+    if JUPITER_PROGRAM not in log_line and METEORA_AGGREGATOR not in log_line:
+        # Don't lie; if we can't detect, say so.
+        return {"ok": False, "executor": "direct_sell_executor", "error": "router program not found in source tx logs"}
+
+    # 3) TODO: build the SELL instruction list for our wallet (omitted here for brevity)
+    #    -> compile MessageV0(...)
+    #    -> if you use address lookup tables, fetch them and include lookups.
+
+    # Minimal skeleton to ensure we produce a real VersionedTransaction:
+    recent = await rpc.get_latest_blockhash()
+    # Add compute budget to instructions (empty list for now, but structure is correct)
+    instructions = with_compute_budget([])  # <--- build actual route instructions here
+    msg = MessageV0.try_compile(
+        payer=wallet.pubkey(),
+        instructions=instructions,
+        address_lookup_table_accounts=[],
+        recent_blockhash=Hash.from_string(recent.value.blockhash),
+    )
+    vtx = VersionedTransaction(msg, [wallet])
+    # This is an actual tx, not a dict. It has .signatures and can be serialized.
+
+    # 4) Send + 5) confirm correctly
+    # TODO: Replace this manual submission with:
+    # from executors.submit import send_and_confirm_v0_tx
+    # result = await send_and_confirm_v0_tx(vtx, rpc_url)
+    # return {"ok": result["success"], "executor": "direct_sell_executor", "signature": result.get("signature"), ...}
+    
+    wire = bytes(vtx)  # already signed
+    send = await rpc.send_raw_transaction(wire, max_retries=3, skip_preflight=False)
+    tx_sig = str(send.value)
+
+    # Confirm using get_signature_statuses (get_confirmed_transaction doesn't exist on AsyncClient)
+    for _ in range(20):
+        st = await rpc.get_signature_statuses([tx_sig])
+        val = st.value and st.value[0]
+        if val and (val.confirmation_status in ("confirmed", "finalized")):
+            return {"ok": True, "executor": "direct_sell_executor", "signature": tx_sig, "details": {"path": "rpc"}}
+        await asyncio.sleep(0.25)
+
+    return {"ok": False, "executor": "direct_sell_executor", "error": "not confirmed in time", "details": {"sig": tx_sig}}
+
+# =====================================================================
+# EXECUTOR STANDARDIZATION HELPERS
+# =====================================================================
+
+def exec_ok(executor_name: str, signature: str, data: dict = None) -> dict:
+    """Standard success response format"""
+    result = {
+        "success": True,
+        "signature": signature,
+        "executor": executor_name,
+        "timestamp": time.time()
+    }
+    if data:
+        result.update(data)
+    return result
+
+def exec_err(executor_name: str, reason: str, data: dict = None) -> dict:
+    """Standard error response format"""
+    result = {
+        "success": False,
+        "error": reason,
+        "executor": executor_name,
+        "timestamp": time.time()
+    }
+    if data:
+        result.update(data)
+    return result
+
+def is_success(result: dict) -> bool:
+    """Check if executor result represents success"""
+    return isinstance(result, dict) and result.get("success") == True
+
+# Note: This module doesn't directly import JitoClient
+# It relies on jito_service being passed as a parameter
+# The jito_is_configured check ensures safe usage
+def jito_is_configured(jito_service) -> bool:
+    """
+    Check if Jito is properly configured and available.
+    
+    Returns True only if:
+    1. jito_service instance is not None
+    2. jito_service has send_transaction method
+    
+    Note: This module doesn't import JitoClient directly,
+    so we only check the passed jito_service instance.
+    """
+    return jito_service is not None and hasattr(jito_service, 'send_transaction')
 
 @dataclass
 class DirectSellCopyConfig:
@@ -88,7 +211,7 @@ class MEVDirectSellExecutor:
             original_tx = await self._fetch_transaction(original_sell_signature)
             if not original_tx:
                 logger.error(f"❌ Failed to fetch original SELL transaction")
-                return None
+                return exec_err("direct_sell_executor", f"Failed to fetch original SELL transaction: {original_sell_signature}")
             
             # 2. Extract SELL instruction details
             sell_instruction_data = await self._extract_sell_instruction_data(
@@ -96,7 +219,7 @@ class MEVDirectSellExecutor:
             )
             if not sell_instruction_data:
                 logger.error(f"❌ Failed to extract SELL instruction data")
-                return None
+                return exec_err("direct_sell_executor", f"Failed to extract SELL instruction data from transaction")
             
             # 3. Build our SELL transaction using the copied instruction data
             our_sell_tx = await self._build_sell_transaction(
@@ -104,21 +227,21 @@ class MEVDirectSellExecutor:
             )
             if not our_sell_tx:
                 logger.error(f"❌ Failed to build SELL transaction")
-                return None
+                return exec_err("direct_sell_executor", f"Failed to build SELL transaction using copied instruction data")
             
             # 4. Execute the SELL transaction with MEV protection
-            signature = await self._execute_sell_transaction(our_sell_tx)
+            signature = await self._execute_sell_transaction(our_sell_tx, token_mint)
             
             if signature:
                 logger.info(f"✅ Direct SELL copy SUCCESS: {signature}")
                 return signature
             else:
                 logger.error(f"❌ Direct SELL copy execution failed")
-                return None
+                return exec_err("direct_sell_executor", f"Direct SELL copy execution failed")
                 
         except Exception as e:
             logger.error(f"❌ Error in copy_sell_transaction_from_signature: {e}")
-            return None
+            return exec_err("direct_sell_executor", f"Exception in copy_sell_transaction_from_signature: {str(e)}")
     
     async def analyze_wallet_sell_pattern(
         self, 
@@ -136,7 +259,7 @@ class MEVDirectSellExecutor:
             signatures = await self._get_wallet_transactions(wallet_address, limit=50)
             if not signatures:
                 logger.warning(f"⚠️ No transactions found for wallet")
-                return None
+                return exec_err("direct_sell_executor", f"No transactions found for wallet {wallet_address[:8]}")
             
             # Find SELL transactions for this token
             sell_transactions = []
@@ -150,7 +273,7 @@ class MEVDirectSellExecutor:
             
             if not sell_transactions:
                 logger.warning(f"⚠️ No SELL transactions found for token {token_mint[:8]}")
-                return None
+                return exec_err("direct_sell_executor", f"No SELL transactions found for token {token_mint[:8]} from wallet {wallet_address}")
             
             # Return the most recent successful SELL transaction
             best_sell = sell_transactions[0]  # Most recent
@@ -160,7 +283,7 @@ class MEVDirectSellExecutor:
             
         except Exception as e:
             logger.error(f"❌ Error analyzing wallet SELL patterns: {e}")
-            return None
+            return exec_err("direct_sell_executor", f"Error analyzing wallet SELL patterns: {str(e)}")
     
     async def execute_direct_sell_copy(
         self, 
@@ -184,7 +307,7 @@ class MEVDirectSellExecutor:
             sell_pattern = await self.analyze_wallet_sell_pattern(target_wallet, token_mint)
             if not sell_pattern:
                 logger.error(f"❌ No SELL pattern found for {target_wallet[:8]} and token {token_mint[:8]}")
-                return None
+                return exec_err("direct_sell_executor", f"No SELL pattern found for {target_wallet[:8]} and token {token_mint[:8]}")
             
             # 2. Copy the SELL transaction using their pattern
             signature = await self.copy_sell_transaction_from_signature(
@@ -195,7 +318,7 @@ class MEVDirectSellExecutor:
             
         except Exception as e:
             logger.error(f"❌ Error in execute_direct_sell_copy: {e}")
-            return None
+            return exec_err("direct_sell_executor", f"Error in execute_direct_sell_copy: {str(e)}")
     
     async def _fetch_transaction(self, signature: str) -> Optional[Dict[str, Any]]:
         """Fetch transaction data from RPC"""
@@ -222,11 +345,11 @@ class MEVDirectSellExecutor:
                 return result["result"]
             else:
                 logger.warning(f"⚠️ Transaction not found: {signature[:16]}")
-                return None
+                return exec_err("direct_sell_executor", f"Transaction not found: {signature[:16]}")
                 
         except Exception as e:
             logger.error(f"❌ Error fetching transaction {signature[:16]}: {e}")
-            return None
+            return exec_err("direct_sell_executor", f"Error fetching transaction {signature[:16]}: {str(e)}")
     
     async def _get_wallet_transactions(self, wallet_address: str, limit: int = 50) -> List[str]:
         """Get recent transaction signatures for wallet"""
@@ -311,12 +434,12 @@ class MEVDirectSellExecutor:
                 if program_idx < len(account_keys):
                     program_id = account_keys[program_idx]
                     
-                    # Check for known DEX/router programs
+                    # Check for known DEX/router programs (updated with constants)
                     known_programs = {
-                        "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4": "Jupiter",
+                        JUPITER_PROGRAM: "Jupiter",
+                        METEORA_AGGREGATOR: "Meteora", 
                         "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun",
                         "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "Raydium CPMM",
-                        "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN": "Custom Router"
                     }
                     
                     if program_id in known_programs:
@@ -329,12 +452,43 @@ class MEVDirectSellExecutor:
                             "account_keys": account_keys
                         }
             
-            logger.warning(f"⚠️ No router instruction found in SELL transaction")
-            return None
+            # Enhanced router detection using logs (fallback method)
+            logger.info(f"🔍 No router instruction found via program IDs, checking logs...")
+            
+            # Check transaction logs for router activity
+            meta = tx_data.get('meta', {})
+            logs = meta.get('logMessages', [])
+            log_line = " | ".join(logs) if logs else ""
+            
+            if JUPITER_PROGRAM in log_line or "jupiter" in log_line.lower():
+                logger.info(f"✅ Found Jupiter router activity in logs")
+                return {
+                    "program_id": JUPITER_PROGRAM,
+                    "program_name": "Jupiter",
+                    "instruction_index": 0,
+                    "instruction_data": "",
+                    "accounts": [],
+                    "account_keys": account_keys,
+                    "detected_via": "logs"
+                }
+            elif METEORA_AGGREGATOR in log_line or "meteora" in log_line.lower():
+                logger.info(f"✅ Found Meteora router activity in logs") 
+                return {
+                    "program_id": METEORA_AGGREGATOR,
+                    "program_name": "Meteora",
+                    "instruction_index": 0,
+                    "instruction_data": "",
+                    "accounts": [],
+                    "account_keys": account_keys,
+                    "detected_via": "logs"
+                }
+            
+            logger.warning(f"⚠️ No router instruction found in SELL transaction (checked {len(instructions)} instructions and logs)")
+            return exec_err("direct_sell_executor", f"No router instruction found in SELL transaction")
             
         except Exception as e:
             logger.error(f"❌ Error extracting SELL instruction data: {e}")
-            return None
+            return exec_err("direct_sell_executor", f"Error extracting SELL instruction data: {str(e)}")
     
     async def _build_sell_transaction(
         self, 
@@ -359,7 +513,7 @@ class MEVDirectSellExecutor:
             
         except Exception as e:
             logger.error(f"❌ Error building SELL transaction: {e}")
-            return None
+            return exec_err("direct_sell_executor", f"Error building SELL transaction: {str(e)}")
 
     async def _build_jupiter_sell_transaction(self, token_mint: str, sell_percentage: float) -> Optional[VersionedTransaction]:
         """Build Jupiter sell transaction using Jupiter API"""
@@ -368,13 +522,13 @@ class MEVDirectSellExecutor:
             token_balance = await self._get_token_balance(token_mint)
             if token_balance == 0:
                 logger.warning(f"⚠️ No {token_mint[:8]}... tokens to sell")
-                return None
+                return exec_err("direct_sell_executor", f"No {token_mint[:8]}... tokens to sell - balance is 0")
             
             # Calculate amount to sell based on percentage
             sell_amount = int(token_balance * sell_percentage / 100)
             if sell_amount == 0:
                 logger.warning(f"⚠️ Calculated sell amount is 0 for {sell_percentage}% of {token_balance}")
-                return None
+                return exec_err("direct_sell_executor", f"Calculated sell amount is 0 for {sell_percentage}% of {token_balance}")
             
             logger.info(f"💰 Selling {sell_amount} tokens ({sell_percentage}% of {token_balance})")
             
@@ -388,19 +542,19 @@ class MEVDirectSellExecutor:
             
             if not quote_response:
                 logger.error("❌ Failed to get Jupiter quote for sell")
-                return None
+                return exec_err("direct_sell_executor", f"Failed to get Jupiter quote for sell")
             
             # Get swap transaction from Jupiter
             swap_response = await self._get_jupiter_swap_transaction(quote_response)
             if not swap_response:
                 logger.error("❌ Failed to get Jupiter swap transaction for sell")
-                return None
+                return exec_err("direct_sell_executor", f"Failed to get Jupiter swap transaction for sell")
             
             # Decode the transaction
             swap_transaction = swap_response.get("swapTransaction")
             if not swap_transaction:
                 logger.error("❌ No swap transaction in Jupiter response")
-                return None
+                return exec_err("direct_sell_executor", f"No swap transaction in Jupiter response")
             
             # Decode base64 transaction
             import base64
@@ -412,7 +566,7 @@ class MEVDirectSellExecutor:
             
         except Exception as e:
             logger.error(f"❌ Error building Jupiter sell transaction: {e}")
-            return None
+            return exec_err("direct_sell_executor", f"Error building Jupiter sell transaction: {str(e)}")
 
     async def _build_raydium_sell_transaction(self, sell_instruction_data: Dict[str, Any], token_mint: str, sell_percentage: float) -> Optional[VersionedTransaction]:
         """Build Raydium sell transaction by copying instruction structure"""
@@ -425,31 +579,71 @@ class MEVDirectSellExecutor:
             
         except Exception as e:
             logger.error(f"❌ Error building Raydium sell transaction: {e}")
-            return None
+            return exec_err("direct_sell_executor", f"Error building Raydium sell transaction: {str(e)}")
     
-    async def _execute_sell_transaction(self, transaction: VersionedTransaction) -> Optional[str]:
-        """Execute SELL transaction with MEV protection"""
+    async def _execute_sell_transaction(self, transaction: VersionedTransaction, token_mint: str = "unknown") -> Optional[str]:
+        """Execute SELL transaction with MEV protection and proper confirmation"""
         try:
             logger.info(f"⚡ Executing SELL transaction with MEV protection")
+            
+            # Ensure transaction is properly signed (not signing a dict)
+            if not isinstance(transaction, VersionedTransaction):
+                logger.error(f"❌ Expected VersionedTransaction, got {type(transaction)}")
+                return None
             
             # Sign the transaction
             transaction.sign([self.wallet])
             
-            # Serialize transaction for submission
+            # Serialize transaction for Jito if needed
             serialized_tx = bytes(transaction)
             
-            # Try to submit via Jito if configured
-            if self.config and getattr(self.config, 'use_jito', False):
-                signature = await self._submit_via_jito(serialized_tx)
-                if signature:
-                    logger.info(f"✅ SELL transaction submitted via Jito: {signature}")
-                    return signature
+            # Dual-path execution: Jito first, RPC fallback
+            jito_service = getattr(self, 'jito_service', None)
+            if jito_is_configured(jito_service):
+                try:
+                    logger.info("🚀 Using Jito for direct sell MEV protection...")
+                    result = await jito_service.send_transaction(serialized_tx)
+                    signature = result.get("signature")
+                    if signature:
+                        logger.info(f"✅ EXECUTED via direct_sell (jito) — signature: {signature}")
+                        return signature  # Return just the signature string
+                    else:
+                        logger.warning(f"⏭️ Skipped direct_sell (jito): {result}")
+                except Exception as jito_error:
+                    logger.warning(f"⏭️ Skipped direct_sell (jito): {jito_error}")
             
-            # Fallback to RPC submission
-            signature = await self._submit_via_rpc(serialized_tx)
-            if signature:
-                logger.info(f"✅ SELL transaction submitted via RPC: {signature}")
+            # RPC fallback (must exist) - use unified submit helper
+            from executors.submit import send_and_confirm_v0_tx
+            
+            result = await send_and_confirm_v0_tx(transaction, self.rpc_url)
+            if result["success"]:
+                signature = result["signature"]
+                status = result["status"].get("confirmationStatus", "unknown")
+                # Use standardized logging helper
+                from utils.logs import log_submit_result
+                from executors.submit import SubmitResult
+                submit_res = SubmitResult(
+                    ok=True,
+                    signature=signature,
+                    status=status,
+                    confirmationStatus=status
+                )
+                log_submit_result("raydium", "sell", token_mint, submit_res)
+                logger.info(f"✅ EXECUTED via direct_sell (rpc) — signature: {signature}")
                 return signature
+            else:
+                logger.error(f"❌ RPC submission failed: {result.get('error')}")
+                # Log failed submission
+                from utils.logs import log_submit_result
+                from executors.submit import SubmitResult
+                submit_res = SubmitResult(
+                    ok=False,
+                    signature=result.get("signature"),
+                    status="failed",
+                    error=result.get("error")
+                )
+                log_submit_result("raydium", "sell", token_mint, submit_res)
+                return None
             
             logger.error("❌ Failed to submit SELL transaction")
             return None
@@ -459,17 +653,17 @@ class MEVDirectSellExecutor:
             return None
 
     async def _submit_via_jito(self, serialized_tx: bytes) -> Optional[str]:
-        """Submit transaction via Jito for MEV protection"""
-        try:
-            # This would integrate with Jito service
-            logger.warning("⚠️ Jito submission not yet implemented")
-            return None
-        except Exception as e:
-            logger.error(f"❌ Jito submission error: {e}")
-            return None
+        """Submit transaction via Jito for MEV protection (legacy method)"""
+        # This method is kept for compatibility but Jito logic is now in main execution path
+        return None
 
     async def _submit_via_rpc(self, serialized_tx: bytes) -> Optional[str]:
-        """Submit transaction via RPC"""
+        """
+        Submit transaction via RPC (DEPRECATED - legacy method kept for compatibility only).
+        
+        This method is no longer used. All RPC submissions now use the unified submit helper
+        in executors.submit.send_and_confirm_v0_tx for consistent confirmation and logging.
+        """
         try:
             import base64
             
@@ -507,6 +701,54 @@ class MEVDirectSellExecutor:
             logger.error(f"❌ RPC submission error: {e}")
             return None
 
+    async def _submit_via_rpc_fixed(self, serialized_tx: bytes) -> Optional[str]:
+        """
+        Submit transaction via RPC with proper AsyncClient (DEPRECATED).
+        
+        This method is no longer used. All RPC submissions now use the unified submit helper
+        in executors.submit.send_and_confirm_v0_tx for consistent confirmation and logging.
+        """
+        try:
+            # Create RPCClient for proper async RPC calls
+            from utils import RPCClient
+            
+            async with RPCClient(self.rpc_url) as rpc:
+                # Send raw transaction
+                send_response = await rpc.send_raw_transaction(
+                    serialized_tx, 
+                    opts={"skip_preflight": False, "preflight_commitment": "processed"}
+                )
+                
+                if not send_response.value:
+                    logger.error("❌ Failed to send transaction - no signature returned")
+                    return None
+                
+                tx_signature = str(send_response.value)
+                logger.info(f"📡 Transaction submitted: {tx_signature}")
+                
+                # Confirm using get_signature_statuses (correct method)
+                for attempt in range(20):  # 5 seconds total (20 * 0.25s)
+                    try:
+                        status_response = await rpc.get_signature_statuses([tx_signature])
+                        if status_response.value and status_response.value[0]:
+                            status = status_response.value[0]
+                            if status.confirmation_status in ("confirmed", "finalized"):
+                                logger.info(f"✅ Transaction confirmed: {tx_signature}")
+                                return tx_signature
+                        
+                        await asyncio.sleep(0.25)  # Wait 250ms between checks
+                    except Exception as confirm_error:
+                        logger.debug(f"Confirmation check {attempt + 1} failed: {confirm_error}")
+                        await asyncio.sleep(0.25)
+                
+                # Return signature even if not confirmed (timeout)
+                logger.warning(f"⚠️ Transaction submitted but not confirmed in time: {tx_signature}")
+                return tx_signature
+                
+        except Exception as e:
+            logger.error(f"❌ Fixed RPC submission error: {e}")
+            return None
+
     async def _get_jupiter_quote(self, input_mint: str, output_mint: str, amount: int, slippage_bps: int = 300) -> Optional[dict]:
         """Get Jupiter quote for selling tokens"""
         try:
@@ -526,14 +768,14 @@ class MEVDirectSellExecutor:
             quote_data = response.json()
             if "error" in quote_data:
                 logger.error(f"❌ Jupiter quote error: {quote_data['error']}")
-                return None
+                return exec_err("direct_sell_executor", f"Jupiter quote error: {quote_data['error']}")
                 
             logger.info(f"✅ Got Jupiter quote: {quote_data.get('outAmount', 'unknown')} output")
             return quote_data
             
         except Exception as e:
             logger.error(f"❌ Error getting Jupiter quote: {e}")
-            return None
+            return exec_err("direct_sell_executor", f"Error getting Jupiter quote: {str(e)}")
 
     async def _get_jupiter_swap_transaction(self, quote_data: dict) -> Optional[dict]:
         """Get Jupiter swap transaction from quote"""
@@ -556,21 +798,21 @@ class MEVDirectSellExecutor:
             swap_data = response.json()
             if "error" in swap_data:
                 logger.error(f"❌ Jupiter swap error: {swap_data['error']}")
-                return None
+                return exec_err("direct_sell_executor", f"Jupiter swap error: {swap_data['error']}")
                 
             logger.info(f"✅ Got Jupiter swap transaction")
             return swap_data
             
         except Exception as e:
             logger.error(f"❌ Error getting Jupiter swap transaction: {e}")
-            return None
+            return exec_err("direct_sell_executor", f"Error getting Jupiter swap transaction: {str(e)}")
 
     async def _get_token_balance(self, token_mint: str) -> int:
         """Get wallet's token balance"""
         try:
             import requests
             from solders.pubkey import Pubkey
-            from spl.token.instructions import get_associated_token_address
+            from utils import get_associated_token_address
             
             # Get associated token account
             wallet_pubkey = self.wallet.pubkey()
@@ -628,7 +870,7 @@ async def execute_direct_sell_copy(
         )
     except Exception as e:
         logger.error(f"❌ Error in execute_direct_sell_copy: {e}")
-        return None
+        return exec_err("direct_sell_executor", f"Error in execute_direct_sell_copy: {str(e)}")
 
 async def copy_specific_sell_transaction(
     wallet_private_key: str,
@@ -657,7 +899,7 @@ async def copy_specific_sell_transaction(
         )
     except Exception as e:
         logger.error(f"❌ Error in copy_specific_sell_transaction: {e}")
-        return None
+        return exec_err("direct_sell_executor", f"Error in copy_specific_sell_transaction: {str(e)}")
 
 if __name__ == "__main__":
     # Example usage

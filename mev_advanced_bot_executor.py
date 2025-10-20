@@ -32,15 +32,13 @@ import base64
 import struct
 
 # Solana imports
-from solana.rpc.async_api import AsyncClient
-from solana.rpc.commitment import Confirmed, Finalized
-from solana.rpc.types import TxOpts
 from solders.transaction import VersionedTransaction
 from solders.instruction import Instruction as TransactionInstruction
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey as PublicKey
 from solders.system_program import transfer, TransferParams
-from solana.rpc.core import RPCException
+from utils import RPCClient
+from utils.fees import with_compute_budget
 
 # Standard Solana Program IDs
 TOKEN_PROGRAM_ID = PublicKey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
@@ -51,23 +49,28 @@ COMPUTE_BUDGET_PROGRAM_ID = PublicKey.from_string("ComputeBudget1111111111111111
 ADVANCED_MEV_BOT_PROGRAM = PublicKey.from_string("BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW")
 CUSTOM_ROUTING_PROGRAM = PublicKey.from_string("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG")
 
-# Jito client placeholder
+# Jito client - optional dependency
 try:
-    from jito_client import JitoClient
+    from jito_service import JitoClient
     JITO_AVAILABLE = True
-except ImportError:
-    try:
-        from .jito_client import JitoClient
-        JITO_AVAILABLE = True
-    except ImportError:
-        JITO_AVAILABLE = False
-        logger = logging.getLogger(__name__)
-        logger.warning("⚠️ JitoClient not available - MEV protection disabled")
-        class JitoClient:
-            def __init__(self):
-                pass
+    logger.info("[ADVANCED_MEV] ✅ JitoClient available for MEV protection")
+except ImportError as e:
+    JITO_AVAILABLE = False
+    JitoClient = None
+    logger.info(f"[ADVANCED_MEV] ℹ️  JitoClient not available: {e}. Will use RPC fallback.")
 
 logger = logging.getLogger(__name__)
+
+def jito_is_configured(jito_service) -> bool:
+    """
+    Check if Jito is properly configured and available.
+    
+    Returns True only if:
+    1. JITO_AVAILABLE (jito_service module can be imported)
+    2. jito_service instance is not None
+    3. jito_service has send_transaction method
+    """
+    return JITO_AVAILABLE and jito_service is not None and hasattr(jito_service, 'send_transaction')
 
 @dataclass
 class AdvancedMEVTradeParams:
@@ -146,18 +149,27 @@ class MEVAdvancedBotExecutor:
                     error="Failed to build transaction",
                     execution_time=time.time() - start_time
                 )
-            # Execute with MEV protection if available
-            if params.use_jito and self.jito_service and JITO_AVAILABLE:
-                result = await self._execute_with_jito(transaction, params)
+            # Dual-path execution: Jito first, RPC fallback
+            if params.use_jito and jito_is_configured(self.jito_service):
+                try:
+                    result = await self._execute_with_jito(transaction, params)
+                    if not result.success:
+                        logger.warning("⏭️ Skipped advanced_mev (jito): Jito execution failed")
+                        result = await self._execute_with_rpc(transaction, params)
+                except Exception as jito_error:
+                    logger.warning(f"⏭️ Skipped advanced_mev (jito): {jito_error}")
+                    result = await self._execute_with_rpc(transaction, params)
             else:
+                # RPC fallback (must exist)
                 result = await self._execute_with_rpc(transaction, params)
             # Update statistics
             if result.success:
                 self.successful_trades += 1
-                logger.info(f"✅ Advanced MEV Bot buy success: {result.signature}")
+                path_info = " (jito)" if (params.use_jito and jito_is_configured(self.jito_service)) else " (rpc)"
+                logger.info(f"✅ EXECUTED via advanced_mev{path_info} — signature: {result.signature}")
             else:
                 self.failed_trades += 1
-                logger.error(f"❌ Advanced MEV Bot buy failed: {result.error}")
+                logger.error(f"⏭️ Skipped advanced_mev: {result.error}")
             result.execution_time = time.time() - start_time
             return result
         except Exception as e:
@@ -174,22 +186,7 @@ class MEVAdvancedBotExecutor:
         """Build transaction following reverse-engineered MEV bot pattern (minimal valid transaction for now)"""
         try:
             instructions = []
-            # Step 1: Compute Budget Instructions
-            compute_limit_data = struct.pack('<BI', 0, params.compute_units)
-            compute_limit_instruction = TransactionInstruction(
-                program_id=COMPUTE_BUDGET_PROGRAM_ID,
-                accounts=[],
-                data=compute_limit_data
-            )
-            instructions.append(compute_limit_instruction)
-            # Step 2: Priority Fee
-            priority_fee_data = struct.pack('<BQ', 3, params.priority_fee)
-            priority_fee_instruction = TransactionInstruction(
-                program_id=COMPUTE_BUDGET_PROGRAM_ID, 
-                accounts=[],
-                data=priority_fee_data
-            )
-            instructions.append(priority_fee_instruction)
+            
             # Step 3: Add a minimal dummy instruction (so transaction is valid)
             dummy_data = b"dummy"
             dummy_ix = TransactionInstruction(
@@ -198,6 +195,14 @@ class MEVAdvancedBotExecutor:
                 data=dummy_data
             )
             instructions.append(dummy_ix)
+            
+            # Add compute budget instructions
+            instructions = with_compute_budget(
+                instructions,
+                compute_unit_limit=params.compute_units,
+                compute_unit_price=params.priority_fee
+            )
+            
             # Build transaction with proper constructor
             if instructions:
                 # Get recent blockhash
@@ -307,7 +312,7 @@ class MEVAdvancedBotExecutor:
         """Execute transaction with RPC fallback (actually send transaction)"""
         try:
             logger.info("🔗 Executing with RPC...")
-            resp = await self.rpc_client.send_transaction(transaction, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
+            resp = await self.rpc_client.send_transaction(transaction, opts={"skip_preflight": True, "preflight_commitment": "confirmed"})
             signature = resp.value if hasattr(resp, 'value') else None
             if signature:
                 logger.info(f"✅ Transaction sent: {signature}")

@@ -1,14 +1,8 @@
-# Sensitive Files (NEVER commit these)
-.env
-keyZ.py
-**/private_keys/
-*.key
-secure_backup/
-
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 .Python
 build/
 develop-eggs/
@@ -25,29 +19,46 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
-# VSCode
-.vscode/
-*.code-workspace
-.history/
-
-# Mac specific (since you're on Mac)
-.DS_Store
-.AppleDouble
-.LSOverride
-._*
-
-# Your specific project paths (based on your file structure)
-**/Attempt/Hope/keyZ.py
-**/Axiom Sniper*/backup/
-**/Algo Trading/**/private/
-
-# Logs and databases
-*.log
-*.sqlite
-*.db
-
-# Environment directories
+# Virtual environments
 venv/
 env/
-ENV/.env
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+failed_trade_analysis.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+.env

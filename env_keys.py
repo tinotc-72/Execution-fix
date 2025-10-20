@@ -51,7 +51,7 @@ if not load_dotenv(dotenv_path=env_path, override=True):
     raise RuntimeError("Failed to load .env file!")
 
 def validate_env_vars() -> dict:
-    """Validate and return required environment variables"""
+    """Validate and return required environment variables with comprehensive checks"""
     required_vars = {
         "RPC_URL": "Solana RPC endpoint",
         "PHANTOM_PRIVATE_KEY": "Wallet private key"
@@ -68,11 +68,25 @@ def validate_env_vars() -> dict:
             env_vars[var] = value
     
     if missing:
+        error_msg = (
+            "\n" + "=" * 60 + "\n" +
+            "❌ ENVIRONMENT VALIDATION FAILED\n" +
+            "=" * 60 + "\n" +
+            "Missing required environment variables:\n" +
+            "\n".join([f"  • {var}" for var in missing]) + "\n" +
+            "\nPlease ensure your .env file contains all required variables.\n" +
+            "Example .env format:\n" +
+            "  RPC_URL=https://api.mainnet-beta.solana.com\n" +
+            "  PHANTOM_PRIVATE_KEY=your_base58_private_key_here\n" +
+            "=" * 60
+        )
+        logger.error(error_msg)
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
     
     # Log RPC configuration (but not private key)
-    logger.info("\nRPC Configuration:")
-    logger.info(f"RPC_URL: {env_vars['RPC_URL']}")
+    logger.info("\n✅ Environment Configuration:")
+    logger.info(f"   RPC_URL: {env_vars['RPC_URL']}")
+    logger.info(f"   PHANTOM_PRIVATE_KEY: {'*' * 20} (loaded)")
     
     return env_vars
 
@@ -115,6 +129,10 @@ def clean_rpc_url(url: str) -> str:
 
 class EnvKeys:
     def __init__(self):
+        # Validate critical environment variables exist
+        if not os.getenv("PHANTOM_PRIVATE_KEY"):
+            raise ValueError("PHANTOM_PRIVATE_KEY not found in environment variables. Please check your .env file.")
+        
         # === Phantom Private Key ===
         self.PHANTOM_PRIVATE_KEY = os.getenv("PHANTOM_PRIVATE_KEY").strip()
 
@@ -176,12 +194,19 @@ class EnvKeys:
         self.BULLX_NEO_PRIVATE_KEY_QM = os.getenv("BULLX_NEO_PRIVATE_KEY_QM", "")
 
         # === Jito Settings ===
-        self.JITO_UUID = os.getenv('JITO_UUID')
-        self.JITO_AUTH_TOKEN = os.getenv('JITO_AUTH_TOKEN')
-        self.JITO_BUNDLE_ENDPOINT = os.getenv('JITO_BUNDLE_ENDPOINT')
+        # JITO_UUID is the primary auth token for Jito Block Engine
+        self.JITO_UUID = os.getenv('JITO_UUID', '').strip()
+        # JITO_AUTH_TOKEN is an optional alternative auth token
+        self.JITO_AUTH_TOKEN = os.getenv('JITO_AUTH_TOKEN', '').strip()
+        # Use JITO_UUID as primary, fallback to JITO_AUTH_TOKEN if not set
+        if not self.JITO_UUID and self.JITO_AUTH_TOKEN:
+            self.JITO_UUID = self.JITO_AUTH_TOKEN
+        self.JITO_BUNDLE_ENDPOINT = os.getenv('JITO_BUNDLE_ENDPOINT', 'https://mainnet.block-engine.jito.wtf').strip()
 
         # === Jupiter API Settings ===
+        # Updated to use current working Jupiter API v6 endpoints
         self.JUPITER_API_KEY = os.getenv('JUPITER_API_KEY', '')
+        # Primary endpoint is quote-api.jup.ag (official Jupiter v6 API)
         self.JUPITER_QUOTE_URL = os.getenv('JUPITER_QUOTE_URL', 'https://quote-api.jup.ag/v6/quote')
         self.JUPITER_SWAP_URL = os.getenv('JUPITER_SWAP_URL', 'https://quote-api.jup.ag/v6/swap')
 

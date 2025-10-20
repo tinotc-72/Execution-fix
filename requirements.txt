@@ -1,0 +1,14 @@
+# Core Solana SDK - using solders only (no solana-py)
+solders>=0.18.0
+
+# HTTP clients
+aiohttp>=3.9.0
+httpx>=0.25.0
+requests>=2.31.0
+
+# Utilities
+base58>=2.1.0
+python-dotenv>=1.0.0
+
+# Data handling
+dataclasses-json>=0.6.0

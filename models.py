@@ -1,9 +1,9 @@
 # models.py
 
 from dataclasses import dataclass, field
-from typing import List, Union
+from typing import List
 import traceback
-from solders.transaction import Transaction, VersionedTransaction
+from solders.transaction import VersionedTransaction
 from base58 import b58encode
 from base64 import b64encode
 from datetime import datetime, UTC
@@ -22,7 +22,7 @@ class WalletPosition:
 @dataclass
 class Bundle:
     """Bundle format following Jito docs: https://docs.jito.wtf/lowlatencytxnsend/#sendtransaction"""
-    transactions: List[Union[Transaction, VersionedTransaction]]
+    transactions: List[VersionedTransaction]
     
     def to_json(self):
         """Convert to Jito API format for bundle submission following official documentation"""
