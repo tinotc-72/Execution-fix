@@ -208,6 +208,9 @@ COMPUTE_UNIT_PRICE = 100
 JITO_TIP_AMOUNT = 10_000
 SLIPPAGE_BPS = 1000  # 10% slippage tolerance (1000 basis points)
 
+# === Fail-Open Coordinator Configuration ===
+INVESTMENT_PER_TRADE_SOL = 0.001  # Default investment amount when parser cannot infer amount
+
 # === Program IDs ===
 COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
 SYS_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
@@ -426,6 +429,7 @@ __all__ = [
     "COMPUTE_UNIT_LIMIT",
     "COMPUTE_UNIT_PRICE",
     "JITO_TIP_AMOUNT",
+    "INVESTMENT_PER_TRADE_SOL",
     "WALLET_DEBUG",
     "validate_wallet",
     "SLIPPAGE_BPS",
