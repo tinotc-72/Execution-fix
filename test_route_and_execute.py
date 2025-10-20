@@ -54,46 +54,75 @@ def test_function_signature():
 
 
 def test_hard_guard_logic():
-    """Test that hard guard validation logic is implemented"""
+    """Test that hard guard validation logic is removed (PR-01 complete)"""
     print("=" * 80)
-    print("TEST 3: Hard Guard Validation Logic")
+    print("TEST 3: Hard Guard Removed (PR-01 Complete)")
     print("=" * 80)
     
     with open('main.py', 'r') as f:
         content = f.read()
     
-    checks = [
-        ('def _have_all_fields(trade_info: dict) -> bool:', '✅ _have_all_fields helper function defined'),
-        ('if not _have_all_fields(trade_info):', '✅ Validation uses _have_all_fields'),
-        ('ok = all(v not in (None, "", "unknown", "PENDING_ANALYSIS")', '✅ Field validation check implemented'),
+    # Check that the old guard is REMOVED
+    old_checks = [
+        ('if not _have_all_fields(trade_info):', '❌ OLD guard should be removed'),
+        ('logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")', '❌ OLD message should be removed'),
+    ]
+    
+    # Check that new behavior is present
+    new_checks = [
+        ('def _have_all_fields(trade_info: dict) -> bool:', '✅ _have_all_fields helper function still exists (used for mode selection)'),
+        ('# Always hand off to coordinator', '✅ Comment about always calling coordinator'),
+        ('logger.info("📤 [HANDOFF] Calling coordinator now…")', '✅ Handoff logging present'),
     ]
     
     passed = 0
-    for pattern, description in checks:
+    total = len(new_checks)
+    
+    print("\n  Verifying old guard is removed:")
+    for pattern, description in old_checks:
+        # Extract the function body to check
+        import re
+        func_match = re.search(
+            r'async def route_and_execute\(.*?\):(.*?)(?=\nasync def|\nclass |\nif __name__|$)',
+            content,
+            re.DOTALL
+        )
+        if func_match:
+            func_body = func_match.group(1)
+            if pattern not in func_body:
+                print(f"  ✅ {description.replace('❌', '')} - CONFIRMED")
+            else:
+                print(f"  {description}")
+                passed -= 1  # Penalize if old behavior found
+        else:
+            print(f"  ⚠️ Could not find route_and_execute function")
+    
+    print("\n  Verifying new behavior is present:")
+    for pattern, description in new_checks:
         if pattern in content:
             print(f"  {description}")
             passed += 1
         else:
             print(f"  ❌ {description.replace('✅', '')} - NOT FOUND")
     
-    print(f"\n  Result: {passed}/{len(checks)} checks passed\n")
-    return passed == len(checks)
+    print(f"\n  Result: {passed}/{total} checks passed\n")
+    return passed == total
 
 
 def test_emoji_logging():
-    """Test that emoji logging is present"""
+    """Test that new handoff logging is present (PR-01 complete)"""
     print("=" * 80)
-    print("TEST 4: Emoji Logging and Error Handling")
+    print("TEST 4: Handoff Logging (PR-01 Complete)")
     print("=" * 80)
     
     with open('main.py', 'r') as f:
         content = f.read()
     
     checks = [
-        ('logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")', '✅ Warning log with emoji'),
-        ('logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")', '✅ Info log with emoji'),
+        ('logger.info("📤 [HANDOFF] Calling coordinator now…")', '✅ Handoff start log present'),
+        ('logger.info("📥 [HANDOFF] Coordinator call returned")', '✅ Handoff return log present'),
         ('except Exception as e:', '✅ Exception handling present'),
-        ('logger.error(f"❌ [PIPELINE_EXIT] Coordinator crashed: {e}", exc_info=True)', '✅ Error logging with exc_info'),
+        ('logger.error(f"❌ [HANDOFF] Coordinator crashed: {e}", exc_info=True)', '✅ Error logging with exc_info'),
     ]
     
     passed = 0
@@ -161,15 +190,16 @@ def test_called_after_inference():
         print("  ❌ route_and_execute call not found")
         return False
     
-    # Check that route_and_execute is called within a few lines after the debug log
-    # Updated to allow for mode setting and logging (problem statement requirement)
-    if route_and_execute_line > debug_log_line and route_and_execute_line - debug_log_line <= 10:
+    # Check that route_and_execute is called after the debug log
+    # Updated to allow for mode setting and logging (PR-01 requirement: more lines due to mode selection)
+    if route_and_execute_line > debug_log_line and route_and_execute_line - debug_log_line <= 30:
         print(f"  ✅ route_and_execute called after 'After infer_missing_fields' debug log")
         print(f"     Debug log at line {debug_log_line + 1}")
         print(f"     route_and_execute at line {route_and_execute_line + 1}")
+        print(f"     Distance: {route_and_execute_line - debug_log_line} lines (includes mode selection logic)")
         return True
     else:
-        print(f"  ❌ route_and_execute not called immediately after debug log")
+        print(f"  ❌ route_and_execute not called after debug log (too far apart)")
         print(f"     Debug log at line {debug_log_line + 1}")
         print(f"     route_and_execute at line {route_and_execute_line + 1}")
         return False
@@ -195,14 +225,14 @@ def test_import_maybe_execute():
 def main():
     """Run all tests"""
     print("\n" + "=" * 80)
-    print("ROUTE_AND_EXECUTE IMPLEMENTATION VALIDATION")
+    print("ROUTE_AND_EXECUTE IMPLEMENTATION VALIDATION (PR-01 Complete)")
     print("=" * 80 + "\n")
     
     tests = [
         ("route_and_execute exists", test_route_and_execute_exists),
         ("Function signature", test_function_signature),
-        ("Hard guard logic", test_hard_guard_logic),
-        ("Emoji logging", test_emoji_logging),
+        ("Hard guard removed (PR-01)", test_hard_guard_logic),
+        ("Handoff logging (PR-01)", test_emoji_logging),
         ("maybe_execute call", test_maybe_execute_call),
         ("Called after inference", test_called_after_inference),
         ("maybe_execute import", test_import_maybe_execute),
@@ -236,10 +266,10 @@ def main():
     if all(passed for _, passed in results):
         print("  🎉 ALL TESTS PASSED!")
         print()
-        print("  The route_and_execute implementation is complete:")
+        print("  The route_and_execute implementation is complete (PR-01):")
         print("  ✅ Function exists with correct signature")
-        print("  ✅ Hard guard validation implemented")
-        print("  ✅ Emoji logging present")
+        print("  ✅ Hard guard removed - all trades reach coordinator")
+        print("  ✅ Handoff logging present")
         print("  ✅ Calls maybe_execute correctly")
         print("  ✅ Called after infer_missing_fields")
         print("  ✅ Proper import from execution_coordinator")

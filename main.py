@@ -406,11 +406,12 @@ async def try_backfill(trade_info: dict, rpc_client) -> bool:
 
 async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     """
-    Route and execute trade with hard guard validation.
+    Route and execute trade - always hands off to coordinator for normalization.
     
     ⚠️ CRITICAL: This function MUST be called with 'await' in async handlers!
     
-    Skips execution if fields are incomplete. Wraps coordinator call in try/except to log any errors.
+    Always calls coordinator, which has fail-open logic to handle incomplete fields.
+    Wraps coordinator call in try/except to log any errors.
     
     Why await is critical:
     - Without await, coordinator logs never appear (🧭 [COORDINATOR] Route=...)
@@ -418,7 +419,7 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     - Without await, the calling function returns before execution completes
     
     Args:
-        trade_info: Trade information dictionary with required fields
+        trade_info: Trade information dictionary (may have incomplete fields)
         rpc: RPC client or RPC URL string
         keypair: Wallet keypair for signing transactions
         jito: Optional Jito service for MEV protection
@@ -429,17 +430,18 @@ async def route_and_execute(trade_info: dict, rpc, keypair, jito=None):
     Example (WRONG - will fail silently):
         route_and_execute(trade_info, rpc=self.rpc_client, keypair=self.wallet, jito=self.jito_service)
     """
-    if not _have_all_fields(trade_info):
-        logger.warning("🛑 [PIPELINE_EXIT] Fields incomplete, skipping execution")
-        return
-    logger.info("🧭 [PIPELINE_EXIT] Final fields ready → handoff to coordinator")
+    # Always hand off to coordinator - no guard on field completeness
+    logger.info("📤 [HANDOFF] Calling coordinator now…")
     
     # Extract rpc_url from rpc_client if needed
     rpc_url = rpc.rpc_url if hasattr(rpc, 'rpc_url') else rpc
     try:
-        await maybe_execute(trade_info, rpc_url, keypair, jito_service=jito)
+        result = await maybe_execute(trade_info, rpc_url, keypair, jito_service=jito)
+        logger.info("📥 [HANDOFF] Coordinator call returned")
+        return result
     except Exception as e:
-        logger.error(f"❌ [PIPELINE_EXIT] Coordinator crashed: {e}", exc_info=True)
+        logger.error(f"❌ [HANDOFF] Coordinator crashed: {e}", exc_info=True)
+        return None
 
 
 class SimpleCopyTradingBot:
@@ -1092,9 +1094,7 @@ class SimpleCopyTradingBot:
                     logger.info("🧭 [MODE] Cloner fallback (fields incomplete)")
                 
                 # Always hand off to route_and_execute - guaranteed execution
-                logger.info("📤 [HANDOFF] Calling coordinator now…")
                 await route_and_execute(trade_info, self.rpc_client, self.wallet, jito=self.jito_service)
-                logger.info("📥 [HANDOFF] Coordinator call returned")
                 # Return after handoff - execution is complete
                 return
             
