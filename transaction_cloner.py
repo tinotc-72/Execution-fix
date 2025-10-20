@@ -20,8 +20,48 @@ import asyncio
 import json
 
 from utils.fees import with_compute_budget
+from utils.alt_fetch import build_alts_from_tables
+from utils.ata_enforce import ensure_ata_ixs, ata_exists
+from utils.ata import create_associated_token_account
+from models.build_result import BuildResult
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
 
 logger = logging.getLogger(__name__)
+
+
+def get_recent_blockhash(rpc_url: str) -> Optional[str]:
+    """
+    Fetch the most recent blockhash from the Solana network (synchronous).
+    
+    Args:
+        rpc_url: RPC endpoint URL
+        
+    Returns:
+        Blockhash string if successful, None otherwise
+    """
+    try:
+        import requests
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getLatestBlockhash",
+            "params": [{"commitment": "confirmed"}]
+        }
+        
+        response = requests.post(rpc_url, json=payload, timeout=10.0)
+        response.raise_for_status()
+        data = response.json()
+        
+        if "result" in data and "value" in data["result"]:
+            return data["result"]["value"]["blockhash"]
+        else:
+            logger.error(f"Failed to get blockhash: {data}")
+            return None
+    except Exception as e:
+        logger.error(f"Failed to fetch recent blockhash: {e}")
+        return None
+
 
 class TransactionCloner:
     async def initialize(self):
@@ -176,6 +216,8 @@ class TransactionCloner:
 
             # Rebuild instructions with proper Instruction objects
             new_instructions = []
+            token_mints = set()  # Track unique token mints for ATA checks
+            
             for ix in message.get("instructions", []):
                 program_id_index = ix.get("programIdIndex")
                 if program_id_index is None or program_id_index >= len(account_keys):
@@ -195,6 +237,16 @@ class TransactionCloner:
                 # Create Instruction object instead of CompiledInstruction
                 from solders.instruction import Instruction
                 program_id = account_keys[program_id_index]
+                
+                # Detect token program instructions that might need ATAs
+                TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                if str(program_id) == TOKEN_PROGRAM_ID and len(account_metas) > 0:
+                    # This is a token instruction, extract potential mint
+                    # In SPL Token, mint is typically in the first few accounts
+                    for account_meta in account_metas[:3]:  # Check first 3 accounts
+                        # Add to set of potential mints
+                        token_mints.add(account_meta.pubkey)
+                
                 new_ix = Instruction(
                     program_id=program_id,
                     accounts=account_metas,
@@ -202,6 +254,31 @@ class TransactionCloner:
                 )
                 new_instructions.append(new_ix)
 
+            # Check and ensure ATAs exist for detected token mints
+            ata_instructions = []
+            if token_mints:
+                logger.info(f"Detected {len(token_mints)} potential token mints, checking ATAs...")
+                for mint in token_mints:
+                    try:
+                        # Check if ATA exists and create if needed
+                        ata_ixs = ensure_ata_ixs(
+                            self.rpc_url,
+                            self.payer.pubkey(),  # payer
+                            self.payer.pubkey(),  # owner (same as payer for cloner)
+                            mint,
+                            create_associated_token_account
+                        )
+                        if ata_ixs:
+                            logger.info(f"Adding ATA creation instruction for mint: {str(mint)[:8]}...")
+                            ata_instructions.extend(ata_ixs)
+                    except Exception as ata_error:
+                        logger.warning(f"Failed to check/create ATA for mint {str(mint)[:8]}: {ata_error}")
+            
+            # Prepend ATA instructions if any
+            if ata_instructions:
+                logger.info(f"Prepending {len(ata_instructions)} ATA creation instructions")
+                new_instructions = ata_instructions + new_instructions
+            
             # Add compute budget to cloned instructions
             new_instructions = with_compute_budget(new_instructions, cu_limit=1000000, cu_price=5000)
 
@@ -225,12 +302,12 @@ class TransactionCloner:
             if address_table_lookups:
                 logger.info(f"Detected v0 transaction with {len(address_table_lookups)} Address Lookup Tables")
                 
-                # Import ALT utility
-                from utils.alts import alts_from_lookups
+                # Extract table pubkeys for sync ALT fetching
+                table_pubkeys = [lookup.get("accountKey") for lookup in address_table_lookups if lookup.get("accountKey")]
                 
-                # Fetch and reconstruct ALTs
+                # Fetch and reconstruct ALTs using sync helper
                 try:
-                    address_lookup_tables = await alts_from_lookups(self.rpc_url, address_table_lookups)
+                    address_lookup_tables = build_alts_from_tables(self.rpc_url, table_pubkeys)
                     if address_lookup_tables:
                         logger.info(f"✅ Reconstructed {len(address_lookup_tables)} ALTs for v0 transaction")
                     else:
@@ -391,12 +468,12 @@ async def clone_tx_from_signature(
     rpc: str, 
     signature: str, 
     new_payer: "Keypair"
-) -> Optional[VersionedTransaction]:
+) -> BuildResult:
     """
     Thin wrapper for cloning a transaction from its signature.
     
     Fetches the transaction by signature, rebuilds it with the new payer wallet,
-    updates with a fresh blockhash, re-signs, and returns a VersionedTransaction.
+    updates with a fresh blockhash, re-signs, and returns a BuildResult.
     
     Args:
         rpc: RPC URL to use for fetching transaction and blockhash
@@ -404,7 +481,7 @@ async def clone_tx_from_signature(
         new_payer: Keypair that will be the new payer (fee payer and signer)
         
     Returns:
-        VersionedTransaction if successful, None if cloning fails
+        BuildResult with ok=True and tx set on success, ok=False with reason on failure
     """
     try:
         logger.info(f"ℹ️ [CLONER] Starting transaction clone for signature: {signature[:12]}...")
@@ -417,14 +494,14 @@ async def clone_tx_from_signature(
         
         if vtx:
             logger.info(f"✅ [CLONER] Successfully cloned transaction: {signature[:12]}...")
-            return vtx
+            return BuildResult(ok=True, tx=vtx, dex='cloner', action='clone')
         else:
             logger.error(f"❌ [CLONER] Failed to clone transaction: {signature[:12]}...")
-            return None
+            return BuildResult(ok=False, tx=None, reason="Failed to clone transaction", dex='cloner', action='clone')
             
     except Exception as e:
         logger.error(f"❌ [CLONER] Exception during clone: {e}")
-        return None
+        return BuildResult(ok=False, tx=None, reason=str(e), dex='cloner', action='clone')
 
 
 # Example usage (to be integrated with the main copy bot):
