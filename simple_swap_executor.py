@@ -3,6 +3,17 @@ Simple DEX Executor - Uses basic token swaps without Jupiter dependency
 For tokens that work with standard Solana programs
 """
 
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+from solders.pubkey import Pubkey
+from solders.message import MessageV0
+from solders.transaction import VersionedTransaction
+
 import asyncio
 import logging
 from typing import Dict, Any, Optional
@@ -22,7 +33,7 @@ class SimpleSwapExecutor:
         # TODO: Replace with aiohttp/httpx or solders-compatible RPC client
         self.rpc_client = None  # Placeholder for future HTTP client
         
-    async def buy_token(self, wallet: Keypair, token_mint: str, amount_sol: float, **kwargs) -> Dict[str, Any]:
+    async def buy_token(self, wallet: Keypair, token_mint: str, amount_sol: float, **kwargs) -> BuildResult:
         """Simple buy using whatever liquidity is available"""
         try:
             logger.info(f"🔄 Simple Swap BUY: {amount_sol} SOL → {token_mint}")
@@ -41,14 +52,11 @@ class SimpleSwapExecutor:
             logger.warning("⚠️ Simple swap not fully implemented - need proper AMM integration")
             logger.info("💡 This executor would handle basic swaps for standard tokens")
             
-            return {
-                "success": False, 
-                "signature": "", 
-                "error": "Simple swap implementation incomplete - use Jupiter-independent method needed"
-            }
+            return BuildResult(ok=False, tx=None, reason="Simple swap implementation incomplete - use Jupiter-independent method needed")
             
         except Exception as e:
             logger.error(f"❌ Simple swap buy error: {e}")
+            return BuildResult(ok=False, tx=None, reason=f"simple swap error: {e}")
             return {"success": False, "signature": "", "error": str(e)}
     
     async def sell_token(self, wallet: Keypair, token_mint: str, **kwargs) -> Dict[str, Any]:

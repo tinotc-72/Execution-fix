@@ -4,6 +4,15 @@
 Raydium V4 AMM Trade Executor - Core trading logic for Raydium V4 AMM trades
 Handles transaction construction and execution for direct Raydium V4 AMM trades
 """
+
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -252,7 +261,7 @@ class RaydiumTradeExecutor:
         token_mint: Pubkey, 
         sol_amount: Optional[float] = None,
         pool_info: Optional[Dict[str, Pubkey]] = None
-    ) -> Optional[str]:
+    ) -> BuildResult:
         """Execute a buy trade on Raydium V4 AMM, returns the transaction signature or None"""
         sol_amount = sol_amount or self.config.sol_amount
         logger.info(f"🛒 Executing Raydium BUY trade: {sol_amount} SOL for {token_mint}")
@@ -296,49 +305,58 @@ class RaydiumTradeExecutor:
             # Execute with retries
             for attempt in range(self.config.max_retries):
                 try:
-                    # Get recent blockhash
-                    recent_blockhash = (await self.client.get_latest_blockhash()).value.blockhash
+                    # PR-02 Pattern: Apply compute budget before compile
+                    ixs = [swap_instruction]
+                    ixs = with_compute_budget(ixs)
                     
-                    # Create transaction
-                    message = MessageV0.try_compile(
-                        payer=self.wallet_pubkey,
-                        instructions=[
-                            set_compute_unit_limit(self.config.compute_unit_limit),
-                            set_compute_unit_price(self.config.compute_unit_price),
-                            swap_instruction
-                        ],
-                        recent_blockhash=recent_blockhash,
-                        address_lookup_table_accounts=[]
+                    # Prepare variables for ATA enforcement
+                    payer = self.wallet_keypair.pubkey()
+                    owner = self.wallet_keypair.pubkey()
+                    out_mint = token_mint
+                    trade_info = {"token_mint": str(token_mint), "action": "buy"}
+                    
+                    # Ensure ATA instructions
+                    ixs = ensure_ata_ixs(self.rpc_url, payer, owner, out_mint, create_associated_token_account) + ixs
+                    
+                    # Build ALTs
+                    table_pubkeys = trade_info.get("lookup_tables", [])
+                    alts = build_alts_from_tables(self.rpc_url, table_pubkeys) if table_pubkeys else []
+                    
+                    # Compile v0 message with ALT support
+                    msg = MessageV0.compile(
+                        instructions=ixs,
+                        payer=payer,
+                        address_lookup_tables=alts,
+                        recent_blockhash=get_recent_blockhash(self.rpc_url),
                     )
-                    transaction = VersionedTransaction(message, [self.wallet_keypair])
+                    tx = VersionedTransaction(msg, [self.wallet_keypair])
                     
-                    # Simulate first
-                    sim_result = await self.client.simulate_transaction(transaction)
-                    if sim_result.value.err:
-                        logger.error(f"❌ Simulation failed: {sim_result.value.err}")
-                        if hasattr(sim_result.value, 'logs') and sim_result.value.logs:
-                            for log in sim_result.value.logs:
-                                logger.error(f"   Log: {log}")
+                    # Submit + log
+                    res = send_and_confirm_v0_tx(self.rpc_url, tx)
+                    log_submit_result("raydium", trade_info.get("action","buy"), trade_info.get("token_mint","?"), res)
+                    
+                    if res and res.get("success"):
+                        return BuildResult(ok=True, tx=res.get("signature"), dex="raydium", action="buy")
+                    else:
                         if attempt < self.config.max_retries - 1:
                             await asyncio.sleep(self.config.retry_delay)
                             continue
-                        return None
-                    
-                    # Send transaction
-                    # TODO: Replace with aiohttp/solders logic to send transaction
-                    raise NotImplementedError("send_transaction must be implemented with aiohttp/Solders")
+                        return BuildResult(ok=False, tx=None, reason=f"submit failed: {res}")
+                        
                 except Exception as e:
                     logger.error(f"❌ Buy attempt {attempt + 1} error: {e}")
                     if attempt < self.config.max_retries - 1:
                         await asyncio.sleep(self.config.retry_delay)
                         continue
-                    raise e
-            
-            return None
+                    return BuildResult(ok=False, tx=None, reason=f"build failed: {e}")
+                    if attempt < self.config.max_retries - 1:
+                        await asyncio.sleep(self.config.retry_delay)
+                        continue
+                    return BuildResult(ok=False, tx=None, reason=f"All attempts failed: {e}")
             
         except Exception as e:
             logger.error(f"❌ Buy trade error: {e}")
-            return None
+            return BuildResult(ok=False, tx=None, reason=f"buy trade error: {e}")
 
     async def execute_sell_trade(
         self, 
@@ -346,7 +364,7 @@ class RaydiumTradeExecutor:
         token_amount: Optional[int] = None,
         pool_info: Optional[Dict[str, Pubkey]] = None,
         **kwargs
-    ) -> Optional[str]:
+    ) -> BuildResult:
         """Execute a sell trade on Raydium V4 AMM with proportional selling support"""
         logger.info(f"💸 Executing Raydium SELL trade: {token_amount or 'ALL'} tokens for {token_mint}")
         

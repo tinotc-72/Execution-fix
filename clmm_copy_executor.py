@@ -4,6 +4,17 @@ CLMM Copy Executor - Adapted from your existing cpmm_copy_executor.py
 Modified to work with CLMM program using the analyzed transaction structure
 """
 
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+from solders.pubkey import Pubkey
+from solders.message import MessageV0
+from solders.transaction import VersionedTransaction
+
 import asyncio
 import struct
 import logging
@@ -112,7 +123,7 @@ class CLMMCopyExecutor:
         logger.info(f"   Pool: {self.pool_data['pool_state']}")
         logger.info(f"   Token: {self.pool_data['token_mint']}")
     
-    async def execute_copy_trade(self, is_buy: bool, amount: float = None, **kwargs) -> Optional[str]:
+    async def execute_copy_trade(self, is_buy: bool, amount: float = None, **kwargs) -> BuildResult:
         """Execute a copy trade - unified interface for buy/sell"""
         try:
             if is_buy:
@@ -129,7 +140,7 @@ class CLMMCopyExecutor:
         """Execute a sell copy trade - for compatibility with other executors"""
         return await self.execute_sell_trade(**kwargs)
     
-    async def execute_buy_trade(self, sol_amount: float = 0.0001) -> Optional[str]:
+    async def execute_buy_trade(self, sol_amount: float = 0.0001) -> BuildResult:
         """Execute a CLMM buy trade"""
         try:
             logger.info(f"🛒 Executing CLMM BUY: {sol_amount} SOL")
@@ -164,7 +175,7 @@ class CLMMCopyExecutor:
             logger.error(f"❌ CLMM buy error: {e}")
             return None
     
-    async def execute_sell_trade(self, token_amount: Optional[int] = None, **kwargs) -> Optional[str]:
+    async def execute_sell_trade(self, token_amount: Optional[int] = None, **kwargs) -> BuildResult:
         """Execute a CLMM sell trade with proportional selling support"""
         try:
             logger.info(f"💸 Executing CLMM SELL trade: {token_amount or 'ALL'} tokens")
