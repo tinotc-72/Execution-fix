@@ -1,5 +1,13 @@
 # Standardized CPMM buy function for copy bot integration
 
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+
 from solders.keypair import Keypair
 from typing import Dict, Any
 from dataclasses import dataclass
@@ -14,7 +22,7 @@ FEE_RECIPIENT_WRITABLE = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV1T6NVs
 
 # Place try_cpmm_buy at the end of the file, after all class and dataclass definitions
 
-async def try_cpmm_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: float, **kwargs) -> Dict[str, Any]:
+async def try_cpmm_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: float, **kwargs) -> BuildResult:
     """
     Standardized CPMM buy function for copy bot integration.
     Args:

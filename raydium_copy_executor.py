@@ -2,8 +2,19 @@
 # --- Raydium CPMM Anchor IDL REQUIRED ---
 # All swap instruction construction in this file must use the official Raydium CPMM Anchor IDL
 # (discriminator and argument layout from the IDL, not hardcoded or reverse-engineered)
+
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
+from solders.message import MessageV0
+from solders.transaction import VersionedTransaction
 async def try_raydium_launchlab_sell(
     wallet_keypair: Keypair,
     payer: str,
