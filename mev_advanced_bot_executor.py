@@ -21,6 +21,14 @@ Execution Pattern:
 Target Success Rate: 95%+ (based on successful wallet analysis)
 """
 
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+
 import asyncio
 import json
 import time
@@ -120,7 +128,7 @@ class MEVAdvancedBotExecutor:
         logger.info(f"   Target Program: {ADVANCED_MEV_BOT_PROGRAM}")
         logger.info(f"   Custom Program: {CUSTOM_ROUTING_PROGRAM}")
     
-    async def execute_buy(self, params: AdvancedMEVTradeParams) -> AdvancedMEVTradeResult:
+    async def execute_buy(self, params: AdvancedMEVTradeParams) -> BuildResult:
         """
         Execute advanced MEV bot buy using reverse-engineered pattern
         
@@ -142,10 +150,12 @@ class MEVAdvancedBotExecutor:
             transaction = await self._build_advanced_mev_transaction(params)
             if not transaction:
                 self.failed_trades += 1
-                return AdvancedMEVTradeResult(
-                    success=False,
-                    error="Failed to build transaction",
-                    execution_time=time.time() - start_time
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="advanced_mev",
+                    action="buy",
+                    reason="Failed to build transaction"
                 )
             # Dual-path execution: Jito first, RPC fallback
             if params.use_jito and jito_is_configured(self.jito_service):
@@ -161,23 +171,37 @@ class MEVAdvancedBotExecutor:
                 # RPC fallback (must exist)
                 result = await self._execute_with_rpc(transaction, params)
             # Update statistics
-            if result.success:
+            if result.ok:
                 self.successful_trades += 1
                 path_info = " (jito)" if (params.use_jito and jito_is_configured(self.jito_service)) else " (rpc)"
-                logger.info(f"✅ EXECUTED via advanced_mev{path_info} — signature: {result.signature}")
+                logger.info(f"✅ EXECUTED via advanced_mev{path_info} — result: {result.reason}")
+                return BuildResult(
+                    ok=True,
+                    tx=result.tx,
+                    dex="advanced_mev",
+                    action="buy",
+                    reason=f"Advanced MEV buy successful{path_info}"
+                )
             else:
                 self.failed_trades += 1
-                logger.error(f"⏭️ Skipped advanced_mev: {result.error}")
-            result.execution_time = time.time() - start_time
-            return result
+                logger.error(f"⏭️ Skipped advanced_mev: {result.reason}")
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="advanced_mev",
+                    action="buy",
+                    reason=result.reason
+                )
         except Exception as e:
             self.failed_trades += 1
             execution_time = time.time() - start_time
             logger.error(f"❌ Advanced MEV Bot execution error: {e}")
-            return AdvancedMEVTradeResult(
-                success=False,
-                error=f"Execution error: {str(e)}",
-                execution_time=execution_time
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="advanced_mev",
+                action="buy",
+                reason=f"Execution error: {str(e)}"
             )
     
     async def _build_advanced_mev_transaction(self, params: AdvancedMEVTradeParams) -> Optional[VersionedTransaction]:
@@ -291,7 +315,7 @@ class MEVAdvancedBotExecutor:
             logger.error(f"❌ Error building MEV bot instruction: {e}")
             return None
     
-    async def _execute_with_jito(self, transaction: VersionedTransaction, params: AdvancedMEVTradeParams) -> AdvancedMEVTradeResult:
+    async def _execute_with_jito(self, transaction: VersionedTransaction, params: AdvancedMEVTradeParams) -> BuildResult:
         """Execute transaction with Jito MEV protection"""
         try:
             logger.info("🛡️ Executing with Jito MEV protection...")
@@ -299,21 +323,25 @@ class MEVAdvancedBotExecutor:
             # Placeholder for Jito execution
             # Would implement actual Jito bundle submission
             
-            return AdvancedMEVTradeResult(
-                success=False,
-                error="Jito execution not yet implemented",
-                mev_protected=True
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="advanced_mev",
+                action="buy_jito",
+                reason="Jito execution not yet implemented"
             )
             
         except Exception as e:
             logger.error(f"❌ Jito execution error: {e}")
-            return AdvancedMEVTradeResult(
-                success=False,
-                error=f"Jito execution error: {str(e)}",
-                mev_protected=True
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="advanced_mev",
+                action="buy_jito",
+                reason=f"Jito execution error: {str(e)}"
             )
     
-    async def _execute_with_rpc(self, transaction: VersionedTransaction, params: AdvancedMEVTradeParams) -> AdvancedMEVTradeResult:
+    async def _execute_with_rpc(self, transaction: VersionedTransaction, params: AdvancedMEVTradeParams) -> BuildResult:
         """Execute transaction with RPC fallback (actually send transaction)"""
         try:
             logger.info("🔗 Executing with RPC...")
@@ -321,17 +349,41 @@ class MEVAdvancedBotExecutor:
             signature = resp.value if hasattr(resp, 'value') else None
             if signature:
                 logger.info(f"✅ Transaction sent: {signature}")
-                return AdvancedMEVTradeResult(success=True, signature=signature, mev_protected=False)
+                return BuildResult(
+                    ok=True,
+                    tx=transaction,
+                    dex="advanced_mev",
+                    action="buy_rpc",
+                    reason=f"Transaction sent: {signature}"
+                )
             else:
                 logger.error(f"❌ Transaction failed to send: {resp}")
-                return AdvancedMEVTradeResult(success=False, error=str(resp), mev_protected=False)
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="advanced_mev",
+                    action="buy_rpc",
+                    reason=f"Transaction failed to send: {resp}"
+                )
         except Exception as e:
             logger.error(f"❌ RPC execution error: {e}")
-            return AdvancedMEVTradeResult(success=False, error=f"RPC execution error: {str(e)}", mev_protected=False)
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="advanced_mev",
+                action="buy_rpc",
+                reason=f"RPC execution error: {str(e)}"
+            )
 
-    async def execute_sell_all(self, params: AdvancedMEVTradeParams) -> AdvancedMEVTradeResult:
+    async def execute_sell_all(self, params: AdvancedMEVTradeParams) -> BuildResult:
         logger.warning("⚠️ Advanced MEV sell not implemented. Returning error.")
-        return AdvancedMEVTradeResult(success=False, error="Advanced MEV sell not implemented.")
+        return BuildResult(
+            ok=False,
+            tx=None,
+            dex="advanced_mev",
+            action="sell_all",
+            reason="Advanced MEV sell not implemented."
+        )
     
     def get_performance_stats(self) -> Dict[str, Any]:
         """Get performance statistics"""

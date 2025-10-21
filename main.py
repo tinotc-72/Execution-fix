@@ -87,7 +87,7 @@ from config import WALLET
 
 # Import utilities
 from utils import get_transaction_with_logs, load_keypair, RPCClient
-from utils.async_timeout import run_with_watchdog
+from debug_monitoring_utils.async_timeout import run_with_watchdog
 from debug_utils import set_span_id, DebugSpan
 
 # Import specialized modules

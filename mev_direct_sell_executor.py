@@ -4,6 +4,14 @@ MEV Direct SELL Executor - Direct Instruction Copying for SELL Transactions
 Uses the same approach as BUYs: copy exact instruction details from target wallet's SELL transactions
 """
 
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+
 import asyncio
 import logging
 import requests
@@ -88,29 +96,25 @@ async def try_mev_direct_copy_sell(trade_info: dict, wallet: Keypair, rpc):
 # EXECUTOR STANDARDIZATION HELPERS
 # =====================================================================
 
-def exec_ok(executor_name: str, signature: str, data: dict = None) -> dict:
-    """Standard success response format"""
-    result = {
-        "success": True,
-        "signature": signature,
-        "executor": executor_name,
-        "timestamp": time.time()
-    }
-    if data:
-        result.update(data)
-    return result
+def exec_ok(executor_name: str, signature: str, data: dict = None) -> BuildResult:
+    """Standard success response format - PR-02 Integration"""
+    return BuildResult(
+        ok=True,
+        tx=signature,
+        dex=executor_name,
+        action="sell",
+        reason="Success"
+    )
 
-def exec_err(executor_name: str, reason: str, data: dict = None) -> dict:
-    """Standard error response format"""
-    result = {
-        "success": False,
-        "error": reason,
-        "executor": executor_name,
-        "timestamp": time.time()
-    }
-    if data:
-        result.update(data)
-    return result
+def exec_err(executor_name: str, reason: str, data: dict = None) -> BuildResult:
+    """Standard error response format - PR-02 Integration"""
+    return BuildResult(
+        ok=False,
+        tx=None,
+        dex=executor_name,
+        action="sell",
+        reason=reason
+    )
 
 def is_success(result: dict) -> bool:
     """Check if executor result represents success"""
@@ -269,7 +273,7 @@ class MEVDirectSellExecutor:
         target_wallet: str, 
         token_mint: str, 
         sell_percentage: float = 100.0
-    ) -> Optional[str]:
+    ) -> BuildResult:
         """
         Execute direct SELL copying from a target wallet's successful SELL pattern
         
@@ -279,25 +283,52 @@ class MEVDirectSellExecutor:
             sell_percentage: Percentage of tokens to sell
             
         Returns:
-            Transaction signature if successful, None if failed
+            BuildResult with transaction details
         """
         try:
             # 1. Analyze the target wallet's SELL pattern
             sell_pattern = await self.analyze_wallet_sell_pattern(target_wallet, token_mint)
             if not sell_pattern:
                 logger.error(f"❌ No SELL pattern found for {target_wallet[:8]} and token {token_mint[:8]}")
-                return exec_err("direct_sell_executor", f"No SELL pattern found for {target_wallet[:8]} and token {token_mint[:8]}")
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="direct_sell",
+                    action="sell",
+                    reason=f"No SELL pattern found for {target_wallet[:8]} and token {token_mint[:8]}"
+                )
             
             # 2. Copy the SELL transaction using their pattern
             signature = await self.copy_sell_transaction_from_signature(
                 sell_pattern['signature'], token_mint, sell_percentage
             )
             
-            return signature
+            if signature:
+                return BuildResult(
+                    ok=True,
+                    tx=signature,
+                    dex="direct_sell",
+                    action="sell",
+                    reason="Direct sell copy successful"
+                )
+            else:
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="direct_sell",
+                    action="sell",
+                    reason="Direct sell copy execution failed"
+                )
             
         except Exception as e:
             logger.error(f"❌ Error in execute_direct_sell_copy: {e}")
-            return exec_err("direct_sell_executor", f"Error in execute_direct_sell_copy: {str(e)}")
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="direct_sell",
+                action="sell",
+                reason=f"Error in execute_direct_sell_copy: {str(e)}"
+            )
     
     async def _fetch_transaction(self, signature: str) -> Optional[Dict[str, Any]]:
         """Fetch transaction data from RPC"""
@@ -791,7 +822,7 @@ async def execute_direct_sell_copy(
     token_mint: str,
     sell_percentage: float = 100.0,
     config: DirectSellCopyConfig = None
-) -> Optional[str]:
+) -> BuildResult:
     """
     Execute direct SELL copying - main entry point
     
@@ -803,7 +834,7 @@ async def execute_direct_sell_copy(
         config: Configuration options
         
     Returns:
-        Transaction signature if successful, None if failed
+        BuildResult with transaction details
     """
     try:
         executor = MEVDirectSellExecutor(wallet_private_key, config)
@@ -812,7 +843,13 @@ async def execute_direct_sell_copy(
         )
     except Exception as e:
         logger.error(f"❌ Error in execute_direct_sell_copy: {e}")
-        return exec_err("direct_sell_executor", f"Error in execute_direct_sell_copy: {str(e)}")
+        return BuildResult(
+            ok=False,
+            tx=None,
+            dex="direct_sell_executor",
+            action="sell",
+            reason=f"Error in execute_direct_sell_copy: {str(e)}"
+        )
 
 async def copy_specific_sell_transaction(
     wallet_private_key: str,
@@ -820,7 +857,7 @@ async def copy_specific_sell_transaction(
     token_mint: str,
     sell_percentage: float = 100.0,
     config: DirectSellCopyConfig = None
-) -> Optional[str]:
+) -> BuildResult:
     """
     Copy a specific SELL transaction by signature
     
@@ -832,16 +869,39 @@ async def copy_specific_sell_transaction(
         config: Configuration options
         
     Returns:
-        Transaction signature if successful, None if failed
+        BuildResult with transaction details
     """
     try:
         executor = MEVDirectSellExecutor(wallet_private_key, config)
-        return await executor.copy_sell_transaction_from_signature(
+        signature = await executor.copy_sell_transaction_from_signature(
             sell_transaction_signature, token_mint, sell_percentage
         )
+        
+        if signature:
+            return BuildResult(
+                ok=True,
+                tx=signature,
+                dex="direct_sell_executor",
+                action="sell",
+                reason="Copy specific sell transaction successful"
+            )
+        else:
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="direct_sell_executor",
+                action="sell",
+                reason="Copy specific sell transaction failed"
+            )
     except Exception as e:
         logger.error(f"❌ Error in copy_specific_sell_transaction: {e}")
-        return exec_err("direct_sell_executor", f"Error in copy_specific_sell_transaction: {str(e)}")
+        return BuildResult(
+            ok=False,
+            tx=None,
+            dex="direct_sell_executor",
+            action="sell",
+            reason=f"Error in copy_specific_sell_transaction: {str(e)}"
+        )
 
 if __name__ == "__main__":
     # Example usage

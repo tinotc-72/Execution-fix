@@ -3,6 +3,14 @@
 import pathlib as _px
 print(f"[FAST_EXECUTOR] using: {_px.Path(__file__).resolve()}")
 
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+
 import httpx
 import asyncio
 import aiohttp
@@ -104,28 +112,62 @@ class FastExecutor:
             self.logger.error(f"[SUBMIT_JITO] error: {e}")
             return None
     
-    async def submit_transaction(self, vtx: VersionedTransaction) -> Optional[str]:
-        """Submit transaction via Jito or RPC fallback"""
+    async def submit_transaction(self, vtx: VersionedTransaction) -> BuildResult:
+        """Submit transaction via Jito or RPC fallback - PR-02 Integration"""
         try:
             if not self.session:
                 await self.initialize()
 
             if not isinstance(vtx, VersionedTransaction):
                 self.logger.error(f"Invalid transaction type: {type(vtx)}")
-                return None
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="fast_executor",
+                    action="submit",
+                    reason=f"Invalid transaction type: {type(vtx)}"
+                )
 
             # Try Jito first
             sig = await self._submit_via_jito(vtx)
             if sig:
-                return sig
+                return BuildResult(
+                    ok=True,
+                    tx=sig,
+                    dex="fast_executor",
+                    action="submit",
+                    reason="Transaction submitted via Jito"
+                )
             
             # Fallback to RPC
-            return await self._submit_via_rpc(vtx)
+            rpc_sig = await self._submit_via_rpc(vtx)
+            if rpc_sig:
+                return BuildResult(
+                    ok=True,
+                    tx=rpc_sig,
+                    dex="fast_executor",
+                    action="submit",
+                    reason="Transaction submitted via RPC"
+                )
+            
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="fast_executor",
+                action="submit",
+                reason="Transaction submission failed (Jito and RPC)"
+            )
 
         except Exception as e:
             self.logger.error(f"Transaction submission error: {e}")
             traceback.print_exc()
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="fast_executor",
+                action="submit",
+                reason=f"Exception in submit_transaction: {str(e)}"
+            )
     
     async def _submit_via_rpc(self, vtx) -> str | None:
         """Submit transaction via RPC - parses signature from JSON-RPC 'result' field"""
@@ -184,18 +226,58 @@ class FastExecutor:
             self.session = None
             print("👋 FastExecutor session closed")
 
-    async def send_and_confirm(self, vtx: VersionedTransaction) -> Optional[str]:
+    async def send_and_confirm(self, vtx: VersionedTransaction) -> BuildResult:
         """
         Unified submit logic: tries Jito first, then RPC fallback.
         This is the main method for submitting transactions.
+        PR-02 Integration: Returns BuildResult instead of signature string
         """
-        sig = await self._submit_via_jito(vtx)
-        if not sig:
-            self.logger.warning("[EXECUTOR] Falling back to RPC submission")
-            sig = await self._submit_via_rpc(vtx)
-        if not sig:
-            self.logger.error("[EXECUTOR] submission failed (Jito and RPC)")
-            return None
-        status = await self._confirm_with_retries(sig)
-        self.logger.info(f"[CONFIRM][FINAL] sig={sig} status={status}")
-        return sig
+        try:
+            # Try Jito first
+            sig = await self._submit_via_jito(vtx)
+            if not sig:
+                self.logger.warning("[EXECUTOR] Falling back to RPC submission")
+                sig = await self._submit_via_rpc(vtx)
+            
+            if not sig:
+                self.logger.error("[EXECUTOR] submission failed (Jito and RPC)")
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="fast_executor",
+                    action="execute",
+                    reason="Transaction submission failed (Jito and RPC)"
+                )
+            
+            # Confirm transaction
+            status = await self._confirm_with_retries(sig)
+            self.logger.info(f"[CONFIRM][FINAL] sig={sig} status={status}")
+            
+            # Check if transaction was confirmed successfully
+            if status and not status.get("err"):
+                return BuildResult(
+                    ok=True,
+                    tx=sig,
+                    dex="fast_executor",
+                    action="execute",
+                    reason="Transaction confirmed successfully"
+                )
+            else:
+                error_msg = f"Transaction failed or not confirmed: {status}"
+                return BuildResult(
+                    ok=False,
+                    tx=sig,
+                    dex="fast_executor", 
+                    action="execute",
+                    reason=error_msg
+                )
+                
+        except Exception as e:
+            self.logger.error(f"[EXECUTOR] Error in send_and_confirm: {e}")
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="fast_executor",
+                action="execute",
+                reason=f"Exception in send_and_confirm: {str(e)}"
+            )
