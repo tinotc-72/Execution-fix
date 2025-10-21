@@ -1,3 +1,17 @@
+"""
+DEPRECATED: This file is superseded by pumpfun_copy_executor.py
+
+This executor uses solana-py which is being phased out.
+Use pumpfun_copy_executor.py instead, which:
+- Uses solders only (no solana-py)
+- Has byte-accurate protocol-compliant instructions
+- Implements proper ATA derivation with find_program_address
+- Uses unified submission via send_and_confirm_v0_tx
+- Supports Address Lookup Tables (ALT)
+- Returns proper BuildResult objects
+
+DO NOT USE THIS FILE FOR NEW CODE.
+"""
 
 from solders.pubkey import Pubkey
 from solders.rpc.responses import GetAccountInfoResp
