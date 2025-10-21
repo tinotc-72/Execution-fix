@@ -304,7 +304,7 @@ class RaydiumCopyExecutor:
         # Cache for pool addresses
         self.pool_cache = {}
         
-    async def execute_copy_trade(self, trade_info: ExtractedRaydiumTradeInfo, copy_amount: Optional[float] = None, **kwargs) -> Optional[str]:
+    async def execute_copy_trade(self, trade_info: ExtractedRaydiumTradeInfo, copy_amount: Optional[float] = None, **kwargs) -> BuildResult:
         """
         Execute a copy trade based on extracted Raydium trade information
         copy_amount: Amount in SOL to use for the copy trade (overrides original amount for buys)
@@ -325,9 +325,15 @@ class RaydiumCopyExecutor:
                 
         except Exception as e:
             logger.error(f"❌ Raydium copy trade execution error: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="raydium",
+                action="copy",
+                reason=f"Raydium copy trade execution error: {e}"
+            )
     
-    async def execute_buy_copy(self, trade_info: ExtractedRaydiumTradeInfo, sol_amount: float) -> Optional[str]:
+    async def execute_buy_copy(self, trade_info: ExtractedRaydiumTradeInfo, sol_amount: float) -> BuildResult:
         """Execute a buy copy trade on Raydium V4 AMM"""
         try:
             logger.info(f"🛒 Executing Raydium BUY copy: {sol_amount} SOL for {trade_info.token_mint}")
@@ -362,14 +368,33 @@ class RaydiumCopyExecutor:
             
             if signature:
                 logger.info(f"✅ Raydium buy copy executed: {signature}")
-            
-            return signature
+                return BuildResult(
+                    ok=True,
+                    tx=signature,
+                    dex="raydium",
+                    action="buy",
+                    reason="Raydium buy copy completed"
+                )
+            else:
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="raydium",
+                    action="buy",
+                    reason="Transaction failed"
+                )
             
         except Exception as e:
             logger.error(f"❌ Raydium buy copy error: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="raydium",
+                action="buy",
+                reason=f"Raydium buy copy error: {e}"
+            )
     
-    async def execute_sell_copy(self, trade_info: ExtractedRaydiumTradeInfo, **kwargs) -> Optional[str]:
+    async def execute_sell_copy(self, trade_info: ExtractedRaydiumTradeInfo, **kwargs) -> BuildResult:
         """Execute a sell copy trade on Raydium V4 AMM"""
         try:
             logger.info(f"💸 Executing Raydium SELL copy: {trade_info.token_mint}")
@@ -413,12 +438,31 @@ class RaydiumCopyExecutor:
             
             if signature:
                 logger.info(f"✅ Raydium sell copy executed: {signature}")
-            
-            return signature
+                return BuildResult(
+                    ok=True,
+                    tx=signature,
+                    dex="raydium",
+                    action="sell",
+                    reason="Raydium sell copy completed"
+                )
+            else:
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="raydium",
+                    action="sell",
+                    reason="Transaction failed"
+                )
             
         except Exception as e:
             logger.error(f"❌ Raydium sell copy error: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="raydium",
+                action="sell",
+                reason=f"Raydium sell copy error: {e}"
+            )
     
     def build_raydium_swap_instruction(
         self,
@@ -493,31 +537,34 @@ class RaydiumCopyExecutor:
             # Execute with retries
             for attempt in range(self.config.max_retries):
                 try:
-                    # Get recent blockhash
-                    recent_blockhash = (await self.client.get_latest_blockhash()).value.blockhash
+                    # PR-02: Apply compute budget and ATA enforcement
+                    ixs = with_compute_budget([instruction])
+                    ixs = ensure_ata_ixs(ixs, self.wallet_pubkey, [])
                     
-                    # Create transaction
+                    # PR-02: Build ALTs and recent blockhash
+                    alts = build_alts_from_tables(ixs)
+                    recent_blockhash = await get_recent_blockhash()
+                    
+                    # PR-02: Compile with ALTs
                     message = MessageV0.try_compile(
                         payer=self.wallet_pubkey,
-                        instructions=[
-                            set_compute_unit_limit(self.config.compute_unit_limit),
-                            set_compute_unit_price(self.config.compute_unit_price),
-                            instruction
-                        ],
+                        instructions=ixs,
                         recent_blockhash=recent_blockhash,
-                        address_lookup_table_accounts=[]
+                        address_lookup_table_accounts=alts
                     )
                     transaction = VersionedTransaction(message, [self.wallet_keypair])
                     
-                    # Simulate first
-                    sim_result = await self.client.simulate_transaction(transaction)
-                    if sim_result.value.err:
-                        logger.error(f"❌ Simulation failed: {sim_result.value.err}")
-                        if hasattr(sim_result.value, 'logs') and sim_result.value.logs:
-                            for log in sim_result.value.logs:
-                                logger.error(f"   Log: {log}")
+                    # PR-02: Submit with logging
+                    result = await send_and_confirm_v0_tx(transaction)
+                    log_submit_result(result, "raydium_instruction")
+                    
+                    if result.success:
+                        return result.signature
+                    else:
+                        logger.error(f"❌ Transaction failed: {result.error}")
                         if attempt < self.config.max_retries - 1:
                             await asyncio.sleep(self.config.retry_delay)
+                            continue
                             continue
                         return None
                     
@@ -785,7 +832,7 @@ class RaydiumCopyExecutor:
 
 # Standardized interface functions for copy bot integration
 
-async def try_raydium_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: float, **kwargs) -> Dict[str, Any]:
+async def try_raydium_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: float, **kwargs) -> BuildResult:
     """
     Enhanced Raydium buy function with sophisticated validation and error handling
     Incorporates the robust logic from your original main.py
@@ -891,41 +938,43 @@ async def try_raydium_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: 
             await raydium_copy.close()
             if signature and len(signature) > 10:  # Basic signature validation
                 logger.info(f"✅ Raydium buy successful (attempt {attempt + 1}): {signature}")
-                return {
-                    'success': True,
-                    'signature': signature,
-                    'amount_sol': amount_sol,
-                    'token_mint': token_mint,
-                    'dex': 'Raydium',
-                    'pool_id': pool_info.get('pool_id', 'Unknown'),
-                    'attempts': attempt + 1
-                }
+                return BuildResult(
+                    ok=True,
+                    tx=signature,
+                    dex="raydium",
+                    action="buy",
+                    reason=f"Raydium buy successful after {attempt + 1} attempts"
+                )
             else:
                 logger.warning(f"⚠️ Raydium attempt {attempt + 1} failed: invalid signature")
                 if attempt == max_retries - 1:  # Last attempt
-                    return {
-                        'success': False,
-                        'error': f'Raydium buy failed after {max_retries} attempts - no valid signature',
-                        'dex': 'Raydium',
-                        'attempts': max_retries
-                    }
+                    return BuildResult(
+                        ok=False,
+                        tx=None,
+                        dex="raydium",
+                        action="buy",
+                        reason=f"Raydium buy failed after {max_retries} attempts - no valid signature"
+                    )
         except Exception as attempt_error:
             logger.warning(f"⚠️ Raydium attempt {attempt + 1} error: {attempt_error}")
             if attempt == max_retries - 1:  # Last attempt
-                return {
-                    'success': False,
-                    'error': f'Raydium buy failed after {max_retries} attempts: {str(attempt_error)}',
-                    'dex': 'Raydium',
-                    'attempts': max_retries
-                }
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="raydium",
+                    action="buy",
+                    reason=f"Raydium buy failed after {max_retries} attempts: {str(attempt_error)}"
+                )
     # Should not reach here
-    return {
-        'success': False,
-        'error': 'Raydium buy failed - unexpected execution path',
-        'dex': 'Raydium'
-    }
+    return BuildResult(
+        ok=False,
+        tx=None,
+        dex="raydium",
+        action="buy",
+        reason="Raydium buy failed - unexpected execution path"
+    )
 
-async def try_raydium_sell_all(wallet_keypair: Keypair, token_mint: str, **kwargs) -> Dict[str, Any]:
+async def try_raydium_sell_all(wallet_keypair: Keypair, token_mint: str, **kwargs) -> BuildResult:
     """
     Standardized Raydium sell all function for copy bot integration
     
@@ -999,27 +1048,31 @@ async def try_raydium_sell_all(wallet_keypair: Keypair, token_mint: str, **kwarg
         
         if signature:
             logger.info(f"✅ Raydium sell successful: {signature}")
-            return {
-                'success': True,
-                'signature': signature,
-                'token_amount': token_amount,
-                'token_mint': token_mint,
-                'dex': 'Raydium'
-            }
+            return BuildResult(
+                ok=True,
+                tx=signature,
+                dex="raydium",
+                action="sell",
+                reason="Raydium sell completed"
+            )
         else:
-            return {
-                'success': False,
-                'error': 'Raydium sell failed - no signature returned',
-                'dex': 'Raydium'
-            }
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="raydium",
+                action="sell",
+                reason="Raydium sell failed - no signature returned"
+            )
             
     except Exception as e:
         logger.error(f"❌ Raydium sell error: {e}")
-        return {
-            'success': False,
-            'error': str(e),
-            'dex': 'Raydium'
-        }
+        return BuildResult(
+            ok=False,
+            tx=None,
+            dex="raydium",
+            action="sell",
+            reason=str(e)
+        )
 
 # Example usage:
 """

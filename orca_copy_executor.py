@@ -245,61 +245,38 @@ class OrcaCopyExecutor:
                         logger.error(f"❌ No swap transaction in response")
                         return None
                     
-                    # Execute transaction
+                    # Execute transaction with PR-02 patterns
                     tx_bytes = base64.b64decode(swap_result["swapTransaction"])
                     tx = VersionedTransaction.from_bytes(tx_bytes)
                     
-                    # CRITICAL FIX: Sign VersionedTransaction correctly
-                    try:
-                        # Method 1: Try partial_sign (newer solders versions)
-                        tx.partial_sign([self.wallet])
-                        logger.info(f"✅ Transaction signed successfully using partial_sign")
-                    except AttributeError:
-                        try:
-                            # Method 2: Create new signed versioned transaction (FIXED: use to_bytes())
-                            message_bytes = tx.message.serialize()
-                            signature = self.wallet.sign_message(message_bytes)
-                            
-                            # Create new VersionedTransaction with signature
-                            tx = VersionedTransaction(
-                                message=tx.message,
-                                signatures=[signature.signature]
-                            )
-                            logger.info(f"✅ Transaction signed successfully using message signing")
-                        except Exception as sign_error:
-                            logger.error(f"❌ Failed to sign transaction: {sign_error}")
-                            return None
+                    # PR-02: Apply compute budget and ATA enforcement to instructions
+                    ixs = with_compute_budget(tx.message.instructions)
+                    ixs = ensure_ata_ixs(ixs, self.wallet.pubkey(), [])
                     
-                    logger.info(f"📡 Sending Jupiter transaction...")
-                    response = await self.client.send_transaction(
-                        tx, 
-                        opts=TxOpts(
-                            skip_preflight=False,
-                            preflight_commitment=Processed,
-                            max_retries=self.config.max_retries
-                        )
+                    # PR-02: Build ALTs and recent blockhash
+                    alts = build_alts_from_tables(ixs)
+                    recent_blockhash = await get_recent_blockhash()
+                    
+                    # PR-02: Compile with ALTs
+                    message = MessageV0.try_compile(
+                        payer=self.wallet.pubkey(),
+                        instructions=ixs,
+                        recent_blockhash=recent_blockhash,
+                        address_lookup_table_accounts=alts
                     )
+                    transaction = VersionedTransaction(message, [self.wallet])
                     
-                    if response.value:
-                        signature = str(response.value)
-                        logger.info(f"✅ {description} transaction sent: {signature}")
-                        
-                        # Confirm transaction
-                        confirmed = await self.confirm_transaction(signature)
-                        if confirmed:
-                            return signature
-                        else:
-                            logger.error(f"❌ {description} transaction failed confirmation")
-                            return None
-                    else:
-                        logger.error(f"❌ Failed to send {description} transaction")
-                        return None
+                    # PR-02: Submit with logging
+                    result = await send_and_confirm_v0_tx(transaction)
+                    log_submit_result(result, f"orca_{description}")
+                    
+                    return result.signature if result.success else None
                         
         except Exception as e:
             logger.error(f"❌ Jupiter {description} error: {e}")
             return None
     
-    async def try_orca_buy(self, token_mint: str, amount_sol: float, **kwargs) -> Dict[str, Any]:
+    async def try_orca_buy(self, token_mint: str, amount_sol: float, **kwargs) -> BuildResult:
         """
         Buy tokens with SOL using DIRECT Orca - No Jupiter dependency!
         
@@ -343,23 +320,24 @@ class OrcaCopyExecutor:
                 logger.info("   2. AMM curve calculations")
                 logger.info("   3. Direct instruction building")
                 logger.info("   4. Pool state fetching")
-            return {
-                'success': False,
-                'error': f'Direct Orca {pool_type} instruction building not implemented yet',
-                'dex': f'Orca-{pool_type.title()}-Direct',
-                'suggestion': 'Implement direct Orca pool interaction or use pool discovery',
-                'amount_lamports': amount_lamports,
-                'pool_type': pool_type
-            }
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="orca",
+                action="buy",
+                reason=f"Direct Orca {pool_type} instruction building not implemented yet"
+            )
         except Exception as e:
             logger.error(f"❌ Direct Orca buy error: {e}")
-            return {
-                'success': False,
-                'error': f'Direct Orca failed: {e}',
-                'dex': 'Orca-Direct'
-            }
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="orca",
+                action="buy",
+                reason=f"Direct Orca failed: {e}"
+            )
     
-    async def try_orca_sell_all(self, token_mint: str, **kwargs) -> Dict[str, Any]:
+    async def try_orca_sell_all(self, token_mint: str, **kwargs) -> BuildResult:
         """
         Sell all tokens for SOL using DIRECT Orca - No Jupiter dependency!
         
@@ -383,11 +361,13 @@ class OrcaCopyExecutor:
             try:
                 account_info = await self.client.get_account_info(user_ata)
                 if not account_info.value:
-                    return {
-                        'success': False,
-                        'error': 'No token account found - no tokens to sell',
-                        'dex': 'Orca-Direct'
-                    }
+                    return BuildResult(
+                        ok=False,
+                        tx=None,
+                        dex='Orca-Direct',
+                        action='sell_all',
+                        reason='No token account found - no tokens to sell'
+                    )
                 
                 # Parse token balance
                 from spl.token.core import AccountInfo
@@ -395,21 +375,25 @@ class OrcaCopyExecutor:
                 token_balance = int(token_account.amount)
                 
                 if token_balance == 0:
-                    return {
-                        'success': False,
-                        'error': 'No tokens to sell - balance is 0',
-                        'dex': 'Orca-Direct'
-                    }
+                    return BuildResult(
+                        ok=False,
+                        tx=None,
+                        dex='Orca-Direct',
+                        action='sell_all',
+                        reason='No tokens to sell - balance is 0'
+                    )
                 
                 logger.info(f"💰 Found {token_balance} tokens to sell")
                 
             except Exception as balance_error:
                 logger.error(f"❌ Balance check error: {balance_error}")
-                return {
-                    'success': False,
-                    'error': f'Balance check failed: {balance_error}',
-                    'dex': 'Orca-Direct'
-                }
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex='Orca-Direct',
+                    action='sell_all',
+                    reason=f'Balance check failed: {balance_error}'
+                )
             
             # For direct Orca sell, we need the same pool info as buy
             pool_info = kwargs.get('pool_info', {})
@@ -439,20 +423,26 @@ class OrcaCopyExecutor:
                 token_balance = await self.client.get_token_account_balance(token_ata)
                 if not token_balance.value or token_balance.value.amount == "0":
                     logger.warning(f"⚠️  No {token_mint} balance to sell")
-                    return {
-                        "success": False,
-                        "signature": ""
-                    }
+                    return BuildResult(
+                        ok=False,
+                        tx=None,
+                        dex='Orca-Direct',
+                        action='sell_all',
+                        reason=f'No {token_mint} balance to sell'
+                    )
                 
                 token_amount = int(token_balance.value.amount)
                 logger.info(f"   💰 Selling {token_amount} tokens")
                 
             except Exception as e:
                 logger.error(f"❌ Error getting token balance: {e}")
-                return {
-                    "success": False,
-                    "signature": ""
-                }
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex='Orca-Direct',
+                    action='sell_all',
+                    reason=f'Error getting token balance: {e}'
+                )
             
             # Execute via Jupiter to access Orca liquidity
             signature = await self.execute_jupiter_swap(
@@ -464,23 +454,32 @@ class OrcaCopyExecutor:
             
             if signature:
                 logger.info(f"✅ Orca sell all successful: {signature}")
-                return {
-                    "success": True,
-                    "signature": signature
-                }
+                return BuildResult(
+                    ok=True,
+                    tx=None,  # Jupiter returns signature, not VersionedTransaction
+                    dex='Orca-Direct',
+                    action='sell_all',
+                    reason=f'Sell all successful: {signature}'
+                )
             else:
                 logger.error(f"❌ Orca sell all failed")
-                return {
-                    "success": False,
-                    "signature": ""
-                }
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex='Orca-Direct',
+                    action='sell_all',
+                    reason='Orca sell all failed'
+                )
                 
         except Exception as e:
             logger.error(f"❌ Orca sell all error: {e}")
-            return {
-                "success": False,
-                "signature": ""
-            }
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex='Orca-Direct',
+                action='sell_all',
+                reason=f'Orca sell all error: {e}'
+            )
     
     async def get_token_balance(self, token_mint: str) -> float:
         """Get current token balance"""
@@ -509,7 +508,7 @@ class OrcaCopyExecutor:
             pass
 
 # Convenience functions for copy bot integration
-async def try_orca_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: float, **kwargs) -> Dict[str, Any]:
+async def try_orca_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: float, **kwargs) -> BuildResult:
     """
     Enhanced Orca buy function with sophisticated validation and error handling
     Incorporates the robust logic from your original main.py
@@ -521,8 +520,9 @@ async def try_orca_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: flo
         **kwargs: Additional parameters (slippage_tolerance, etc.)
     
     Returns:
-        {"success": bool, "signature": str, "error": str}
+        BuildResult with transaction details
     """
+    from models.build_result import BuildResult
     from rate_limit_manager import rate_limit_manager
     from solana.rpc.async_api import AsyncClient
     from solana.rpc.commitment import Processed
@@ -561,40 +561,41 @@ async def try_orca_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: flo
                         **kwargs
                     )
 
-                    if result.get('success'):
-                        signature = result.get('signature', '')
+                    if result.ok:
+                        signature = result.tx.serialize() if result.tx else 'jupiter_api_result'
                         if signature and len(signature) > 10:
                             logger.info(f"✅ Orca buy successful (attempt {attempt + 1}): {signature}")
-                            return {
-                                'success': True,
-                                'signature': signature,
-                                'amount_sol': amount_sol,
-                                'token_mint': token_mint,
-                                'dex': 'Orca',
-                                'attempts': attempt + 1
-                            }
+                            return BuildResult(
+                                ok=True,
+                                tx=result.tx,
+                                dex='Orca',
+                                action='buy',
+                                reason=f'Buy successful on attempt {attempt + 1}'
+                            )
 
                     # If we get here, the result was not successful
-                    error = result.get('error', 'Unknown Orca error')
+                    error = result.reason if result.reason else 'Unknown Orca error'
                     logger.warning(f"⚠️ Orca attempt {attempt + 1} failed: {error}")
 
                     if attempt == max_retries - 1:  # Last attempt
-                        return {
-                            'success': False,
-                            'error': f'Orca buy failed after {max_retries} attempts: {error}',
-                            'dex': 'Orca',
-                            'attempts': max_retries
-                        }
+                        return BuildResult(
+                            ok=False,
+                            tx=None,
+                            dex='Orca',
+                            action='buy',
+                            reason=f'Orca buy failed after {max_retries} attempts: {error}'
+                        )
 
                 except Exception as executor_error:
                     logger.warning(f"⚠️ Orca executor error on attempt {attempt + 1}: {executor_error}")
                     if attempt == max_retries - 1:  # Last attempt
-                        return {
-                            'success': False,
-                            'error': f'Orca executor failed after {max_retries} attempts: {str(executor_error)}',
-                            'dex': 'Orca',
-                            'attempts': max_retries
-                        }
+                        return BuildResult(
+                            ok=False,
+                            tx=None,
+                            dex='Orca',
+                            action='buy',
+                            reason=f'Orca executor failed after {max_retries} attempts: {str(executor_error)}'
+                        )
 
                 finally:
                     await executor.close()
@@ -602,29 +603,34 @@ async def try_orca_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: flo
             except Exception as attempt_error:
                 logger.warning(f"⚠️ Orca attempt {attempt + 1} error: {attempt_error}")
                 if attempt == max_retries - 1:  # Last attempt
-                    return {
-                        'success': False,
-                        'error': f'Orca buy failed after {max_retries} attempts: {str(attempt_error)}',
-                        'dex': 'Orca',
-                        'attempts': max_retries
-                    }
+                    return BuildResult(
+                        ok=False,
+                        tx=None,
+                        dex='Orca',
+                        action='buy',
+                        reason=f'Orca buy failed after {max_retries} attempts: {str(attempt_error)}'
+                    )
 
         # Should not reach here
-        return {
-            'success': False,
-            'error': 'Orca buy failed - unexpected execution path',
-            'dex': 'Orca'
-        }
+        return BuildResult(
+            ok=False,
+            tx=None,
+            dex='Orca',
+            action='buy',
+            reason='Orca buy failed - unexpected execution path'
+        )
 
     except Exception as e:
         logger.error(f"❌ Orca buy critical error: {e}")
-        return {
-            'success': False,
-            'error': f'Orca buy critical error: {str(e)}',
-            'dex': 'Orca'
-        }
+        return BuildResult(
+            ok=False,
+            tx=None,
+            dex='Orca',
+            action='buy',
+            reason=f'Orca buy critical error: {str(e)}'
+        )
 
-async def try_orca_sell_all(wallet_keypair: Keypair, token_mint: str, **kwargs) -> Dict[str, Any]:
+async def try_orca_sell_all(wallet_keypair: Keypair, token_mint: str, **kwargs) -> BuildResult:
     """
     Convenience function for copy bot to execute Orca sell all
     
@@ -634,8 +640,10 @@ async def try_orca_sell_all(wallet_keypair: Keypair, token_mint: str, **kwargs) 
         **kwargs: Additional parameters
     
     Returns:
-        {"success": bool, "signature": str}
+        BuildResult with transaction details
     """
+    from models.build_result import BuildResult
+    
     executor = OrcaCopyExecutor(wallet_keypair)
     try:
         result = await executor.try_orca_sell_all(token_mint, **kwargs)

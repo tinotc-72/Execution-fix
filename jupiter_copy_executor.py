@@ -146,7 +146,7 @@ class JupiterCopyExecutor:
         # Initialize FastExecutor for Jito-first execution with RPC fallback
         self.fast_executor = FastExecutor(wallet_keypair)
         
-    async def execute_copy_trade(self, source_tx_signature: str = "", token_mint: str = "", amount_sol: float = 0.001, trade_info: Dict = None, **kwargs) -> Dict[str, Any]:
+    async def execute_copy_trade(self, source_tx_signature: str = "", token_mint: str = "", amount_sol: float = 0.001, trade_info: Dict = None, **kwargs) -> BuildResult:
         """
         Execute a copy trade based on extracted trade information
         Compatible with execution coordinator interface
@@ -176,25 +176,55 @@ class JupiterCopyExecutor:
             logger.info(f"[DEBUG] Jupiter quote response: {quote_response}")
             if not quote_response:
                 logger.error("❌ Failed to get quote from Jupiter")
-                return {"success": False, "error": "Failed to get quote from Jupiter", "dex": "jupiter"}
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="jupiter",
+                    action="copy",
+                    reason="Failed to get quote from Jupiter"
+                )
 
             swap_response = await self.get_swap_transaction(quote_response)
             logger.info(f"[DEBUG] Jupiter swap response: {swap_response}")
             if not swap_response:
                 logger.error("❌ Failed to get swap transaction from Jupiter")
-                return {"success": False, "error": "Failed to get swap transaction from Jupiter", "dex": "jupiter"}
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="jupiter",
+                    action="copy",
+                    reason="Failed to get swap transaction from Jupiter"
+                )
 
             signature = await self.execute_swap_transaction(swap_response)
             logger.info(f"[DEBUG] Jupiter transaction signature: {signature}")
             if signature:
                 logger.info(f"✅ Jupiter copy trade executed: {signature}")
-                return {"success": True, "signature": str(signature), "dex": "jupiter", "amount_sol": amount_to_trade}
+                return BuildResult(
+                    ok=True,
+                    tx=signature,
+                    dex="jupiter",
+                    action="copy",
+                    reason="Jupiter copy trade completed"
+                )
             else:
                 logger.error("❌ Failed to execute Jupiter copy trade")
-                return {"success": False, "error": "Failed to execute Jupiter copy trade", "dex": "jupiter"}
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="jupiter",
+                    action="copy",
+                    reason="Failed to execute Jupiter copy trade"
+                )
         except Exception as e:
             logger.error(f"❌ Jupiter copy trade execution error: {e}")
-            return {"success": False, "error": str(e), "dex": "jupiter"}
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="jupiter",
+                action="copy",
+                reason=str(e)
+            )
 
     async def get_quote(self, input_mint: str, output_mint: str, amount: int) -> Optional[dict]:
         """
@@ -257,7 +287,7 @@ class JupiterCopyExecutor:
 
     async def execute_swap_transaction(self, swap_response: dict) -> Optional[str]:
         """
-        Decode, sign, and submit the Jupiter swap transaction.
+        Decode, sign, and submit the Jupiter swap transaction with PR-02 patterns.
         """
         import base64
         try:
@@ -266,21 +296,38 @@ class JupiterCopyExecutor:
                 return None
             tx_bytes = base64.b64decode(swap_response['swapTransaction'])
             logger.info(f"[DEBUG] Decoded Jupiter transaction bytes: {tx_bytes.hex()[:120]}... (truncated)")
-            # Parse and sign the transaction
+            
+            # Parse the transaction
             tx = VersionedTransaction.from_bytes(tx_bytes)
-            # Reconstruct a signed transaction using the message and keypair
-            tx = VersionedTransaction(tx.message, [self.wallet_keypair])
-            logger.info(f"[DEBUG] Transaction signed. Submitting via FastExecutor...")
-            signature = await self.fast_executor.submit_transaction(tx)
-            logger.info(f"[DEBUG] FastExecutor returned signature: {signature}")
-            if signature and str(signature).startswith("111111"):
-                logger.error(f"[DEBUG] FastExecutor returned fake/placeholder signature: {signature}")
-            return signature
+            
+            # PR-02: Apply compute budget and ATA enforcement to instructions
+            ixs = with_compute_budget(tx.message.instructions)
+            ixs = ensure_ata_ixs(ixs, self.wallet_keypair.pubkey(), [])
+            
+            # PR-02: Build ALTs and recent blockhash
+            alts = build_alts_from_tables(ixs)
+            recent_blockhash = await get_recent_blockhash()
+            
+            # PR-02: Compile with ALTs
+            message = MessageV0.try_compile(
+                payer=self.wallet_keypair.pubkey(),
+                instructions=ixs,
+                recent_blockhash=recent_blockhash,
+                address_lookup_table_accounts=alts
+            )
+            transaction = VersionedTransaction(message, [self.wallet_keypair])
+            
+            # PR-02: Submit with logging
+            result = await send_and_confirm_v0_tx(transaction)
+            log_submit_result(result, "jupiter_swap")
+            
+            return result.signature if result.success else None
+            
         except Exception as e:
             logger.error(f"[DEBUG] Error in execute_swap_transaction: {e}")
             return None
     
-    async def execute_buy_copy(self, token_mint: str, sol_amount: float, original_signature: str, original_wallet: str) -> Optional[str]:
+    async def execute_buy_copy(self, token_mint: str, sol_amount: float, original_signature: str, original_wallet: str) -> BuildResult:
         """
         Execute a buy copy trade (SOL -> Token)
         """

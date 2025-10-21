@@ -226,7 +226,7 @@ class CPMMCopyExecutor:
             result = await resp.json()
             return result.get("result")
         
-    async def execute_copy_trade(self, trade_info: ExtractedCPMMTradeInfo, copy_amount: Optional[float] = None, **kwargs) -> Optional[str]:
+    async def execute_copy_trade(self, trade_info: ExtractedCPMMTradeInfo, copy_amount: Optional[float] = None, **kwargs) -> BuildResult:
         """
         Execute a copy trade based on extracted CPMM trade information
         copy_amount: Amount in SOL to use for the copy trade (overrides original amount for buys)
@@ -250,7 +250,13 @@ class CPMMCopyExecutor:
                 
         except Exception as e:
             logger.error(f"❌ CPMM copy trade execution error: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="cpmm",
+                action="copy",
+                reason=f"CPMM copy trade execution error: {e}"
+            )
 
     async def _enhance_pool_info(self, trade_info: ExtractedCPMMTradeInfo):
         """Extract complete pool info from original transaction if missing"""
@@ -320,7 +326,7 @@ class CPMMCopyExecutor:
             
         return None
     
-    async def execute_buy_copy(self, trade_info: ExtractedCPMMTradeInfo, sol_amount: float) -> Optional[str]:
+    async def execute_buy_copy(self, trade_info: ExtractedCPMMTradeInfo, sol_amount: float) -> BuildResult:
         """Execute a buy copy trade on CPMM"""
         try:
             logger.info(f"🛒 Executing CPMM BUY copy: {sol_amount} SOL for {trade_info.token_mint}")
@@ -352,14 +358,33 @@ class CPMMCopyExecutor:
             
             if signature:
                 logger.info(f"✅ CPMM buy copy executed: {signature}")
-            
-            return signature
+                return BuildResult(
+                    ok=True,
+                    tx=signature,
+                    dex="cpmm",
+                    action="buy",
+                    reason="CPMM buy copy completed"
+                )
+            else:
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="cpmm",
+                    action="buy",
+                    reason="Transaction failed"
+                )
             
         except Exception as e:
             logger.error(f"❌ CPMM buy copy error: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="cpmm",
+                action="buy",
+                reason=f"CPMM buy copy error: {e}"
+            )
     
-    async def execute_sell_copy(self, trade_info: ExtractedCPMMTradeInfo, **kwargs) -> Optional[str]:
+    async def execute_sell_copy(self, trade_info: ExtractedCPMMTradeInfo, **kwargs) -> BuildResult:
         """Execute a sell copy trade on CPMM with proportional selling support"""
         try:
             logger.info(f"💸 Executing CPMM SELL copy: {trade_info.token_mint}")
@@ -372,7 +397,13 @@ class CPMMCopyExecutor:
             
             if token_balance <= 0:
                 logger.error(f"❌ No tokens to sell for {trade_info.token_mint}")
-                return None
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="cpmm",
+                    action="sell",
+                    reason="No tokens to sell"
+                )
 
             # Proportional sell calculation
             sell_percentage = kwargs.get('sell_percentage', 100.0)
@@ -402,12 +433,31 @@ class CPMMCopyExecutor:
             
             if signature:
                 logger.info(f"✅ CPMM sell copy executed: {signature}")
-            
-            return signature
+                return BuildResult(
+                    ok=True,
+                    tx=signature,
+                    dex="cpmm",
+                    action="sell",
+                    reason="CPMM sell copy completed"
+                )
+            else:
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="cpmm",
+                    action="sell",
+                    reason="Transaction failed"
+                )
             
         except Exception as e:
             logger.error(f"❌ CPMM sell copy error: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="cpmm",
+                action="sell",
+                reason=f"CPMM sell copy error: {e}"
+            )
     
     def build_cpmm_swap_instruction(
         self,
@@ -471,31 +521,34 @@ class CPMMCopyExecutor:
             # Execute with retries
             for attempt in range(self.config.max_retries):
                 try:
-                    # Get recent blockhash
-                    recent_blockhash = (await self.client.get_latest_blockhash()).value.blockhash
+                    # PR-02: Apply compute budget and ATA enforcement
+                    ixs = with_compute_budget([instruction])
+                    ixs = ensure_ata_ixs(ixs, self.wallet_pubkey, [])
                     
-                    # Create transaction
+                    # PR-02: Build ALTs and recent blockhash
+                    alts = build_alts_from_tables(ixs)
+                    recent_blockhash = await get_recent_blockhash()
+                    
+                    # PR-02: Compile with ALTs
                     message = MessageV0.try_compile(
                         payer=self.wallet_pubkey,
-                        instructions=[
-                            set_compute_unit_limit(self.config.compute_unit_limit),
-                            set_compute_unit_price(self.config.compute_unit_price),
-                            instruction
-                        ],
+                        instructions=ixs,
                         recent_blockhash=recent_blockhash,
-                        address_lookup_table_accounts=[]
+                        address_lookup_table_accounts=alts
                     )
                     transaction = VersionedTransaction(message, [self.wallet_keypair])
                     
-                    # Simulate first
-                    sim_result = await self.client.simulate_transaction(transaction)
-                    if sim_result.value.err:
-                        logger.error(f"❌ Simulation failed: {sim_result.value.err}")
-                        if hasattr(sim_result.value, 'logs') and sim_result.value.logs:
-                            for log in sim_result.value.logs:
-                                logger.error(f"   Log: {log}")
+                    # PR-02: Submit with logging
+                    result = await send_and_confirm_v0_tx(transaction)
+                    log_submit_result(result, "cpmm_instruction")
+                    
+                    if result.success:
+                        return result.signature
+                    else:
+                        logger.error(f"❌ Transaction failed: {result.error}")
                         if attempt < self.config.max_retries - 1:
                             await asyncio.sleep(self.config.retry_delay)
+                            continue
                             continue
                         return None
                     

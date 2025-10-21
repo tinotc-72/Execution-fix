@@ -444,7 +444,7 @@ class PhoenixCopyExecutor:
             logger.error(f"❌ Error closing Phoenix Copy Executor: {e}")
 
 # Convenience functions for copy bot integration
-async def try_phoenix_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: float, **kwargs) -> Dict[str, Any]:
+async def try_phoenix_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: float, **kwargs) -> BuildResult:
     """
     Enhanced Phoenix buy function with sophisticated validation and error handling
     Incorporates the robust logic from your original main.py
@@ -456,8 +456,9 @@ async def try_phoenix_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: 
         **kwargs: Additional parameters (slippage_tolerance, etc.)
     
     Returns:
-        {"success": bool, "signature": str, "error": str}
+        BuildResult with transaction details
     """
+    from models.build_result import BuildResult
     from rate_limit_manager import rate_limit_manager
     from solana.rpc.async_api import AsyncClient
     from solana.rpc.commitment import Processed
@@ -496,40 +497,41 @@ async def try_phoenix_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: 
                         **kwargs
                     )
 
-                    if result.get('success'):
-                        signature = result.get('signature', '')
+                    if result.ok:
+                        signature = result.tx.serialize() if result.tx else ''
                         if signature and len(signature) > 10:
                             logger.info(f"✅ Phoenix buy successful (attempt {attempt + 1}): {signature}")
-                            return {
-                                'success': True,
-                                'signature': signature,
-                                'amount_sol': amount_sol,
-                                'token_mint': token_mint,
-                                'dex': 'Phoenix',
-                                'attempts': attempt + 1
-                            }
+                            return BuildResult(
+                                ok=True,
+                                tx=result.tx,
+                                dex='Phoenix',
+                                action='buy',
+                                reason=f'Buy successful on attempt {attempt + 1}'
+                            )
 
                     # If we get here, the result was not successful
-                    error = result.get('error', 'Unknown Phoenix error')
+                    error = result.reason if result.reason else 'Unknown Phoenix error'
                     logger.warning(f"⚠️ Phoenix attempt {attempt + 1} failed: {error}")
 
                     if attempt == max_retries - 1:  # Last attempt
-                        return {
-                            'success': False,
-                            'error': f'Phoenix buy failed after {max_retries} attempts: {error}',
-                            'dex': 'Phoenix',
-                            'attempts': max_retries
-                        }
+                        return BuildResult(
+                            ok=False,
+                            tx=None,
+                            dex='Phoenix',
+                            action='buy',
+                            reason=f'Phoenix buy failed after {max_retries} attempts: {error}'
+                        )
 
                 except Exception as executor_error:
                     logger.warning(f"⚠️ Phoenix executor error on attempt {attempt + 1}: {executor_error}")
                     if attempt == max_retries - 1:  # Last attempt
-                        return {
-                            'success': False,
-                            'error': f'Phoenix executor failed after {max_retries} attempts: {str(executor_error)}',
-                            'dex': 'Phoenix',
-                            'attempts': max_retries
-                        }
+                        return BuildResult(
+                            ok=False,
+                            tx=None,
+                            dex='Phoenix',
+                            action='buy',
+                            reason=f'Phoenix executor failed after {max_retries} attempts: {str(executor_error)}'
+                        )
 
                 finally:
                     await executor.close()
@@ -537,33 +539,40 @@ async def try_phoenix_buy(wallet_keypair: Keypair, token_mint: str, amount_sol: 
             except Exception as attempt_error:
                 logger.warning(f"⚠️ Phoenix attempt {attempt + 1} error: {attempt_error}")
                 if attempt == max_retries - 1:  # Last attempt
-                    return {
-                        'success': False,
-                        'error': f'Phoenix buy failed after {max_retries} attempts: {str(attempt_error)}',
-                        'dex': 'Phoenix',
-                        'attempts': max_retries
-                    }
+                    return BuildResult(
+                        ok=False,
+                        tx=None,
+                        dex='Phoenix',
+                        action='buy',
+                        reason=f'Phoenix buy failed after {max_retries} attempts: {str(attempt_error)}'
+                    )
 
         # Should not reach here
-        return {
-            'success': False,
-            'error': 'Phoenix buy failed - unexpected execution path',
-            'dex': 'Phoenix'
-        }
+        return BuildResult(
+            ok=False,
+            tx=None,
+            dex='Phoenix',
+            action='buy',
+            reason='Phoenix buy failed - unexpected execution path'
+        )
 
     except Exception as e:
         logger.error(f"❌ Phoenix buy critical error: {e}")
-        return {
-            'success': False,
-            'error': f'Phoenix buy critical error: {str(e)}',
-            'dex': 'Phoenix'
-        }
+        return BuildResult(
+            ok=False,
+            tx=None,
+            dex='Phoenix',
+            action='buy',
+            reason=f'Phoenix buy critical error: {str(e)}'
+        )
 
-async def try_phoenix_sell_all(wallet_keypair: Keypair, token_mint: str, **kwargs) -> Dict[str, Any]:
+async def try_phoenix_sell_all(wallet_keypair: Keypair, token_mint: str, **kwargs) -> BuildResult:
     """
     Standalone function for Phoenix sell operations
     Compatible with copy bot architecture
     """
+    from models.build_result import BuildResult
+    
     executor = PhoenixCopyExecutor(wallet_keypair)
     try:
         result = await executor.try_phoenix_sell_all(token_mint, **kwargs)

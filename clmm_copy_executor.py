@@ -168,12 +168,31 @@ class CLMMCopyExecutor:
             
             if signature:
                 logger.info(f"✅ CLMM buy executed: {signature}")
-            
-            return signature
+                return BuildResult(
+                    ok=True,
+                    tx=signature,
+                    dex="clmm",
+                    action="buy",
+                    reason="CLMM buy completed"
+                )
+            else:
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="clmm",
+                    action="buy",
+                    reason="Transaction failed"
+                )
             
         except Exception as e:
             logger.error(f"❌ CLMM buy error: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="clmm",
+                action="buy",
+                reason=f"CLMM buy error: {e}"
+            )
     
     async def execute_sell_trade(self, token_amount: Optional[int] = None, **kwargs) -> BuildResult:
         """Execute a CLMM sell trade with proportional selling support"""
@@ -188,7 +207,13 @@ class CLMMCopyExecutor:
                 
             if token_balance <= 0:
                 logger.error(f"❌ No tokens to sell for {self.pool_data['token_mint']}")
-                return None
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="clmm",
+                    action="sell",
+                    reason="No tokens to sell"
+                )
 
             # Proportional sell calculation
             sell_percentage = kwargs.get('sell_percentage', 100.0)
@@ -216,14 +241,32 @@ class CLMMCopyExecutor:
             
             if signature:
                 logger.info(f"✅ CLMM sell executed: {signature}")
+                return BuildResult(
+                    ok=True,
+                    tx=signature,
+                    dex="clmm",
+                    action="sell",
+                    reason="CLMM sell completed"
+                )
             else:
                 logger.error(f"❌ CLMM sell failed")
-            
-            return signature
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="clmm",
+                    action="sell",
+                    reason="Transaction failed"
+                )
             
         except Exception as e:
             logger.error(f"❌ CLMM sell error: {e}")
-            return None
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="clmm",
+                action="sell",
+                reason=f"CLMM sell error: {e}"
+            )
 
     async def get_token_balance(self, token_mint: Pubkey) -> int:
         """Get token balance for the wallet"""
@@ -340,26 +383,34 @@ class CLMMCopyExecutor:
             # Execute with retries
             for attempt in range(self.config.max_retries):
                 try:
-                    # Get recent blockhash
-                    # TODO: Replace with aiohttp/solders logic to fetch latest blockhash
-                    raise NotImplementedError("get_latest_blockhash must be implemented with aiohttp/Solders")
+                    # PR-02: Apply compute budget and ATA enforcement
+                    ixs = with_compute_budget([instruction])
+                    ixs = ensure_ata_ixs(ixs, self.wallet_pubkey, [])
                     
-                    # Create transaction
+                    # PR-02: Build ALTs and recent blockhash
+                    alts = build_alts_from_tables(ixs)
+                    recent_blockhash = await get_recent_blockhash()
+                    
+                    # PR-02: Compile with ALTs
                     message = MessageV0.try_compile(
                         payer=self.wallet_pubkey,
-                        instructions=[
-                            set_compute_unit_limit(self.config.compute_unit_limit),
-                            set_compute_unit_price(self.config.compute_unit_price),
-                            instruction
-                        ],
+                        instructions=ixs,
                         recent_blockhash=recent_blockhash,
-                        address_lookup_table_accounts=[]
+                        address_lookup_table_accounts=alts
                     )
                     transaction = VersionedTransaction(message, [self.wallet_keypair])
                     
-                    # Simulate first
-                    # TODO: Replace with aiohttp/solders logic to simulate and send transaction
-                    raise NotImplementedError("simulate/send_transaction must be implemented with aiohttp/Solders")
+                    # PR-02: Submit with logging
+                    result = await send_and_confirm_v0_tx(transaction)
+                    log_submit_result(result, "clmm_instruction")
+                    
+                    if result.success:
+                        return result.signature
+                    else:
+                        logger.error(f"❌ Transaction failed: {result.error}")
+                        if attempt < self.config.max_retries - 1:
+                            await asyncio.sleep(self.config.retry_delay)
+                            continue
                 except Exception as e:
                     logger.error(f"❌ Attempt {attempt + 1} failed: {e}")
                     if attempt < self.config.max_retries - 1:

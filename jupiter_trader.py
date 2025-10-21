@@ -162,15 +162,21 @@ class JupiterTrader:
         output_mint: str,
         amount: int,
         slippage_bps: int = 100
-    ) -> Tuple[bool, int, Optional[str]]:
-        """Execute a complete Jupiter swap"""
+    ) -> BuildResult:
+        """Execute a complete Jupiter swap using PR-02 transaction patterns"""
         try:
             start_time = time.time()
             
             # Get quote
             quote_data = await self.get_quote(input_mint, output_mint, amount, slippage_bps)
             if not quote_data:
-                return False, 0, "Failed to get quote"
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="jupiter",
+                    action="swap",
+                    reason="Failed to get quote"
+                )
                 
             # Get swap transaction
             tx = await self.get_swap_transaction(
@@ -180,140 +186,177 @@ class JupiterTrader:
             )
             
             if not tx:
-                return False, 0, "Failed to get swap transaction"
-            
-            # Jupiter transactions need to be signed by us
-            # The transaction comes with a dummy signature that we need to replace
-            
-            # Get fresh blockhash
-            blockhash_resp = await self.client.get_latest_blockhash()
-            if not blockhash_resp.value:
-                return False, 0, "Failed to get blockhash"
-                
-            # Update the transaction's blockhash if needed
-            message = tx.message
-            if message.recent_blockhash != blockhash_resp.value.blockhash:
-                logger.info("🔄 Updating transaction blockhash...")
-                
-                # Create new message with fresh blockhash
-                from solders.message import MessageV0
-                new_message = MessageV0(
-                    header=message.header,
-                    account_keys=message.account_keys,
-                    recent_blockhash=blockhash_resp.value.blockhash,
-                    instructions=message.instructions,
-                    address_table_lookups=message.address_table_lookups
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="jupiter",
+                    action="swap",
+                    reason="Failed to get swap transaction"
                 )
-                
-                # Create new transaction with fresh blockhash
-                tx = VersionedTransaction(new_message, [])
-                
-            # Sign the transaction
-            logger.info("🔐 Signing transaction...")
             
-            # Create signature (FIXED: use to_bytes())
-            signature = self.wallet_keypair.sign_message(tx.message.to_bytes())
+            # Apply PR-02 transaction patterns
+            logger.info("� Applying PR-02 transaction patterns...")
             
-            # Create new transaction with signature
-            signed_tx = VersionedTransaction(tx.message, [signature])
+            # 1. Add compute budget
+            budget_ixs = with_compute_budget()
             
-            # Send transaction
-            logger.info("🚀 Sending Jupiter swap transaction...")
-            response = await self.client.send_transaction(
-                signed_tx,
-                opts=TxOpts(
-                    skip_preflight=False,
-                    preflight_commitment=Confirmed
-                )
+            # 2. Ensure ATA instructions
+            ata_ixs = await ensure_ata_ixs(
+                self.wallet_keypair.pubkey(),
+                [Pubkey.from_string(input_mint), Pubkey.from_string(output_mint)]
             )
             
-            if hasattr(response, 'value'):
-                signature_str = response.value
-            else:
-                signature_str = str(response)
-                
-            # Check if this is a dummy signature
-            if signature_str == "1111111111111111111111111111111111111111111111111111111111111111":
-                logger.error("❌ Received dummy signature - transaction likely failed")
-                return False, 0, "Transaction failed with dummy signature"
-                
-            # Confirm transaction with shorter timeout
-            logger.info(f"⏳ Confirming transaction: {signature_str}")
+            # 3. Combine all instructions
+            all_instructions = budget_ixs + ata_ixs + list(tx.message.instructions)
             
-            # Try to confirm with timeout
-            import asyncio
+            # 4. Build ALTs from tables
+            recent_blockhash = await get_recent_blockhash()
+            alts = await build_alts_from_tables(tx.message.address_table_lookups)
+            
+            # 5. Compile MessageV0
             try:
-                confirmed = await asyncio.wait_for(
-                    self.client.confirm_transaction(signature_str, commitment=Confirmed),
-                    timeout=30.0  # 30 second timeout
+                final_message = MessageV0.try_compile(
+                    payer=self.wallet_keypair.pubkey(),
+                    instructions=all_instructions,
+                    address_lookup_table_accounts=alts,
+                    recent_blockhash=recent_blockhash
                 )
+            except Exception as compile_error:
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="jupiter",
+                    action="swap",
+                    reason=f"Failed to compile MessageV0: {compile_error}"
+                )
+            
+            # 6. Create VersionedTransaction
+            final_tx = VersionedTransaction(final_message, [])
+            
+            # 7. Send and confirm using PR-02 patterns
+            result = await send_and_confirm_v0_tx(
+                final_tx,
+                [self.wallet_keypair],
+                commitment="confirmed"
+            )
+            
+            # 8. Log result
+            log_submit_result(result, "jupiter_swap")
+            
+            if result.ok:
+                total_time = time.time() - start_time
+                output_amount = int(quote_data["outAmount"])
                 
-                if confirmed.value:
-                    total_time = time.time() - start_time
-                    output_amount = int(quote_data["outAmount"])
-                    
-                    logger.info(f"✅ Jupiter swap successful in {total_time:.3f}s")
-                    logger.info(f"   Transaction: {signature_str}")
-                    logger.info(f"   Output: {output_amount}")
-                    
-                    return True, output_amount, signature_str
-                else:
-                    logger.error("❌ Transaction failed to confirm")
-                    return False, 0, "Transaction failed to confirm"
-                    
-            except asyncio.TimeoutError:
-                logger.error("❌ Transaction confirmation timeout")
-                return False, 0, "Transaction confirmation timeout"
+                logger.info(f"✅ Jupiter swap successful in {total_time:.3f}s")
+                logger.info(f"   Output: {output_amount}")
+                
+                return BuildResult(
+                    ok=True,
+                    tx=result.tx,
+                    dex="jupiter",
+                    action="swap",
+                    reason=f"Swap successful in {total_time:.3f}s"
+                )
+            else:
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="jupiter",
+                    action="swap",
+                    reason=result.reason or "Transaction failed"
+                )
                 
         except Exception as e:
             logger.error(f"❌ Jupiter swap execution failed: {e}")
-            return False, 0, str(e)
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="jupiter",
+                action="swap",
+                reason=str(e)
+            )
             
-    async def execute_buy(self, amount: int, target_mint: str = str(USDC_MINT)) -> Tuple[bool, int]:
+    async def execute_buy(self, amount: int, target_mint: str = str(USDC_MINT)) -> BuildResult:
         """Execute a buy trade (SOL -> Token)"""
         try:
             logger.info(f"🔄 Executing Jupiter buy: {amount/LAMPORTS_PER_SOL:.6f} SOL -> {target_mint[:8]}...")
             
-            success, output_amount, signature = await self.execute_jupiter_swap(
+            result = await self.execute_jupiter_swap(
                 input_mint=str(NATIVE_MINT),
                 output_mint=target_mint,
                 amount=amount,
                 slippage_bps=100  # 1% slippage
             )
             
-            if success:
-                logger.info(f"✅ Jupiter buy successful: {output_amount} tokens")
-                return True, output_amount
+            if result.ok:
+                logger.info(f"✅ Jupiter buy successful")
+                return BuildResult(
+                    ok=True,
+                    tx=result.tx,
+                    dex="jupiter",
+                    action="buy",
+                    reason="Buy successful"
+                )
             else:
                 logger.error("❌ Jupiter buy failed")
-                return False, 0
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="jupiter",
+                    action="buy",
+                    reason=result.reason or "Buy failed"
+                )
                 
         except Exception as e:
             logger.error(f"❌ Jupiter buy execution failed: {e}")
-            return False, 0
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="jupiter",
+                action="buy",
+                reason=str(e)
+            )
             
-    async def execute_sell(self, amount: int, source_mint: str = str(USDC_MINT)) -> Tuple[bool, int]:
+    async def execute_sell(self, amount: int, source_mint: str = str(USDC_MINT)) -> BuildResult:
         """Execute a sell trade (Token -> SOL)"""
         try:
             logger.info(f"🔄 Executing Jupiter sell: {amount} {source_mint[:8]}... -> SOL")
             
-            success, output_amount, signature = await self.execute_jupiter_swap(
+            result = await self.execute_jupiter_swap(
                 input_mint=source_mint,
                 output_mint=str(NATIVE_MINT),
                 amount=amount,
                 slippage_bps=100  # 1% slippage
             )
             
-            if success:
-                logger.info(f"✅ Jupiter sell successful: {output_amount/LAMPORTS_PER_SOL:.6f} SOL")
-                return True, output_amount
+            if result.ok:
+                logger.info(f"✅ Jupiter sell successful")
+                return BuildResult(
+                    ok=True,
+                    tx=result.tx,
+                    dex="jupiter",
+                    action="sell",
+                    reason="Sell successful"
+                )
             else:
                 logger.error("❌ Jupiter sell failed")
-                return False, 0
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="jupiter",
+                    action="sell",
+                    reason=result.reason or "Sell failed"
+                )
                 
         except Exception as e:
             logger.error(f"❌ Jupiter sell execution failed: {e}")
-            return False, 0
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="jupiter",
+                action="sell",
+                reason=str(e)
+            )
             
     async def get_token_price(self, mint: str) -> Optional[float]:
         """Get token price from Jupiter API"""

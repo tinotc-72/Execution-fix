@@ -57,9 +57,8 @@ class SimpleSwapExecutor:
         except Exception as e:
             logger.error(f"❌ Simple swap buy error: {e}")
             return BuildResult(ok=False, tx=None, reason=f"simple swap error: {e}")
-            return {"success": False, "signature": "", "error": str(e)}
     
-    async def sell_token(self, wallet: Keypair, token_mint: str, **kwargs) -> Dict[str, Any]:
+    async def sell_token(self, wallet: Keypair, token_mint: str, **kwargs) -> BuildResult:
         """Simple sell using whatever liquidity is available"""
         try:
             logger.info(f"🔄 Simple Swap SELL: {token_mint} → SOL")
@@ -69,19 +68,33 @@ class SimpleSwapExecutor:
             balance = await self.get_token_balance(wallet.pubkey(), token_pubkey)
             
             if balance <= 0:
-                return {"success": False, "signature": "", "error": "No tokens to sell"}
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="simple_swap",
+                    action="sell",
+                    reason="No tokens to sell"
+                )
             
             logger.warning("⚠️ Simple swap sell not fully implemented")
             
-            return {
-                "success": False, 
-                "signature": "", 
-                "error": "Simple swap implementation incomplete"
-            }
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="simple_swap",
+                action="sell", 
+                reason="Simple swap implementation incomplete"
+            )
             
         except Exception as e:
             logger.error(f"❌ Simple swap sell error: {e}")
-            return {"success": False, "signature": "", "error": str(e)}
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="simple_swap",
+                action="sell", 
+                reason=f"simple swap sell error: {e}"
+            )
     
     async def get_token_balance(self, wallet: Pubkey, token_mint: Pubkey) -> int:
         """Get token balance"""

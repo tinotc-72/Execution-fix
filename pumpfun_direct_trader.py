@@ -169,31 +169,44 @@ class DirectPumpFunTrader:
             
             instructions.append(buy_instruction)
             
-            # Get recent blockhash
-            blockhash_resp = await self.rpc_request("getLatestBlockhash", [])
-            from solders.hash import Hash
-            recent_blockhash = Hash.from_string(blockhash_resp["blockhash"])
+            # PR-02: Apply compute budget and ATA enforcement
+            ixs = with_compute_budget(instructions)
+            ixs = ensure_ata_ixs(ixs, self.wallet_pubkey, [token_mint_pubkey])
             
-            # Create and send transaction
+            # PR-02: Build ALTs and recent blockhash
+            alts = build_alts_from_tables(ixs)
+            recent_blockhash = await get_recent_blockhash()
+            
+            # PR-02: Compile with ALTs
             message = MessageV0.try_compile(
                 payer=self.wallet_pubkey,
-                instructions=instructions,
+                instructions=ixs,
                 recent_blockhash=recent_blockhash,
-                address_lookup_table_accounts=[]
+                address_lookup_table_accounts=alts
             )
             
             transaction = VersionedTransaction(message, [self.wallet_keypair])
-            tx_bytes = base64.b64encode(bytes(transaction)).decode("utf-8")
             
-            signature = await self.rpc_request("sendTransaction", [
-                tx_bytes,
-                {"encoding": "base64", "skipPreflight": True}  # Skip preflight for speed
-            ])
+            # PR-02: Submit with logging
+            result = await send_and_confirm_v0_tx(transaction)
+            log_submit_result(result, "pumpfun_direct_buy")
             
-            return PumpFunTradeResult(True, signature=signature)
+            return BuildResult(
+                ok=result.success,
+                tx=result.signature if result.success else None,
+                dex="pumpfun",
+                action="buy",
+                reason=result.error if not result.success else "Direct buy completed"
+            )
             
         except Exception as e:
-            return PumpFunTradeResult(False, error=f"Direct buy failed: {str(e)}")
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="pumpfun",
+                action="buy",
+                reason=f"Direct buy failed: {str(e)}"
+            )
     
     async def sell_token_direct(self, token_mint: str, percentage: float = 100.0) -> BuildResult:
         """
@@ -212,16 +225,34 @@ class DirectPumpFunTrader:
             ])
             
             if not account_info or not account_info.get("value"):
-                return PumpFunTradeResult(False, error="No token account found")
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="pumpfun", 
+                    action="sell",
+                    reason="No token account found"
+                )
             
             token_amount = int(account_info["value"]["data"]["parsed"]["info"]["tokenAmount"]["amount"])
             if token_amount <= 0:
-                return PumpFunTradeResult(False, error="No tokens to sell")
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="pumpfun",
+                    action="sell", 
+                    reason="No tokens to sell"
+                )
             
             # Calculate amount to sell
             sell_amount = int(token_amount * (percentage / 100.0))
             if sell_amount <= 0:
-                return PumpFunTradeResult(False, error="Invalid sell amount")
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="pumpfun",
+                    action="sell",
+                    reason="Invalid sell amount"
+                )
             
             # Derive PDAs
             bonding_curve, associated_bonding_curve = self.derive_pump_pdas(token_mint_pubkey)
@@ -253,31 +284,44 @@ class DirectPumpFunTrader:
                 data=instruction_data
             )
             
-            # Get recent blockhash
-            blockhash_resp = await self.rpc_request("getLatestBlockhash", [])
-            from solders.hash import Hash
-            recent_blockhash = Hash.from_string(blockhash_resp["blockhash"])
+            # PR-02: Apply compute budget and ATA enforcement  
+            ixs = with_compute_budget([sell_instruction])
+            ixs = ensure_ata_ixs(ixs, self.wallet_pubkey, [token_mint_pubkey])
             
-            # Create and send transaction
+            # PR-02: Build ALTs and recent blockhash
+            alts = build_alts_from_tables(ixs)
+            recent_blockhash = await get_recent_blockhash()
+            
+            # PR-02: Compile with ALTs
             message = MessageV0.try_compile(
                 payer=self.wallet_pubkey,
-                instructions=[sell_instruction],
+                instructions=ixs,
                 recent_blockhash=recent_blockhash,
-                address_lookup_table_accounts=[]
+                address_lookup_table_accounts=alts
             )
             
             transaction = VersionedTransaction(message, [self.wallet_keypair])
-            tx_bytes = base64.b64encode(bytes(transaction)).decode("utf-8")
             
-            signature = await self.rpc_request("sendTransaction", [
-                tx_bytes,
-                {"encoding": "base64", "skipPreflight": True}
-            ])
+            # PR-02: Submit with logging
+            result = await send_and_confirm_v0_tx(transaction)
+            log_submit_result(result, "pumpfun_direct_sell")
             
-            return PumpFunTradeResult(True, signature=signature)
+            return BuildResult(
+                ok=result.success,
+                tx=result.signature if result.success else None,
+                dex="pumpfun",
+                action="sell",
+                reason=result.error if not result.success else "Direct sell completed"
+            )
             
         except Exception as e:
-            return PumpFunTradeResult(False, error=f"Direct sell failed: {str(e)}")
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="pumpfun",
+                action="sell",
+                reason=f"Direct sell failed: {str(e)}"
+            )
 
 
 # Option 2: Use a wrapper around existing tools

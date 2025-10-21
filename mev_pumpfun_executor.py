@@ -9,6 +9,13 @@ from solders.pubkey import Pubkey
 from solders.message import MessageV0
 from solders.transaction import VersionedTransaction
 
+import logging
+import traceback
+from typing import Dict, Any, Optional
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
     
     # Router support (NEW)
     enable_router_programs: bool = True  # Enable router program support
@@ -74,9 +81,21 @@ class MEVPumpFunExecutor:
         self.buy_attempts += 1
         try:
             if not self.config.enable_buy:
-                return {"success": False, "error": "Buy trades disabled"}
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="pumpfun",
+                    action="buy",
+                    reason="Buy trades disabled"
+                )
             if sol_amount < self.config.min_buy_sol:
-                return {"success": False, "error": f"Buy amount too small: {sol_amount}"}
+                return BuildResult(
+                    ok=False,
+                    tx=None, 
+                    dex="pumpfun",
+                    action="buy",
+                    reason=f"Buy amount too small: {sol_amount}"
+                )
             if sol_amount > self.config.max_buy_sol:
                 sol_amount = self.config.max_buy_sol
                 logger.warning(f"⚠️ Capping buy amount to {self.config.max_buy_sol} SOL")
@@ -172,19 +191,31 @@ class MEVPumpFunExecutor:
         mint_address: str,
         transaction_logs: list = None,
         **kwargs
-    ) -> Dict[str, Any]:
+    ) -> BuildResult:
         """
         Execute MEV-optimized sell all tokens, router-aware. Always bundles ATA creation with sell if needed.
         """
         self.sell_attempts += 1
         try:
             if not self.config.enable_sell:
-                return {"success": False, "error": "Sell trades disabled"}
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="pumpfun",
+                    action="sell_all",
+                    reason="Sell trades disabled"
+                )
             logger.info(f"🎯 MEV Sell All: {mint_address}")
             # Check token balance first
             balance = await self.mev_bot.get_token_balance(mint_address)
             if balance == 0:
-                return {"success": False, "error": "No tokens to sell"}
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="pumpfun",
+                    action="sell_all",
+                    reason="No tokens to sell"
+                )
             logger.info(f"   Selling {balance:,} tokens")
             # Detect router program from logs if provided
             program_id = self._detect_program_from_logs(transaction_logs) if transaction_logs else None
@@ -206,24 +237,42 @@ class MEVPumpFunExecutor:
                 if success:
                     self.sell_successes += 1
                     logger.info(f"✅ MEV Sell successful: {signature}")
-                    return {
-                        "success": True,
-                        "signature": signature,
-                        "token_amount": balance,
-                        "mint": mint_address,
-                        "execution_type": "MEV_OPTIMIZED"
-                    }
+                    return BuildResult(
+                        ok=True,
+                        tx=None,  # MEV Bot returns signature, not VersionedTransaction
+                        dex="pumpfun",
+                        action="sell_all",
+                        reason=f"MEV Sell successful: {signature}"
+                    )
                 else:
                     logger.error(f"❌ MEV Sell failed on blockchain: {signature}")
-                    return {"success": False, "error": "Transaction failed on blockchain", "signature": signature}
+                    return BuildResult(
+                        ok=False,
+                        tx=None,
+                        dex="pumpfun",
+                        action="sell_all",
+                        reason=f"Transaction failed on blockchain: {signature}"
+                    )
             else:
                 logger.error(f"❌ MEV Sell failed for {mint_address}")
-                return {"success": False, "error": "Transaction failed"}
+                return BuildResult(
+                    ok=False,
+                    tx=None,
+                    dex="pumpfun",
+                    action="sell_all",
+                    reason="Transaction failed"
+                )
         except Exception as e:
             logger.error(f"❌ MEV Sell exception: {e}")
             if self.config.debug_mode:
                 traceback.print_exc()
-            return {"success": False, "error": str(e)}
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="pumpfun",
+                action="sell_all",
+                reason=str(e)
+            )
     
     async def _verify_transaction_success(self, signature: str) -> bool:
         """Verify transaction actually succeeded on blockchain"""
@@ -390,11 +439,13 @@ async def try_pumpfun_buy(
     sol_amount: float,
     wallet: Keypair,
     **kwargs
-) -> Optional[str]:
+) -> BuildResult:
     """
     MEV-optimized pump.fun buy (replaces old function)
-    Returns signature if successful, None if failed
+    Returns BuildResult with transaction details
     """
+    from models.build_result import BuildResult
+    
     try:
         # Get private key from environment since that's what MEV bot expects
         from env_keys import EnvKeys
@@ -407,25 +458,45 @@ async def try_pumpfun_buy(
         # Execute buy
         result = await executor.execute_buy_copy(mint_str, sol_amount, **kwargs)
         
-        if result["success"]:
-            return result["signature"]
+        if result.ok:
+            return BuildResult(
+                ok=True,
+                tx=result.tx,
+                dex="pumpfun",
+                action="buy",
+                reason=result.reason
+            )
         else:
-            logger.error(f"MEV buy failed: {result.get('error', 'Unknown error')}")
-            return None
+            logger.error(f"MEV buy failed: {result.reason}")
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="pumpfun",
+                action="buy",
+                reason=result.reason or 'Unknown error'
+            )
             
     except Exception as e:
         logger.error(f"❌ try_pumpfun_buy failed: {e}")
-        return None
+        return BuildResult(
+            ok=False,
+            tx=None,
+            dex="pumpfun",
+            action="buy",
+            reason=str(e)
+        )
 
 async def try_pumpfun_sell_all(
     mint_str: str,
     wallet: Keypair,
     **kwargs
-) -> Optional[str]:
+) -> BuildResult:
     """
     MEV-optimized pump.fun sell all (replaces old function)
-    Returns signature if successful, None if failed
+    Returns BuildResult with transaction details
     """
+    from models.build_result import BuildResult
+    
     try:
         # Get private key from environment since that's what MEV bot expects
         from env_keys import EnvKeys
@@ -438,15 +509,33 @@ async def try_pumpfun_sell_all(
         # Execute sell
         result = await executor.execute_sell_all(mint_str, **kwargs)
         
-        if result["success"]:
-            return result["signature"]
+        if result.ok:
+            return BuildResult(
+                ok=True,
+                tx=result.tx,
+                dex="pumpfun",
+                action="sell_all",
+                reason=result.reason
+            )
         else:
-            logger.error(f"MEV sell failed: {result.get('error', 'Unknown error')}")
-            return None
+            logger.error(f"MEV sell failed: {result.reason}")
+            return BuildResult(
+                ok=False,
+                tx=None,
+                dex="pumpfun",
+                action="sell_all",
+                reason=result.reason or 'Unknown error'
+            )
             
     except Exception as e:
         logger.error(f"❌ try_pumpfun_sell_all failed: {e}")
-        return None
+        return BuildResult(
+            ok=False,
+            tx=None,
+            dex="pumpfun",
+            action="sell_all",
+            reason=str(e)
+        )
 
 # Legacy class name for compatibility
 class PumpFunCopyExecutor(MEVPumpFunExecutor):
