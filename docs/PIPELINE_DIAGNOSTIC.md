@@ -1,19 +1,19 @@
 # Execution Pipeline Diagnostic Report
 
-**Generated:** 2025-10-21 14:01:46
+**Generated:** 2025-10-21 14:10:44
 
 ## Executive Summary
 
-**Total Issues Found:** 402
+**Total Issues Found:** 399
 
-- 🔴 HIGH severity: 108
-- 🟡 MEDIUM severity: 26
+- 🔴 HIGH severity: 104
+- 🟡 MEDIUM severity: 27
 - 🔵 LOW severity: 268
 
 ## Issues by Category
 
 - **SOLANA_PY_IMPORT:** 268 issues
-- **RAW_SUBMISSION:** 57 issues
+- **RAW_SUBMISSION:** 53 issues
 - **NONE_RETURN:** 37 issues
 - **MISSING_BUILD_ALTS:** 22 issues
 - **MISSING_ALTS_COMPILE:** 12 issues
@@ -21,6 +21,7 @@
 - **ATA_EXISTS_USAGE:** 2 issues
 - **ATA_PLACEHOLDER:** 1 issues
 - **ATA_EXISTS_BOOLEAN:** 1 issues
+- **MISSING_BLOCKHASH:** 1 issues
 
 ## Prioritized Remediation List
 
@@ -1082,70 +1083,6 @@ Return BuildResult(ok=False, tx=None, reason='...') instead of None
 
 ---
 
-#### RAW_SUBMISSION: pumpfun_copy_executor_old.py:190
-
-**Description:** Using raw submission call instead of unified send_and_confirm_v0_tx
-
-**Code:**
-```python
-result = await self.client.send_transaction(tx, opts=TxOpts(skip_preflight=False, preflight_commitment=Processed))
-```
-
-**Suggested Fix:**
-```python
-Use send_and_confirm_v0_tx from executors.submit: result = await send_and_confirm_v0_tx(vtx, rpc_url)
-```
-
----
-
-#### RAW_SUBMISSION: pumpfun_copy_executor_old.py:369
-
-**Description:** Using raw submission call instead of unified send_and_confirm_v0_tx
-
-**Code:**
-```python
-result = await self.client.send_transaction(
-```
-
-**Suggested Fix:**
-```python
-Use send_and_confirm_v0_tx from executors.submit: result = await send_and_confirm_v0_tx(vtx, rpc_url)
-```
-
----
-
-#### RAW_SUBMISSION: pumpfun_copy_executor_old.py:650
-
-**Description:** Using raw submission call instead of unified send_and_confirm_v0_tx
-
-**Code:**
-```python
-response = await self.client.send_transaction(
-```
-
-**Suggested Fix:**
-```python
-Use send_and_confirm_v0_tx from executors.submit: result = await send_and_confirm_v0_tx(vtx, rpc_url)
-```
-
----
-
-#### RAW_SUBMISSION: pumpfun_copy_executor_old.py:963
-
-**Description:** Using raw submission call instead of unified send_and_confirm_v0_tx
-
-**Code:**
-```python
-result = await self.client.send_transaction(
-```
-
-**Suggested Fix:**
-```python
-Use send_and_confirm_v0_tx from executors.submit: result = await send_and_confirm_v0_tx(vtx, rpc_url)
-```
-
----
-
 #### RAW_SUBMISSION: pumpfun_executor.py:129
 
 **Description:** Using raw submission call instead of unified send_and_confirm_v0_tx
@@ -2104,6 +2041,22 @@ Remove 'exists' parameter and let the function query RPC directly
 **Suggested Fix:**
 ```python
 Import and use build_alts_from_tables: from utils.alt_fetch import build_alts_from_tables; alts = build_alts_from_tables(rpc_url, address_table_lookups)
+```
+
+---
+
+#### MISSING_BLOCKHASH: test_pumpfun_executor_upgrade.py:123
+
+**Description:** MessageV0.compile without apparent blockhash fetch
+
+**Code:**
+```python
+if "MessageV0.try_compile" in line or "MessageV0.compile" in line:
+```
+
+**Suggested Fix:**
+```python
+Fetch blockhash: from utils.alt_fetch import get_recent_blockhash; blockhash = await get_recent_blockhash(rpc_url)
 ```
 
 ---
@@ -5230,7 +5183,7 @@ Replace with solders equivalent: from solders.* import ...
 
 ---
 
-#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:45
+#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:59
 
 **Description:** Using solana-py import (should use solders)
 
@@ -5246,7 +5199,7 @@ Replace with solders equivalent: from solders.* import ...
 
 ---
 
-#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:46
+#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:60
 
 **Description:** Using solana-py import (should use solders)
 
@@ -5262,7 +5215,7 @@ Replace with solders equivalent: from solders.* import ...
 
 ---
 
-#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:47
+#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:61
 
 **Description:** Using solana-py import (should use solders)
 
@@ -5278,7 +5231,7 @@ Replace with solders equivalent: from solders.* import ...
 
 ---
 
-#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:182
+#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:196
 
 **Description:** Using solana-py import (should use solders)
 
@@ -5294,7 +5247,7 @@ Replace with solders equivalent: from solders.* import ...
 
 ---
 
-#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:183
+#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:197
 
 **Description:** Using solana-py import (should use solders)
 
@@ -5310,7 +5263,7 @@ Replace with solders equivalent: from solders.* import ...
 
 ---
 
-#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:1026
+#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:1040
 
 **Description:** Using solana-py import (should use solders)
 
@@ -5326,7 +5279,7 @@ Replace with solders equivalent: from solders.* import ...
 
 ---
 
-#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:1027
+#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:1041
 
 **Description:** Using solana-py import (should use solders)
 
@@ -5342,7 +5295,7 @@ Replace with solders equivalent: from solders.* import ...
 
 ---
 
-#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:1199
+#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:1213
 
 **Description:** Using solana-py import (should use solders)
 
@@ -5358,7 +5311,7 @@ Replace with solders equivalent: from solders.* import ...
 
 ---
 
-#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:1200
+#### SOLANA_PY_IMPORT: pumpfun_copy_executor_old.py:1214
 
 **Description:** Using solana-py import (should use solders)
 
@@ -7978,57 +7931,41 @@ Replace with solders equivalent: from solders.* import ...
 
 ### pumpfun_copy_executor_old.py
 
-**Issues:** 13
+**Issues:** 9
 
-- **Line 190** 🔴 [RAW_SUBMISSION] Using raw submission call instead of unified send_and_confirm_v0_tx
-  - Code: `result = await self.client.send_transaction(tx, opts=TxOpts(skip_preflight=False, preflight_commitment=Processed))`
-  - Fix: Use send_and_confirm_v0_tx from executors.submit: result = await send_and_confirm_v0_tx(vtx, rpc_url)
-
-- **Line 369** 🔴 [RAW_SUBMISSION] Using raw submission call instead of unified send_and_confirm_v0_tx
-  - Code: `result = await self.client.send_transaction(`
-  - Fix: Use send_and_confirm_v0_tx from executors.submit: result = await send_and_confirm_v0_tx(vtx, rpc_url)
-
-- **Line 650** 🔴 [RAW_SUBMISSION] Using raw submission call instead of unified send_and_confirm_v0_tx
-  - Code: `response = await self.client.send_transaction(`
-  - Fix: Use send_and_confirm_v0_tx from executors.submit: result = await send_and_confirm_v0_tx(vtx, rpc_url)
-
-- **Line 963** 🔴 [RAW_SUBMISSION] Using raw submission call instead of unified send_and_confirm_v0_tx
-  - Code: `result = await self.client.send_transaction(`
-  - Fix: Use send_and_confirm_v0_tx from executors.submit: result = await send_and_confirm_v0_tx(vtx, rpc_url)
-
-- **Line 45** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
+- **Line 59** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
   - Code: `from solana.rpc.async_api import AsyncClient`
   - Fix: Replace with solders equivalent: from solders.* import ...
 
-- **Line 46** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
+- **Line 60** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
   - Code: `from solana.rpc.types import TxOpts`
   - Fix: Replace with solders equivalent: from solders.* import ...
 
-- **Line 47** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
+- **Line 61** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
   - Code: `from solana.rpc.commitment import Processed, Confirmed`
   - Fix: Replace with solders equivalent: from solders.* import ...
 
-- **Line 182** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
+- **Line 196** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
   - Code: `from solana.rpc.types import TxOpts`
   - Fix: Replace with solders equivalent: from solders.* import ...
 
-- **Line 183** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
+- **Line 197** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
   - Code: `from solana.rpc.commitment import Processed`
   - Fix: Replace with solders equivalent: from solders.* import ...
 
-- **Line 1026** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
+- **Line 1040** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
   - Code: `from solana.rpc.async_api import AsyncClient`
   - Fix: Replace with solders equivalent: from solders.* import ...
 
-- **Line 1027** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
+- **Line 1041** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
   - Code: `from solana.rpc.commitment import Processed`
   - Fix: Replace with solders equivalent: from solders.* import ...
 
-- **Line 1199** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
+- **Line 1213** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
   - Code: `from solana.rpc.async_api import AsyncClient`
   - Fix: Replace with solders equivalent: from solders.* import ...
 
-- **Line 1200** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
+- **Line 1214** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
   - Code: `from solana.rpc.commitment import Processed`
   - Fix: Replace with solders equivalent: from solders.* import ...
 
@@ -8499,6 +8436,14 @@ Replace with solders equivalent: from solders.* import ...
 - **Line 8** 🔵 [SOLANA_PY_IMPORT] Using solana-py import (should use solders)
   - Code: `from solana.rpc.async_api import AsyncClient`
   - Fix: Replace with solders equivalent: from solders.* import ...
+
+### test_pumpfun_executor_upgrade.py
+
+**Issues:** 1
+
+- **Line 123** 🟡 [MISSING_BLOCKHASH] MessageV0.compile without apparent blockhash fetch
+  - Code: `if "MessageV0.try_compile" in line or "MessageV0.compile" in line:`
+  - Fix: Fetch blockhash: from utils.alt_fetch import get_recent_blockhash; blockhash = await get_recent_blockhash(rpc_url)
 
 ### test_real_execution_final.py
 
