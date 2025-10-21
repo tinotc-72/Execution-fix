@@ -36,7 +36,7 @@ from solders.keypair import Keypair
 
 logger = logging.getLogger(__name__)
 
-class PumpfunCopyExecutor:
+class MEVPumpfunCopyExecutor:
     """
     MEV-style copy executor for Pump.fun trades.
     
@@ -58,13 +58,13 @@ class PumpfunCopyExecutor:
     
     def __init__(self, rpc_url: str):
         """
-        Initialize the PumpfunCopyExecutor.
+        Initialize the MEVPumpfunCopyExecutor.
         
         Args:
             rpc_url: The Solana RPC endpoint URL
         """
         self.rpc_url = rpc_url
-        logger.info(f"🚀 PumpfunCopyExecutor initialized with RPC: {rpc_url[:50]}...")
+        logger.info(f"🚀 MEVPumpfunCopyExecutor initialized with RPC: {rpc_url[:50]}...")
         
     async def derive_bonding_curve(self, token_mint: Pubkey) -> Pubkey:
         """
