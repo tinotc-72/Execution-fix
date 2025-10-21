@@ -9,6 +9,17 @@ This module provides buy/sell functions that:
 3. Compatible with existing copy bot architecture
 4. Return standardized response format: {"success": bool, "signature": str}
 
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+from solders.pubkey import Pubkey
+from solders.message import MessageV0
+from solders.transaction import VersionedTransaction
+
 Phoenix is a major order book-based DEX on Solana
 """
 
@@ -226,7 +237,7 @@ class PhoenixCopyExecutor:
             logger.error(f"❌ Jupiter {description} error: {e}")
             return None
     
-    async def try_phoenix_buy(self, token_mint: str, amount_sol: float, **kwargs) -> Dict[str, Any]:
+    async def try_phoenix_buy(self, token_mint: str, amount_sol: float, **kwargs) -> BuildResult:
         """
         Buy tokens with SOL using Phoenix (via Jupiter)
         
@@ -275,7 +286,7 @@ class PhoenixCopyExecutor:
                 "signature": ""
             }
     
-    async def try_phoenix_sell_all(self, token_mint: str, **kwargs) -> Dict[str, Any]:
+    async def try_phoenix_sell_all(self, token_mint: str, **kwargs) -> BuildResult:
         """
         Sell all tokens for SOL using Phoenix (via Jupiter)
         

@@ -6,6 +6,17 @@ All instruction construction in this file must use the official Pump.fun Anchor 
 Based on reverse-engineered protocol from successful transactions
 """
 
+# PR-02 Integration: Required imports
+from models.build_result import BuildResult
+from utils.alt_fetch import build_alts_from_tables, get_recent_blockhash
+from utils.ata_enforce import ensure_ata_ixs
+from utils.fees import with_compute_budget
+from executors.submit import send_and_confirm_v0_tx
+from utils.logs import log_submit_result
+from solders.pubkey import Pubkey
+from solders.message import MessageV0
+from solders.transaction import VersionedTransaction
+
 import asyncio
 import base64
 import struct
@@ -98,7 +109,7 @@ class DirectPumpFunTrader:
         
         return bonding_curve, associated_bonding_curve
     
-    async def buy_token_direct(self, token_mint: str, amount_sol: float) -> PumpFunTradeResult:
+    async def buy_token_direct(self, token_mint: str, amount_sol: float) -> BuildResult:
         """
         Buy token using direct Pump.fun protocol
         This approach creates all necessary accounts in a single transaction
@@ -184,7 +195,7 @@ class DirectPumpFunTrader:
         except Exception as e:
             return PumpFunTradeResult(False, error=f"Direct buy failed: {str(e)}")
     
-    async def sell_token_direct(self, token_mint: str, percentage: float = 100.0) -> PumpFunTradeResult:
+    async def sell_token_direct(self, token_mint: str, percentage: float = 100.0) -> BuildResult:
         """
         Sell token using direct Pump.fun protocol
         """
